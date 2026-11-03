@@ -80,6 +80,21 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
+      # The largest proving test needs more memory than a hosted runner has; without swap, the runner is killed.
+      - name: Add swap
+        run: |
+          dir=/mnt
+          sudo test -d "$dir" || dir=/
+          available=$(df -BG --output=avail "$dir" | tail -1 | tr -dc 0-9)
+          size=$(( available > 24 ? 16 : available - 8 ))
+          [ "$size" -ge 4 ] || { echo "::error::Only ${available}G free on $dir"; exit 1; }
+          sudo fallocate -l "${size}G" "$dir/lean.swap"
+          sudo chmod 600 "$dir/lean.swap"
+          sudo mkswap "$dir/lean.swap"
+          sudo swapon "$dir/lean.swap"
+          swapon --show
+          free -h
+
       # rust-toolchain.toml pins the toolchain, which rustup installs on first use.
       - name: Test
         working-directory: src/ffi
