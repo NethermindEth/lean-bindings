@@ -76,6 +76,8 @@ jobs:
     timeout-minutes: 60
     env:
       LEANVM_NUM_THREADS: 1
+      # rustdoc ignores the rustflags in src/ffi/.cargo/config.toml; without carry-less multiply, the crate refuses to build.
+      RUSTDOCFLAGS: -C target-cpu=native
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
