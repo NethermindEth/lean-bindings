@@ -1,0 +1,220 @@
+name: Test / Publish
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish to NuGet
+        default: 'No'
+        type: choice
+        options:
+          - 'No'
+          - Staging
+          - Production
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify-formatting:
+    name: Verify formatting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+
+      - name: Verify formatting
+        run: dotnet format whitespace src --folder --verify-no-changes
+
+  test:
+    name: Test
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          lfs: true
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+
+      - name: Require the committed binaries
+        run: |
+          for rid in linux-x64 linux-arm64; do
+            library=src/Nethermind.Crypto.Lean/runtimes/$rid/native/libnethermind_lean.so
+            test -f "$library" || { echo "::error::No $library yet; run Build Lean and merge its pull request first"; exit 1; }
+          done
+
+      - name: Install dependencies
+        working-directory: src
+        run: dotnet restore Nethermind.Crypto.Lean.Test
+
+      - name: Test
+        working-directory: src/Nethermind.Crypto.Lean.Test
+        run: dotnet test -c release --no-restore
+
+  # Runs the published library itself, on hardware of each architecture: the release check that a cross-compiled or
+  # untested binary cannot pass. Nethermind's native suite at the source revision supplies the fixtures and expectations.
+  native-suite:
+    name: Nethermind native suite (${{ matrix.rid }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-x64
+            runner: ubuntu-latest
+          - rid: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      NATIVE_TEST_PROJECT: Nethermind.Crypto.LeanFfi.Test
+      LEANVM_NUM_THREADS: 1
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          lfs: true
+
+      - name: Read the source revision
+        id: source
+        run: |
+          library=src/Nethermind.Crypto.Lean/runtimes/${{ matrix.rid }}/native/libnethermind_lean.so
+          test -f "$library" || { echo "::error::No $library yet; run Build Lean and merge its pull request first"; exit 1; }
+          revision=$(sed -n 's|.*<LeanSourceRevision>\(.*\)</LeanSourceRevision>.*|\1|p' src/Directory.Build.props)
+          [[ $revision =~ ^[0-9a-f]{40}$ ]] || { echo "::error::LeanSourceRevision must be a full commit SHA"; exit 1; }
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
+      - name: Check out Nethermind at the source revision
+        uses: actions/checkout@v7
+        with:
+          repository: NethermindEth/nethermind
+          ref: ${{ steps.source.outputs.revision }}
+          path: nethermind
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: nethermind/global.json
+
+      - name: Set up Rust
+        run: |
+          toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' nethermind/tools/lean-ffi/rust-toolchain.toml)
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal
+
+      # BuildLeanFfi builds the fixtures and a host-native library; the committed library then replaces the latter.
+      - name: Build the native tests
+        working-directory: nethermind
+        run: dotnet build "src/Nethermind/$NATIVE_TEST_PROJECT/$NATIVE_TEST_PROJECT.csproj" -c release --disable-build-servers -m:1 -p:BuildLeanFfi=true
+
+      - name: Use the committed library
+        run: |
+          output="nethermind/src/Nethermind/artifacts/bin/$NATIVE_TEST_PROJECT/release"
+          test -f "$output/libnethermind_lean.so"
+          cp "src/Nethermind.Crypto.Lean/runtimes/${{ matrix.rid }}/native/libnethermind_lean.so" "$output/libnethermind_lean.so"
+          sha256sum "$output/libnethermind_lean.so"
+
+      - name: Run startup checks and verifications
+        working-directory: nethermind
+        run: >-
+          dotnet test --project "src/Nethermind/$NATIVE_TEST_PROJECT/$NATIVE_TEST_PROJECT.csproj" -c release --no-build -p:BuildLeanFfi=true --
+          --filter "FullyQualifiedName~NativeBackendStartupTests|FullyQualifiedName~NativeLeanProofVerifierTests|FullyQualifiedName~NativeBlockValidationTests"
+
+  verify-package:
+    name: Verify package assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          lfs: true
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+
+      - name: Require the committed binaries
+        run: |
+          for rid in linux-x64 linux-arm64; do
+            library=src/Nethermind.Crypto.Lean/runtimes/$rid/native/libnethermind_lean.so
+            test -f "$library" || { echo "::error::No $library yet; run Build Lean and merge its pull request first"; exit 1; }
+          done
+
+      # A consumer publishing for a RID must get that RID's library beside its binary, and nothing else.
+      - name: Pack and publish a consumer per RID
+        run: |
+          dotnet pack src/Nethermind.Crypto.Lean -c release -p:Version=0.0.0.1 -o "$RUNNER_TEMP/feed"
+          consumer="$RUNNER_TEMP/consumer"
+          dotnet new console -o "$consumer"
+          dotnet add "$consumer" package Nethermind.Crypto.Lean --version 0.0.0.1 --source "$RUNNER_TEMP/feed"
+          for rid in linux-x64:X86-64 linux-arm64:AArch64; do
+            out="$RUNNER_TEMP/out-${rid%%:*}"
+            dotnet publish "$consumer" -c release -r "${rid%%:*}" --self-contained false -o "$out"
+            readelf -h "$out/libnethermind_lean.so" | grep -q "Machine:.*${rid##*:}"
+            test ! -e "$out/runtimes"
+          done
+
+  publish:
+    name: Publish
+    needs: [verify-formatting, test, native-suite, verify-package]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish != 'No' || github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NUGET_URL: ${{ inputs.publish == 'Staging' && 'https://int.nugettest.org' || 'https://www.nuget.org' }}
+      NUGET_SOURCE: ${{ inputs.publish == 'Staging' && 'https://apiint.nugettest.org' || 'https://api.nuget.org' }}/v3/index.json
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          lfs: true
+
+      - name: Detect version
+        id: version
+        working-directory: src
+        run: |
+          version_prefix=$(sed -n 's|.*<VersionPrefix>\(.*\)</VersionPrefix>.*|\1|p' Directory.Build.props)
+          version_suffix=$(sed -n 's|.*<VersionSuffix>\(.*\)</VersionSuffix>.*|\1|p' Directory.Build.props)
+          version=$version_prefix${version_suffix:+-$version_suffix}
+          echo "Detected version $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+
+      - name: NuGet login
+        uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+          audience: ${{ env.NUGET_URL }}
+          token-service-url: ${{ env.NUGET_URL }}/api/v2/token
+
+      - name: Publish
+        working-directory: src
+        run: |
+          dotnet pack ./Nethermind.Crypto.Lean -c release \
+            -p:Version=${{ steps.version.outputs.version }}.${{ github.run_number }}
+          dotnet nuget push ./Nethermind.Crypto.Lean/bin/release/*.nupkg \
+            -k "${{ steps.login.outputs.NUGET_API_KEY }}" -s ${{ env.NUGET_SOURCE }}

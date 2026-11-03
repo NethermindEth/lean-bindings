@@ -1,0 +1,116 @@
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+accepted = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "Zlib", "CC0-1.0", "Unlicense", "Unicode-3.0", "LGPL-3.0-only"]
+
+
+# leanVM (Marchhill/leanVM, fork of leanEthereum/leanVM) crates declare no license field; the repository ships
+# LICENSE-MIT and LICENSE-APACHE, read here as the Rust convention MIT OR Apache-2.0.
+[fiat_shamir.clarify]
+license = "MIT OR Apache-2.0"
+[[fiat_shamir.clarify.git]]
+path = "LICENSE-MIT"
+checksum = "a6c93f24f002f1f83604f5b728f6f7ef58dcfd9ab4d7201971b0dc8ceb36e09f"
+[[fiat_shamir.clarify.git]]
+path = "LICENSE-APACHE"
+checksum = "ef978bc43daeb1015261f2a57aaad1b76e564836209beca219f2f8d485950f37"
+
+[flock.clarify]
+license = "MIT OR Apache-2.0"
+[[flock.clarify.git]]
+path = "LICENSE-MIT"
+checksum = "a6c93f24f002f1f83604f5b728f6f7ef58dcfd9ab4d7201971b0dc8ceb36e09f"
+[[flock.clarify.git]]
+path = "LICENSE-APACHE"
+checksum = "ef978bc43daeb1015261f2a57aaad1b76e564836209beca219f2f8d485950f37"
+
+[lean_compiler.clarify]
+license = "MIT OR Apache-2.0"
+[[lean_compiler.clarify.git]]
+path = "LICENSE-MIT"
+checksum = "a6c93f24f002f1f83604f5b728f6f7ef58dcfd9ab4d7201971b0dc8ceb36e09f"
+[[lean_compiler.clarify.git]]
+path = "LICENSE-APACHE"
+checksum = "ef978bc43daeb1015261f2a57aaad1b76e564836209beca219f2f8d485950f37"
+
+[lean_da.clarify]
+license = "MIT OR Apache-2.0"
+[[lean_da.clarify.git]]
+path = "LICENSE-MIT"
+checksum = "a6c93f24f002f1f83604f5b728f6f7ef58dcfd9ab4d7201971b0dc8ceb36e09f"
+[[lean_da.clarify.git]]
+path = "LICENSE-APACHE"
+checksum = "ef978bc43daeb1015261f2a57aaad1b76e564836209beca219f2f8d485950f37"
+
+[lean_vm.clarify]
+license = "MIT OR Apache-2.0"
+[[lean_vm.clarify.git]]
+path = "LICENSE-MIT"
+checksum = "a6c93f24f002f1f83604f5b728f6f7ef58dcfd9ab4d7201971b0dc8ceb36e09f"
+[[lean_vm.clarify.git]]
+path = "LICENSE-APACHE"
+checksum = "ef978bc43daeb1015261f2a57aaad1b76e564836209beca219f2f8d485950f37"
+
+[parallel.clarify]
+license = "MIT OR Apache-2.0"
+[[parallel.clarify.git]]
+path = "LICENSE-MIT"
+checksum = "a6c93f24f002f1f83604f5b728f6f7ef58dcfd9ab4d7201971b0dc8ceb36e09f"
+[[parallel.clarify.git]]
+path = "LICENSE-APACHE"
+checksum = "ef978bc43daeb1015261f2a57aaad1b76e564836209beca219f2f8d485950f37"
+
+[pcs.clarify]
+license = "MIT OR Apache-2.0"
+[[pcs.clarify.git]]
+path = "LICENSE-MIT"
+checksum = "a6c93f24f002f1f83604f5b728f6f7ef58dcfd9ab4d7201971b0dc8ceb36e09f"
+[[pcs.clarify.git]]
+path = "LICENSE-APACHE"
+checksum = "ef978bc43daeb1015261f2a57aaad1b76e564836209beca219f2f8d485950f37"
+
+[primitives.clarify]
+license = "MIT OR Apache-2.0"
+[[primitives.clarify.git]]
+path = "LICENSE-MIT"
+checksum = "a6c93f24f002f1f83604f5b728f6f7ef58dcfd9ab4d7201971b0dc8ceb36e09f"
+[[primitives.clarify.git]]
+path = "LICENSE-APACHE"
+checksum = "ef978bc43daeb1015261f2a57aaad1b76e564836209beca219f2f8d485950f37"
+
+[rec_aggregation.clarify]
+license = "MIT OR Apache-2.0"
+[[rec_aggregation.clarify.git]]
+path = "LICENSE-MIT"
+checksum = "a6c93f24f002f1f83604f5b728f6f7ef58dcfd9ab4d7201971b0dc8ceb36e09f"
+[[rec_aggregation.clarify.git]]
+path = "LICENSE-APACHE"
+checksum = "ef978bc43daeb1015261f2a57aaad1b76e564836209beca219f2f8d485950f37"
+
+[sphincs.clarify]
+license = "MIT OR Apache-2.0"
+[[sphincs.clarify.git]]
+path = "LICENSE-MIT"
+checksum = "a6c93f24f002f1f83604f5b728f6f7ef58dcfd9ab4d7201971b0dc8ceb36e09f"
+[[sphincs.clarify.git]]
+path = "LICENSE-APACHE"
+checksum = "ef978bc43daeb1015261f2a57aaad1b76e564836209beca219f2f8d485950f37"
+
+[xmss.clarify]
+license = "MIT OR Apache-2.0"
+[[xmss.clarify.git]]
+path = "LICENSE-MIT"
+checksum = "a6c93f24f002f1f83604f5b728f6f7ef58dcfd9ab4d7201971b0dc8ceb36e09f"
+[[xmss.clarify.git]]
+path = "LICENSE-APACHE"
+checksum = "ef978bc43daeb1015261f2a57aaad1b76e564836209beca219f2f8d485950f37"
+
+[zk_alloc.clarify]
+license = "MIT OR Apache-2.0"
+[[zk_alloc.clarify.git]]
+path = "LICENSE-MIT"
+checksum = "a6c93f24f002f1f83604f5b728f6f7ef58dcfd9ab4d7201971b0dc8ceb36e09f"
+[[zk_alloc.clarify.git]]
+path = "LICENSE-APACHE"
+checksum = "ef978bc43daeb1015261f2a57aaad1b76e564836209beca219f2f8d485950f37"
+

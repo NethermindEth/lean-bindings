@@ -1,0 +1,172 @@
+name: Build Lean
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Full NethermindEth/nethermind commit SHA to build tools/lean-ffi from
+        required: true
+        type: string
+      create-pr:
+        description: Create a pull request
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  RETENTION: 7
+  CARGO_ABOUT_VERSION: 0.9.3
+
+jobs:
+  validate:
+    name: Validate the source ref
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a full commit SHA
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          [[ $REF =~ ^[0-9a-f]{40}$ ]] || { echo "ref must be a full 40-character commit SHA"; exit 1; }
+
+  build-linux:
+    name: Linux build
+    needs: validate
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+            platform: linux/amd64
+            # leanVM's GF(2^64) arithmetic needs carry-less multiply; without it, verification is ~68x slower.
+            rustflags: -C target-cpu=x86-64-v3 -C target-feature=+pclmulqdq
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            rustflags: -C target-feature=+aes
+    runs-on: ${{ matrix.runner }}
+    # ubuntu:22.04 fixes the glibc baseline of the shipped library.
+    container:
+      image: ubuntu:22.04
+      options: --platform ${{ matrix.platform }}
+    steps:
+      - name: Install dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates curl git
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Check out tools/lean-ffi
+        uses: actions/checkout@v7
+        with:
+          repository: NethermindEth/nethermind
+          ref: ${{ inputs.ref }}
+          sparse-checkout: tools/lean-ffi
+          path: nethermind
+
+      # tools/lean-ffi/.cargo/config.toml targets the host CPU for local builds; RUSTFLAGS replaces it with the fixed baseline.
+      # rust-toolchain.toml pins the toolchain, which rustup installs on first use.
+      - name: Build twice and compare
+        working-directory: nethermind/tools/lean-ffi
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }} --remap-path-prefix=/github/home/.cargo=/cargo --remap-path-prefix=${{ github.workspace }}=/src
+        run: |
+          for dir in /tmp/build-a target; do
+            cargo build --release --locked --lib --target-dir $dir
+            strip $dir/release/libnethermind_lean.so
+          done
+          sha256sum /tmp/build-a/release/libnethermind_lean.so target/release/libnethermind_lean.so
+          cmp /tmp/build-a/release/libnethermind_lean.so target/release/libnethermind_lean.so
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-${{ matrix.arch }}
+          path: nethermind/tools/lean-ffi/target/release/libnethermind_lean.so
+          retention-days: ${{ env.RETENTION }}
+          if-no-files-found: error
+
+  notices:
+    name: Third-party notices
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Check out tools/lean-ffi
+        uses: actions/checkout@v7
+        with:
+          repository: NethermindEth/nethermind
+          ref: ${{ inputs.ref }}
+          sparse-checkout: tools/lean-ffi
+          path: nethermind
+
+      - name: Generate
+        working-directory: nethermind/tools/lean-ffi
+        run: |
+          cargo install cargo-about --locked --features cli --version "$CARGO_ABOUT_VERSION"
+          cargo about generate --locked -c "$GITHUB_WORKSPACE/notices/about.toml" "$GITHUB_WORKSPACE/notices/about.hbs" \
+            -o "$RUNNER_TEMP/dependencies.txt"
+          cat "$GITHUB_WORKSPACE/notices/header.txt" "$RUNNER_TEMP/dependencies.txt" > "$RUNNER_TEMP/THIRD-PARTY-NOTICES"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: notices
+          path: ${{ runner.temp }}/THIRD-PARTY-NOTICES
+          retention-days: ${{ env.RETENTION }}
+          if-no-files-found: error
+
+  create-pr:
+    name: Create a pull request
+    needs: [build-linux, notices]
+    if: inputs.create-pr
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          lfs: true
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/artifacts
+
+      - name: Move artifacts
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          for arch in arm64 x64; do
+            mv -f "$RUNNER_TEMP/artifacts/linux-$arch/libnethermind_lean.so" "src/Nethermind.Crypto.Lean/runtimes/linux-$arch/native/libnethermind_lean.so"
+          done
+          mv -f "$RUNNER_TEMP/artifacts/notices/THIRD-PARTY-NOTICES" THIRD-PARTY-NOTICES
+          sed -i "s|<LeanSourceRevision>.*</LeanSourceRevision>|<LeanSourceRevision>$REF</LeanSourceRevision>|" src/Directory.Build.props
+
+      - name: Create a pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.ref }}
+        run: |
+          head_branch=feature/lean-build-$GITHUB_RUN_NUMBER-$GITHUB_RUN_ATTEMPT
+          hashes=$(cd src/Nethermind.Crypto.Lean/runtimes && sha256sum ./*/native/libnethermind_lean.so)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$head_branch"
+          git add -A
+          git commit -am "Update Lean binaries"
+          git push origin "$head_branch"
+          gh pr create -B "$GITHUB_REF_NAME" -H "$head_branch" -t "chore(deps): update Lean binaries to ${REF:0:10}" \
+            -b "Built from NethermindEth/nethermind $REF (tools/lean-ffi), each architecture twice with identical output.
+
+          \`\`\`
+          $hashes
+          \`\`\`"

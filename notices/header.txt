@@ -1,0 +1,23 @@
+Nethermind.Crypto.Lean Third-Party Notices
+==========================================
+
+The packaging code in this repository is licensed under the MIT license; see the
+LICENSE file in the source repository.
+
+The native libraries shipped under runtimes/:
+
+    runtimes/linux-arm64/native/libnethermind_lean.so
+    runtimes/linux-x64/native/libnethermind_lean.so
+
+are built from tools/lean-ffi in NethermindEth/nethermind (Copyright Demerzel
+Solutions Limited), licensed under the GNU Lesser General Public License v3.0
+only (LGPL-3.0-only). The license texts are included as LICENSE-LGPL and
+LICENSE-GPL. The corresponding source is the NethermindEth/nethermind commit
+named in the package release notes; its tools/lean-ffi/Cargo.lock pins every
+dependency below.
+
+The libraries statically link the following Rust crates, including leanVM
+(https://github.com/Marchhill/leanVM, a fork of
+https://github.com/leanEthereum/leanVM, Copyright (c) 2026 leanEthereum). Their
+licenses follow.
+
