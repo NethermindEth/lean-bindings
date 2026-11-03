@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+  </Folder>
+  <Project Path="Nethermind.Crypto.Lean.Tests/Nethermind.Crypto.Lean.Tests.csproj" />
+  <Project Path="Nethermind.Crypto.Lean/Nethermind.Crypto.Lean.csproj" />
+</Solution>

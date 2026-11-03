@@ -1,0 +1,203 @@
+name: Build Lean
+
+on:
+  workflow_dispatch:
+    inputs:
+      create-pr:
+        description: Create a pull request
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  RETENTION: 7
+  CARGO_ABOUT_VERSION: 0.9.3
+
+jobs:
+  build-linux:
+    name: Linux build (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+            platform: linux/amd64
+            # leanVM's GF(2^64) arithmetic needs carry-less multiply; without it, verification is ~68x slower.
+            rustflags: -C target-cpu=x86-64-v3 -C target-feature=+pclmulqdq
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            rustflags: -C target-feature=+aes
+    runs-on: ${{ matrix.runner }}
+    # Keep the tag in sync with src/ffi/rust-toolchain.toml; otherwise rustup installs the pinned toolchain on first use.
+    # Debian 12 has glibc 2.36; the glibc check below keeps the library loadable on glibc 2.35 (Ubuntu 22.04).
+    container:
+      image: rust:1.99.0-bookworm
+      options: --platform ${{ matrix.platform }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: src/ffi
+
+      # src/ffi/.cargo/config.toml targets the host CPU for local builds; RUSTFLAGS replaces it with the fixed baseline.
+      - name: Build twice and compare
+        working-directory: src/ffi
+        # Both builds use the same target directory, so build paths can't make them differ.
+        run: |
+          export RUSTFLAGS="${{ matrix.rustflags }} --remap-path-prefix=$CARGO_HOME=/cargo --remap-path-prefix=$GITHUB_WORKSPACE=/src"
+          for build in first second; do
+            rm -rf target
+            cargo build --release --locked --lib
+            strip target/release/libnethermind_lean.so
+            if [ $build = first ]; then cp target/release/libnethermind_lean.so /tmp/first.so; fi
+          done
+          sha256sum /tmp/first.so target/release/libnethermind_lean.so
+          cmp /tmp/first.so target/release/libnethermind_lean.so
+
+      - name: Require glibc 2.35 or older
+        working-directory: src/ffi
+        run: |
+          required=$(objdump -T target/release/libnethermind_lean.so | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "Requires $required"
+          [ "$(printf '%s\n' GLIBC_2.35 "$required" | sort -V | tail -1)" = GLIBC_2.35 ] \
+            || { echo "::error::The library requires $required; the baseline is GLIBC_2.35 (Ubuntu 22.04)"; exit 1; }
+
+      # Laid out as runtimes/<rid>/native so that consumers download every RID into runtimes/ in one step.
+      - name: Stage
+        run: |
+          mkdir -p staging/runtimes/linux-${{ matrix.arch }}/native
+          cp src/ffi/target/release/libnethermind_lean.so staging/runtimes/linux-${{ matrix.arch }}/native/
+
+      # A relative path: in a container job, runner.temp and github.workspace name host paths.
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-${{ matrix.arch }}
+          path: staging/runtimes
+          retention-days: ${{ env.RETENTION }}
+          if-no-files-found: error
+
+  # The .NET smoke test on the built libraries, on hardware of each architecture, before they are committed.
+  test:
+    name: Test (${{ matrix.os }})
+    needs: build-linux
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      # Only the built libraries, never the committed ones (or their LFS pointers), may be tested.
+      - name: Remove the committed libraries
+        run: rm -rf src/bindings/Nethermind.Crypto.Lean/runtimes
+
+      - name: Download the libraries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: linux-*
+          merge-multiple: true
+          path: src/bindings/Nethermind.Crypto.Lean/runtimes
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+
+      - name: Install dependencies
+        working-directory: src/bindings
+        run: dotnet restore Nethermind.Crypto.Lean.Tests
+
+      - name: Test
+        working-directory: src/bindings/Nethermind.Crypto.Lean.Tests
+        run: dotnet test -c release --no-restore
+
+  notices:
+    name: Third-party notices
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Generate
+        working-directory: src/ffi
+        run: |
+          cargo install cargo-about --locked --features cli --version "$CARGO_ABOUT_VERSION"
+          cargo about generate --locked about.hbs -o "$RUNNER_TEMP/THIRD-PARTY-NOTICES"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: notices
+          path: ${{ runner.temp }}/THIRD-PARTY-NOTICES
+          retention-days: ${{ env.RETENTION }}
+          if-no-files-found: error
+
+  create-pr:
+    name: Create a pull request
+    needs: [test, notices]
+    if: inputs.create-pr
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          lfs: true
+
+      # Only the built outputs, never the committed ones, may be committed.
+      - name: Remove the committed outputs
+        run: rm -rf src/bindings/Nethermind.Crypto.Lean/runtimes THIRD-PARTY-NOTICES
+
+      - name: Download the libraries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: linux-*
+          merge-multiple: true
+          path: src/bindings/Nethermind.Crypto.Lean/runtimes
+
+      - name: Download the notices
+        uses: actions/download-artifact@v8
+        with:
+          name: notices
+
+      # The package version is the crate version; Test / Publish appends the run number. A pre-release such as
+      # 0.2.0-beta.1 goes to VersionSuffix.
+      - name: Update version
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' src/ffi/Cargo.toml | head -1)
+          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::Unexpected crate version '$version'"; exit 1; }
+          prefix=${version%%-*}
+          suffix=$([[ $version == *-* ]] && echo "${version#*-}" || true)
+          sed -i -e "s|<VersionPrefix>.*</VersionPrefix>|<VersionPrefix>$prefix</VersionPrefix>|" \
+            -e "s|<VersionSuffix>.*</VersionSuffix>|<VersionSuffix>$suffix</VersionSuffix>|" src/bindings/Directory.Build.props
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Create a pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          head_branch=feature/lean-build-$GITHUB_RUN_NUMBER-$GITHUB_RUN_ATTEMPT
+          title="chore(deps): update Lean binaries to $VERSION (${GITHUB_SHA:0:10})"
+          hashes=$(cd src/bindings/Nethermind.Crypto.Lean/runtimes && sha256sum ./*/native/libnethermind_lean.so)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$head_branch"
+          git add -A
+          git commit -m "$title"
+          git push origin "$head_branch"
+          gh pr create -B "$GITHUB_REF_NAME" -H "$head_branch" -t "$title" \
+            -b "Built from src/ffi at $GITHUB_SHA, each architecture twice with identical output.
+
+          \`\`\`
+          $hashes
+          \`\`\`"

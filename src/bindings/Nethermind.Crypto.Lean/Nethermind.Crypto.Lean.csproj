@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <!-- Native-only package: no lib/ assembly. -->
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Description>Native EIP-8288 Lean backend (libnethermind_lean, ABI 9) for linux-x64 (x86-64-v3 + PCLMULQDQ) and linux-arm64 (AES/PMULL).</Description>
+    <PackageId>Nethermind.Crypto.Lean</PackageId>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/nethermindeth/lean-bindings</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>cryptography post-quantum eip-8288 leanvm</PackageTags>
+    <RepositoryType>git</RepositoryType>
+    <RepositoryUrl>https://github.com/nethermindeth/lean-bindings</RepositoryUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="runtimes/linux-arm64/native/libnethermind_lean.so" Pack="true" PackagePath="runtimes/linux-arm64/native/libnethermind_lean.so">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="runtimes/linux-x64/native/libnethermind_lean.so" Pack="true" PackagePath="runtimes/linux-x64/native/libnethermind_lean.so">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../../../README.md" Pack="true" PackagePath="/" />
+    <None Include="../../../THIRD-PARTY-NOTICES" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+</Project>

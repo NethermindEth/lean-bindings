@@ -1,0 +1,2 @@
+* text=auto eol=lf
+src/bindings/Nethermind.Crypto.Lean/runtimes/**/*.so filter=lfs diff=lfs merge=lfs -text
