@@ -120,7 +120,7 @@ jobs:
     env:
       # The NethermindEth/nethermind commit whose native suite runs against the library. Bump it with any ABI or
       # verification key change.
-      NETHERMIND_REVISION: 0260e692fcf8e6b8bcb41289d877e0d5e380b5cd
+      NETHERMIND_REVISION: 1e5d1fa8a071b0b329a243437d00026e1d4a72df
       NATIVE_TEST_PROJECT: Nethermind.Crypto.LeanFfi.Test
       LEANVM_NUM_THREADS: 1
     steps:
