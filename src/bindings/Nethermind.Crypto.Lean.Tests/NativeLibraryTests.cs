@@ -12,7 +12,7 @@ namespace Nethermind.Crypto.Lean.Tests;
 public partial class NativeLibraryTests
 {
     private const string Library = "nethermind_lean";
-    private const uint ExpectedAbi = 9;
+    private const uint ExpectedAbi = 10;
     private const string ExpectedAggregatedVk = "417152e8bd83e0dfb6f3e2bb8991e948f62c7f15d74b693b55979a40b239efa1";
 
     // A project reference leaves the library under runtimes/<rid>/native; a package consumer gets it beside the binary.
