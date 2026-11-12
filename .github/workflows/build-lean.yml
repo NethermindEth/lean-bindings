@@ -48,14 +48,17 @@ jobs:
         # Both builds use the same target directory, so build paths can't make them differ.
         run: |
           export RUSTFLAGS="${{ matrix.rustflags }} --remap-path-prefix=$CARGO_HOME=/cargo --remap-path-prefix=$GITHUB_WORKSPACE=/src"
+          outputs="libnethermind_lean.so examples/fixtures examples/liblean_startup_stub.so"
           for build in first second; do
             rm -rf target
-            cargo build --release --locked --lib
-            strip target/release/libnethermind_lean.so
-            if [ $build = first ]; then cp target/release/libnethermind_lean.so /tmp/first.so; fi
+            cargo build --release --locked --lib --example fixtures --example lean_startup_stub
+            (cd target/release && strip $outputs)
+            if [ $build = first ]; then mkdir -p /tmp/first && (cd target/release && cp $outputs /tmp/first/); fi
           done
-          sha256sum /tmp/first.so target/release/libnethermind_lean.so
-          cmp /tmp/first.so target/release/libnethermind_lean.so
+          for output in $outputs; do
+            sha256sum "/tmp/first/$(basename $output)" "target/release/$output"
+            cmp "/tmp/first/$(basename $output)" "target/release/$output"
+          done
 
       - name: Require glibc 2.35 or older
         working-directory: src/ffi
@@ -68,8 +71,12 @@ jobs:
       # Laid out as runtimes/<rid>/native so that consumers download every RID into runtimes/ in one step.
       - name: Stage
         run: |
-          mkdir -p staging/runtimes/linux-${{ matrix.arch }}/native
+          mkdir -p staging/runtimes/linux-${{ matrix.arch }}/native testing/runtimes/linux-${{ matrix.arch }}/native testing/lean-vectors
           cp src/ffi/target/release/libnethermind_lean.so staging/runtimes/linux-${{ matrix.arch }}/native/
+          cp src/ffi/target/release/examples/fixtures src/ffi/target/release/examples/liblean_startup_stub.so \
+            testing/runtimes/linux-${{ matrix.arch }}/native/
+          # The test vectors, with the aggregated verification key they were made under.
+          if [ ${{ matrix.arch }} = x64 ]; then src/ffi/target/release/examples/fixtures testing/lean-vectors; fi
 
       # A relative path: in a container job, runner.temp and github.workspace name host paths.
       - name: Upload artifact
@@ -77,6 +84,14 @@ jobs:
         with:
           name: linux-${{ matrix.arch }}
           path: staging/runtimes
+          retention-days: ${{ env.RETENTION }}
+          if-no-files-found: error
+
+      - name: Upload test assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: testing-linux-${{ matrix.arch }}
+          path: testing
           retention-days: ${{ env.RETENTION }}
           if-no-files-found: error
 
@@ -97,7 +112,7 @@ jobs:
 
       # Only the built libraries, never the committed ones (or their LFS pointers), may be tested.
       - name: Remove the committed libraries
-        run: rm -rf src/bindings/Nethermind.Crypto.Lean/runtimes
+        run: rm -rf src/bindings/Nethermind.Crypto.Lean/runtimes src/bindings/Nethermind.Crypto.Lean/testing
 
       - name: Download the libraries
         uses: actions/download-artifact@v8
@@ -105,6 +120,13 @@ jobs:
           pattern: linux-*
           merge-multiple: true
           path: src/bindings/Nethermind.Crypto.Lean/runtimes
+
+      - name: Download the test assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: testing-linux-*
+          merge-multiple: true
+          path: src/bindings/Nethermind.Crypto.Lean/testing
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
@@ -154,7 +176,7 @@ jobs:
 
       # Only the built outputs, never the committed ones, may be committed.
       - name: Remove the committed outputs
-        run: rm -rf src/bindings/Nethermind.Crypto.Lean/runtimes THIRD-PARTY-NOTICES
+        run: rm -rf src/bindings/Nethermind.Crypto.Lean/runtimes src/bindings/Nethermind.Crypto.Lean/testing THIRD-PARTY-NOTICES
 
       - name: Download the libraries
         uses: actions/download-artifact@v8
@@ -162,6 +184,13 @@ jobs:
           pattern: linux-*
           merge-multiple: true
           path: src/bindings/Nethermind.Crypto.Lean/runtimes
+
+      - name: Download the test assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: testing-linux-*
+          merge-multiple: true
+          path: src/bindings/Nethermind.Crypto.Lean/testing
 
       - name: Download the notices
         uses: actions/download-artifact@v8

@@ -14,4 +14,10 @@
     <ProjectReference Include="..\Nethermind.Crypto.Lean\Nethermind.Crypto.Lean.csproj" />
   </ItemGroup>
 
+  <!-- The test assets a package consumer opts into, from the source tree through the same targets. -->
+  <PropertyGroup>
+    <NethermindCryptoLeanTestAssets>true</NethermindCryptoLeanTestAssets>
+  </PropertyGroup>
+  <Import Project="..\Nethermind.Crypto.Lean\buildTransitive\Nethermind.Crypto.Lean.targets" />
+
 </Project>

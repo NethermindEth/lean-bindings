@@ -5,7 +5,7 @@
 
 Native EIP-8288 Lean backend for [Nethermind](https://github.com/NethermindEth/nethermind), packaged for NuGet as `Nethermind.Crypto.Lean`.
 
-The library, `libnethermind_lean.so`, is built from the Rust crate in [`src/ffi`](https://github.com/nethermindeth/lean-bindings/tree/main/src/ffi), a thin C ABI over a pinned [leanVM](https://github.com/Marchhill/leanVM) fork.
+The library, `libnethermind_lean.so`, is built from the Rust crate in [`src/ffi`](https://github.com/nethermindeth/lean-bindings/tree/main/src/ffi), a thin C ABI over an unmodified, pinned [leanVM](https://github.com/leanEthereum/leanVM) and the EIP-8288 aggregation guest in `src/ffi/crates` (vendored from the same revision; see its README). This repository is the source of that code: consumers take the packages, not the source.
 
 ## Package
 
@@ -23,12 +23,13 @@ The library, `libnethermind_lean.so`, is built from the Rust crate in [`src/ffi`
 
 - `src/ffi`: the Rust source of the library, and the `cargo-about` configuration (`about.toml`, `about.hbs`) for `THIRD-PARTY-NOTICES`.
 - `src/bindings/Nethermind.Crypto.Lean`: the package; `runtimes/*/native/libnethermind_lean.so` (Git LFS) are committed by **Build Lean**.
-- `src/bindings/Nethermind.Crypto.Lean.Tests`: loads the committed library and checks its ABI version and aggregated verification key.
+- `src/bindings/Nethermind.Crypto.Lean/testing`: test assets for consumers' native suites: the vectors, the `fixtures` signing/proving tool and an incompatible startup stub, all built with the library (Git LFS, committed by **Build Lean**). They ship in the package outside `runtimes/`; a test project gets them in `lean-vectors/` only with `<NethermindCryptoLeanTestAssets>true</NethermindCryptoLeanTestAssets>`, so production publishes never contain them.
+- `src/bindings/Nethermind.Crypto.Lean.Tests`: loads the committed library and checks its ABI version, aggregated verification key and limits, and verifies the packaged vectors and a signature from the packaged tool.
 
 ## Workflows
 
 - **Build Lean** (manual): builds `src/ffi` for each RID, twice, and fails unless both builds are byte-identical; generates `THIRD-PARTY-NOTICES`; runs the smoke test on the built libraries on x64 and arm64 hardware; optionally opens a pull request with them into the branch it runs on. That pull request is opened with `GITHUB_TOKEN`, which starts no workflows, so run **Test / Publish** on its branch manually.
-- **Test / Publish**: on pull requests and `main`, checks formatting, runs the Rust tests, the smoke test and Nethermind's native suite (startup checks and real verifications, with fixtures from `src/ffi`) against the committed library on x64 and arm64 hardware, and verifies a consumer gets the right library per RID. On a release or a manual run, publishes to NuGet (staging or production) through trusted publishing, only after all of these pass.
+- **Test / Publish**: on pull requests and `main`, checks formatting, runs the Rust tests of the whole `src/ffi` workspace and the .NET tests against the committed library on x64 and arm64 hardware, and verifies a consumer gets the right library per RID. On a release or a manual run, publishes to NuGet (staging or production) through trusted publishing, only after all of these pass.
 
 ## License
 

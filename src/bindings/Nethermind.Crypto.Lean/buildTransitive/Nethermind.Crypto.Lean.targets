@@ -1,0 +1,23 @@
+<Project>
+  <!-- Opt-in test assets for consumers' native suites: with NethermindCryptoLeanTestAssets=true, the vectors and this host
+       RID's fixtures tool and incompatible startup stub, all built with the library, go to $(OutDir)lean-vectors.
+       Nothing here reaches a consumer without the property, so production builds and publishes are unchanged. -->
+  <Target Name="CopyNethermindCryptoLeanTestAssets" AfterTargets="Build" Condition="'$(NethermindCryptoLeanTestAssets)' == 'true'">
+    <PropertyGroup>
+      <_LeanTestAssetsRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</_LeanTestAssetsRid>
+      <!-- A distro-built SDK reports its own RID (for example ubuntu.24.04-x64); the assets are under the portable one. -->
+      <_LeanTestAssetsRid Condition="'$(_LeanTestAssetsRid)' == ''">$(NETCoreSdkPortableRuntimeIdentifier)</_LeanTestAssetsRid>
+      <_LeanTestAssetsRid Condition="'$(_LeanTestAssetsRid)' == ''">$(NETCoreSdkRuntimeIdentifier)</_LeanTestAssetsRid>
+      <_LeanTestAssets>$(MSBuildThisFileDirectory)../testing</_LeanTestAssets>
+    </PropertyGroup>
+    <ItemGroup>
+      <_LeanTestAsset Include="$(_LeanTestAssets)/lean-vectors/*.bin" />
+      <_LeanTestAsset Include="$(_LeanTestAssets)/runtimes/$(_LeanTestAssetsRid)/native/*" />
+    </ItemGroup>
+    <Error Condition="!Exists('$(_LeanTestAssets)/runtimes/$(_LeanTestAssetsRid)/native/fixtures')"
+           Text="Nethermind.Crypto.Lean has no test assets for $(_LeanTestAssetsRid)." />
+    <Copy SourceFiles="@(_LeanTestAsset)" DestinationFolder="$(OutDir)lean-vectors" SkipUnchangedFiles="true" />
+    <!-- NuGet extraction drops the executable bit. -->
+    <Exec Condition="!$([MSBuild]::IsOSPlatform('Windows'))" Command="chmod +x &quot;$(OutDir)lean-vectors/fixtures&quot;" />
+  </Target>
+</Project>
