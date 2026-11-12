@@ -5,5 +5,4 @@
   </Folder>
   <Project Path="Nethermind.Crypto.Lean.Tests/Nethermind.Crypto.Lean.Tests.csproj" />
   <Project Path="Nethermind.Crypto.Lean/Nethermind.Crypto.Lean.csproj" />
-  <Project Path="Nethermind.Crypto.Lean.Testing/Nethermind.Crypto.Lean.Testing.csproj" />
 </Solution>

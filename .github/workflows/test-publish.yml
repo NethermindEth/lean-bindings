@@ -126,6 +126,8 @@ jobs:
             dotnet publish "$consumer" -c release -r "${rid%%:*}" --self-contained false -o "$out"
             readelf -h "$out/libnethermind_lean.so" | grep -q "Machine:.*${rid##*:}"
             test ! -e "$out/runtimes"
+            # The test assets reach only a consumer that opts in.
+            test ! -e "$out/lean-vectors" && test ! -e "$out/testing" && test ! -e "$out/fixtures"
           done
 
   publish:
@@ -170,8 +172,7 @@ jobs:
       - name: Publish
         working-directory: src/bindings
         run: |
-          for package in Nethermind.Crypto.Lean Nethermind.Crypto.Lean.Testing; do
-            dotnet pack ./$package -c release -p:Version=${{ steps.version.outputs.version }}.${{ github.run_number }}
-          done
+          dotnet pack ./Nethermind.Crypto.Lean -c release \
+            -p:Version=${{ steps.version.outputs.version }}.${{ github.run_number }}
           dotnet nuget push ./artifacts/package/release/*.nupkg \
             -k "${{ steps.login.outputs.NUGET_API_KEY }}" -s ${{ env.NUGET_SOURCE }}

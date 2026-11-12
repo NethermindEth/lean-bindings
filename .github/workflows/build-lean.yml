@@ -112,7 +112,7 @@ jobs:
 
       # Only the built libraries, never the committed ones (or their LFS pointers), may be tested.
       - name: Remove the committed libraries
-        run: rm -rf src/bindings/Nethermind.Crypto.Lean/runtimes src/bindings/Nethermind.Crypto.Lean.Testing/runtimes src/bindings/Nethermind.Crypto.Lean.Testing/lean-vectors
+        run: rm -rf src/bindings/Nethermind.Crypto.Lean/runtimes src/bindings/Nethermind.Crypto.Lean/testing
 
       - name: Download the libraries
         uses: actions/download-artifact@v8
@@ -126,7 +126,7 @@ jobs:
         with:
           pattern: testing-linux-*
           merge-multiple: true
-          path: src/bindings/Nethermind.Crypto.Lean.Testing
+          path: src/bindings/Nethermind.Crypto.Lean/testing
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
@@ -176,7 +176,7 @@ jobs:
 
       # Only the built outputs, never the committed ones, may be committed.
       - name: Remove the committed outputs
-        run: rm -rf src/bindings/Nethermind.Crypto.Lean/runtimes src/bindings/Nethermind.Crypto.Lean.Testing/runtimes src/bindings/Nethermind.Crypto.Lean.Testing/lean-vectors THIRD-PARTY-NOTICES
+        run: rm -rf src/bindings/Nethermind.Crypto.Lean/runtimes src/bindings/Nethermind.Crypto.Lean/testing THIRD-PARTY-NOTICES
 
       - name: Download the libraries
         uses: actions/download-artifact@v8
@@ -190,7 +190,7 @@ jobs:
         with:
           pattern: testing-linux-*
           merge-multiple: true
-          path: src/bindings/Nethermind.Crypto.Lean.Testing
+          path: src/bindings/Nethermind.Crypto.Lean/testing
 
       - name: Download the notices
         uses: actions/download-artifact@v8

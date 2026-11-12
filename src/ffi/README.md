@@ -31,8 +31,8 @@ fails if the backend is unavailable. Verification fails closed; proving requires
 
 `cargo run --release --locked --example fixtures -- <directory>`, run from `src/ffi`, produces genuine test
 signatures and proofs and prints the pinned recursive verification key; `fixtures --sign-message <hex> <file>` signs
-one message. **Build Lean** packages the vectors, this tool and the `lean_startup_stub` example as
-`Nethermind.Crypto.Lean.Testing` for consumers' native suites.
+one message, and `fixtures --prove-stark <hex> <file>` proves a leanSTARK dependency on it. **Build Lean** packages the vectors,
+this tool and the `lean_startup_stub` example as opt-in test assets of `Nethermind.Crypto.Lean`.
 
 The C ABI is version 12, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
 `nlean_limits` writes seven u32 values (proof bytes, dependencies, recursive children,

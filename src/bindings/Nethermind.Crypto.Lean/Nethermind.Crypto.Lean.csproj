@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <Description>Native EIP-8288 Lean backend (libnethermind_lean, ABI 12) for linux-x64 (x86-64-v3 + PCLMULQDQ) and linux-arm64 (AES/PMULL).</Description>
+    <Description>Native EIP-8288 Lean backend (libnethermind_lean, ABI 12) for linux-x64 (x86-64-v3 + PCLMULQDQ) and linux-arm64 (AES/PMULL), with opt-in test assets (NethermindCryptoLeanTestAssets=true).</Description>
     <PackageId>Nethermind.Crypto.Lean</PackageId>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/nethermindeth/lean-bindings</PackageProjectUrl>
@@ -25,6 +25,13 @@
     <Content Include="runtimes/linux-x64/native/libnethermind_lean.so" Pack="true" PackagePath="runtimes/linux-x64/native/libnethermind_lean.so">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+  </ItemGroup>
+
+  <!-- Test assets, outside runtimes/ so no consumer gets them as native assets; buildTransitive copies them only on opt-in. -->
+  <ItemGroup>
+    <None Include="testing/lean-vectors/*.bin" Pack="true" PackagePath="testing/lean-vectors/" />
+    <None Include="testing/runtimes/**/native/*" Pack="true" PackagePath="testing/runtimes/" />
+    <None Include="buildTransitive/Nethermind.Crypto.Lean.targets" Pack="true" PackagePath="buildTransitive/" />
   </ItemGroup>
 
   <ItemGroup>
