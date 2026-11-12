@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <!-- Asset-only package: no lib/ assembly; the fixture tool and stub are native files, not managed ones. -->
+    <NoWarn>$(NoWarn);NU5100;NU5128</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Description>Test assets for the native EIP-8288 Lean backend (ABI 12), built from the same source as Nethermind.Crypto.Lean: fixture vectors, the fixtures signing/proving tool and an incompatible startup stub. For test projects only.</Description>
+    <PackageId>Nethermind.Crypto.Lean.Testing</PackageId>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/nethermindeth/lean-bindings</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>cryptography post-quantum eip-8288 leanvm testing</PackageTags>
+    <RepositoryType>git</RepositoryType>
+    <RepositoryUrl>https://github.com/nethermindeth/lean-bindings</RepositoryUrl>
+  </PropertyGroup>
+
+  <!-- The source layout is the package layout, so buildTransitive/ finds the assets in both. -->
+  <ItemGroup>
+    <None Include="lean-vectors/*.bin" Pack="true" PackagePath="lean-vectors/" />
+    <None Include="runtimes/**/native/*" Pack="true" PackagePath="runtimes/" />
+    <None Include="buildTransitive/Nethermind.Crypto.Lean.Testing.targets" Pack="true" PackagePath="buildTransitive/" />
+    <None Include="../../../README.md" Pack="true" PackagePath="/" />
+    <None Include="../../../THIRD-PARTY-NOTICES" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+</Project>

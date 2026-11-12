@@ -100,76 +100,7 @@ jobs:
       # rust-toolchain.toml pins the toolchain, which rustup installs on first use.
       - name: Test
         working-directory: src/ffi
-        run: cargo test --release --locked -- --test-threads=1
-
-  # Runs the committed library, on hardware of each architecture: the release check that a cross-compiled or untested
-  # binary cannot pass. Nethermind's native suite supplies the tests; this repository's src/ffi supplies the fixtures and
-  # expectations.
-  native-suite:
-    name: Nethermind native suite (${{ matrix.rid }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - rid: linux-x64
-            runner: ubuntu-latest
-          - rid: linux-arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
-    env:
-      # The NethermindEth/nethermind commit whose native suite runs against the library. Bump it with any ABI or
-      # verification key change.
-      NETHERMIND_REVISION: 1e5d1fa8a071b0b329a243437d00026e1d4a72df
-      NATIVE_TEST_PROJECT: Nethermind.Crypto.LeanFfi.Test
-      LEANVM_NUM_THREADS: 1
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-        with:
-          lfs: true
-
-      - name: Check out Nethermind
-        uses: actions/checkout@v7
-        with:
-          repository: NethermindEth/nethermind
-          ref: ${{ env.NETHERMIND_REVISION }}
-          path: nethermind
-
-      # The native suite builds its fixtures from tools/lean-ffi.
-      - name: Replace tools/lean-ffi with src/ffi
-        run: |
-          rm -rf nethermind/tools/lean-ffi
-          cp -r src/ffi nethermind/tools/lean-ffi
-
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v6
-        with:
-          global-json-file: nethermind/global.json
-
-      - name: Set up Rust
-        run: |
-          toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' src/ffi/rust-toolchain.toml)
-          test -n "$toolchain"
-          rustup toolchain install "$toolchain" --profile minimal
-
-      # BuildLeanFfi builds the fixtures and a host-native library; the committed library then replaces the latter.
-      - name: Build the native tests
-        working-directory: nethermind
-        run: dotnet build "src/Nethermind/$NATIVE_TEST_PROJECT/$NATIVE_TEST_PROJECT.csproj" -c release --disable-build-servers -m:1 -p:BuildLeanFfi=true
-
-      - name: Use the committed library
-        run: |
-          output="nethermind/src/Nethermind/artifacts/bin/$NATIVE_TEST_PROJECT/release"
-          test -f "$output/libnethermind_lean.so"
-          cp "src/bindings/Nethermind.Crypto.Lean/runtimes/${{ matrix.rid }}/native/libnethermind_lean.so" "$output/libnethermind_lean.so"
-          sha256sum "$output/libnethermind_lean.so"
-
-      - name: Run startup checks and verifications
-        working-directory: nethermind
-        run: >-
-          dotnet test --project "src/Nethermind/$NATIVE_TEST_PROJECT/$NATIVE_TEST_PROJECT.csproj" -c release --no-build -p:BuildLeanFfi=true --
-          --filter "FullyQualifiedName~NativeBackendStartupTests|FullyQualifiedName~NativeLeanProofVerifierTests|FullyQualifiedName~NativeBlockValidationTests"
+        run: cargo test --release --locked --workspace -- --test-threads=1
 
   verify-package:
     name: Verify package assets
@@ -199,7 +130,7 @@ jobs:
 
   publish:
     name: Publish
-    needs: [verify-formatting, test, rust-test, native-suite, verify-package]
+    needs: [verify-formatting, test, rust-test, verify-package]
     if: github.event_name == 'workflow_dispatch' && inputs.publish != 'No' || github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
@@ -239,7 +170,8 @@ jobs:
       - name: Publish
         working-directory: src/bindings
         run: |
-          dotnet pack ./Nethermind.Crypto.Lean -c release \
-            -p:Version=${{ steps.version.outputs.version }}.${{ github.run_number }}
+          for package in Nethermind.Crypto.Lean Nethermind.Crypto.Lean.Testing; do
+            dotnet pack ./$package -c release -p:Version=${{ steps.version.outputs.version }}.${{ github.run_number }}
+          done
           dotnet nuget push ./artifacts/package/release/*.nupkg \
             -k "${{ steps.login.outputs.NUGET_API_KEY }}" -s ${{ env.NUGET_SOURCE }}

@@ -14,4 +14,7 @@
     <ProjectReference Include="..\Nethermind.Crypto.Lean\Nethermind.Crypto.Lean.csproj" />
   </ItemGroup>
 
+  <!-- The targets a package consumer gets, run here on the source tree. -->
+  <Import Project="..\Nethermind.Crypto.Lean.Testing\buildTransitive\Nethermind.Crypto.Lean.Testing.targets" />
+
 </Project>

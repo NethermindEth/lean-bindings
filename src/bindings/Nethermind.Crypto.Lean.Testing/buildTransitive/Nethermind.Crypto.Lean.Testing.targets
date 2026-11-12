@@ -1,0 +1,18 @@
+<Project>
+  <!-- Copies the vectors and this host's fixtures tool and startup stub into $(OutDir)lean-vectors, where Nethermind's
+       native test suite reads them. NuGet extraction drops the executable bit, so the tool gets it back here. -->
+  <PropertyGroup>
+    <_LeanTestingRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</_LeanTestingRid>
+    <_LeanTestingRid Condition="'$(_LeanTestingRid)' == ''">$(NETCoreSdkRuntimeIdentifier)</_LeanTestingRid>
+  </PropertyGroup>
+  <ItemGroup>
+    <_LeanTestingAsset Include="$(MSBuildThisFileDirectory)../lean-vectors/*.bin" />
+    <_LeanTestingAsset Include="$(MSBuildThisFileDirectory)../runtimes/$(_LeanTestingRid)/native/*" />
+  </ItemGroup>
+  <Target Name="CopyLeanTestingAssets" AfterTargets="Build">
+    <Error Condition="!Exists('$(MSBuildThisFileDirectory)../runtimes/$(_LeanTestingRid)/native/fixtures')"
+           Text="Nethermind.Crypto.Lean.Testing has no assets for $(_LeanTestingRid)." />
+    <Copy SourceFiles="@(_LeanTestingAsset)" DestinationFolder="$(OutDir)lean-vectors" SkipUnchangedFiles="true" />
+    <Exec Condition="!$([MSBuild]::IsOSPlatform('Windows'))" Command="chmod +x &quot;$(OutDir)lean-vectors/fixtures&quot;" />
+  </Target>
+</Project>
