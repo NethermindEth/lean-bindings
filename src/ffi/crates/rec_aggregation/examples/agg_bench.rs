@@ -17,14 +17,12 @@ type RawSphincs = (
     lean_sphincs::LeanSphincsSignature,
 );
 
-fn signers(n: usize, salt: u8) -> Vec<RawSphincs> {
+fn signers(n: usize) -> Vec<RawSphincs> {
+    // Fresh keys and messages per run: the workload's shape, not its values, is what the bench measures.
     (0..n)
-        .map(|i| {
-            // Fresh keys per run: the workload's shape, not its keys, is what the bench measures.
+        .map(|_| {
             let (sk, pk) = lean_sphincs::key_gen_from_seed(rand::random());
-            let mut message = [7; 32];
-            message[0] = salt;
-            message[31] = i as u8;
+            let message = rand::random();
             (pk, message, lean_sphincs::sign(&sk, &message).expect("signs"))
         })
         .collect()
@@ -114,8 +112,8 @@ fn main() {
     match mode.as_str() {
         "sigs" => {
             let n: usize = std::env::args().nth(2).map_or(40, |a| a.parse().expect("n"));
-            let left = report(&format!("leaf {n} sigs"), leaf(vec![], signers(n, 1)));
-            let right = report(&format!("leaf {n} sigs (2nd)"), leaf(vec![], signers(n, 2)));
+            let left = report(&format!("leaf {n} sigs"), leaf(vec![], signers(n)));
+            let right = report(&format!("leaf {n} sigs (2nd)"), leaf(vec![], signers(n)));
             report("merge 2 children", || {
                 aggregate_with_stats(&[left, right], vec![], vec![], &[], None, RATE).expect("proves")
             });
@@ -132,7 +130,7 @@ fn main() {
             report("leaf 16 small generic", leaf(deps.clone(), vec![]));
             report(
                 "leaf 40 sigs + 4 small generic",
-                leaf(deps[..4].to_vec(), signers(40, 3)),
+                leaf(deps[..4].to_vec(), signers(40)),
             );
         }
         _ => panic!("mode: sigs [n] | generic"),
