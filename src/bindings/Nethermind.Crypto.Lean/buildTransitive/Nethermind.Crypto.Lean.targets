@@ -5,6 +5,8 @@
   <Target Name="CopyNethermindCryptoLeanTestAssets" AfterTargets="Build" Condition="'$(NethermindCryptoLeanTestAssets)' == 'true'">
     <PropertyGroup>
       <_LeanTestAssetsRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</_LeanTestAssetsRid>
+      <!-- A distro-built SDK reports its own RID (for example ubuntu.24.04-x64); the assets are under the portable one. -->
+      <_LeanTestAssetsRid Condition="'$(_LeanTestAssetsRid)' == ''">$(NETCoreSdkPortableRuntimeIdentifier)</_LeanTestAssetsRid>
       <_LeanTestAssetsRid Condition="'$(_LeanTestAssetsRid)' == ''">$(NETCoreSdkRuntimeIdentifier)</_LeanTestAssetsRid>
       <_LeanTestAssets>$(MSBuildThisFileDirectory)../testing</_LeanTestAssets>
     </PropertyGroup>
