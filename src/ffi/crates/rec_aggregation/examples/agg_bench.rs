@@ -20,9 +20,8 @@ type RawSphincs = (
 fn signers(n: usize, salt: u8) -> Vec<RawSphincs> {
     (0..n)
         .map(|i| {
-            let mut seed = [salt; 32];
-            seed[..8].copy_from_slice(&(i as u64).to_le_bytes());
-            let (sk, pk) = lean_sphincs::key_gen_from_seed(seed);
+            // Fresh keys per run: the workload's shape, not its keys, is what the bench measures.
+            let (sk, pk) = lean_sphincs::key_gen_from_seed(rand::random());
             let mut message = [7; 32];
             message[0] = salt;
             message[31] = i as u8;
