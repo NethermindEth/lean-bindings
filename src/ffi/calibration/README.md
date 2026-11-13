@@ -71,7 +71,7 @@ Workers listen on loopback unless started with `--remote`, and fetch child proof
 so their addresses must be mutually reachable. Every connection proves knowledge of the per-run key (a
 challenge-response, then a Keccak MAC with a sequence number on every frame); frames are bounded (64 KiB before
 authentication, 256 MiB after) and buffered only as they arrive; a worker fetches children only from the workers the
-coordinator listed and accepts at most 64 connections. Traffic is not encrypted: use a private network.
+coordinator listed. A handshake must complete within 5 s in total; at most 8 connections may be handshaking and 64 authenticated, counted separately so unauthenticated peers cannot crowd out the coordinator. Traffic is not encrypted: use a private network.
 
 ## EVM execution
 

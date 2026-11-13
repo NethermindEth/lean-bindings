@@ -9,6 +9,8 @@
 
 use crate::wire::{MAX_CONTROL_FRAME, MAX_DATA_FRAME, read_frame, write_frame};
 use std::io::{self, Read, Write};
+use std::net::TcpStream;
+use std::time::{Duration, Instant};
 
 pub type Key = [u8; 32];
 
@@ -76,15 +78,51 @@ pub struct Channel<S> {
     received: u64,
 }
 
-impl<S: Read + Write> Channel<S> {
-    /// The accepting side: issues a challenge and requires the client's answer before anything else.
-    pub fn server(mut stream: S, key: Key) -> io::Result<Self> {
+impl Channel<TcpStream> {
+    /// The accepting side: issues a challenge and requires the client's answer, exactly one 32-byte frame, within
+    /// `limit` in total; a slower or longer answer is refused.
+    pub fn server(mut stream: TcpStream, key: Key, limit: Duration) -> io::Result<Self> {
+        let deadline = Instant::now() + limit;
         let challenge = challenge()?;
+        stream.set_write_timeout(Some(limit))?;
         write_frame(&mut stream, &challenge)?;
-        let answer = read_frame(&mut stream, MAX_CONTROL_FRAME)?;
-        if !equal(&answer, &mac(&key, &[AUTH, &challenge])) {
+        let mut answer = [0u8; 4 + 32];
+        let mut got = 0;
+        while got < answer.len() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "handshake deadline",
+                ));
+            }
+            stream.set_read_timeout(Some(left))?;
+            match stream.read(&mut answer[got..]) {
+                Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                Ok(n) => got += n,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "handshake deadline",
+                    ));
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+            if got >= 4 && u32::from_le_bytes(answer[..4].try_into().unwrap()) != 32 {
+                return Err(denied("the handshake answer is not 32 bytes"));
+            }
+        }
+        if !equal(&answer[4..], &mac(&key, &[AUTH, &challenge])) {
             return Err(denied("the peer does not hold the run key"));
         }
+        stream.set_read_timeout(None)?;
+        stream.set_write_timeout(None)?;
         Ok(Self {
             stream,
             key,
@@ -94,7 +132,9 @@ impl<S: Read + Write> Channel<S> {
             received: 0,
         })
     }
+}
 
+impl<S: Read + Write> Channel<S> {
     /// The connecting side: answers the server's challenge.
     pub fn client(mut stream: S, key: Key) -> io::Result<Self> {
         let c = read_frame(&mut stream, MAX_CONTROL_FRAME)?;
@@ -160,7 +200,9 @@ impl<S: Read + Write> Channel<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{TcpListener, TcpStream};
+    use std::net::TcpListener;
+
+    const LIMIT: Duration = Duration::from_secs(5);
 
     fn pair(
         server_key: Key,
@@ -171,7 +213,8 @@ mod tests {
     ) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
-        let t = std::thread::spawn(move || Channel::server(l.accept().unwrap().0, server_key));
+        let t =
+            std::thread::spawn(move || Channel::server(l.accept().unwrap().0, server_key, LIMIT));
         let c = Channel::client(TcpStream::connect(addr).unwrap(), client_key);
         (t.join().unwrap(), c)
     }
@@ -223,14 +266,42 @@ mod tests {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
         let t = std::thread::spawn(move || {
-            Channel::server(l.accept().unwrap().0, [5; 32])
+            Channel::server(l.accept().unwrap().0, [5; 32], LIMIT)
                 .err()
                 .unwrap()
         });
         let mut s = TcpStream::connect(addr).unwrap();
         read_frame(&mut s, MAX_CONTROL_FRAME).unwrap();
         s.write_all(&(MAX_DATA_FRAME as u32).to_le_bytes()).unwrap();
-        assert_eq!(t.join().unwrap().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(t.join().unwrap().kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn a_slow_drip_peer_times_out_within_the_deadline() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let limit = Duration::from_millis(600);
+        let t = std::thread::spawn(move || {
+            let s = l.accept().unwrap().0;
+            let start = Instant::now();
+            (
+                Channel::server(s, [6; 32], limit).err().unwrap(),
+                start.elapsed(),
+            )
+        });
+        let mut s = TcpStream::connect(addr).unwrap();
+        read_frame(&mut s, MAX_CONTROL_FRAME).unwrap();
+        // A valid length, then one byte every 100 ms: each read succeeds, only the total deadline stops it.
+        s.write_all(&32u32.to_le_bytes()).unwrap();
+        for _ in 0..30 {
+            if s.write_all(&[0]).is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let (err, took) = t.join().unwrap();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(took < Duration::from_millis(1500), "took {took:?}");
     }
 
     #[test]

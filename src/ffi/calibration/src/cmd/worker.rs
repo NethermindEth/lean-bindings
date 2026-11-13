@@ -24,10 +24,13 @@ use std::time::{Duration, Instant};
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-/// Connections served at once: the coordinator's and one per peer fetching, with room to spare.
-const MAX_CONNECTIONS: usize = 64;
-/// An unauthenticated connection gets this long to answer the challenge.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Authenticated connections served at once: the coordinator's and one per peer fetching, with room to spare.
+const MAX_AUTHENTICATED: usize = 64;
+/// Connections still in the handshake. Kept small and separate, so unauthenticated peers cannot take the
+/// coordinator's room.
+const MAX_HANDSHAKING: usize = 8;
+/// The whole handshake, not each read, must finish within this.
+const HANDSHAKE_LIMIT: Duration = Duration::from_secs(5);
 
 /// Finished proofs by node id: the proof's wire bytes and its encoded claims.
 type Store = Arc<Mutex<HashMap<u64, Arc<(Vec<u8>, Vec<u8>)>>>>;
@@ -38,7 +41,8 @@ struct Worker {
     peers: RwLock<Vec<String>>,
     store: Store,
     prover: Mutex<()>,
-    connections: AtomicUsize,
+    handshaking: AtomicUsize,
+    authenticated: AtomicUsize,
 }
 
 fn fetch(key: Key, addr: &str, id: u64) -> io::Result<(Vec<u8>, Vec<u8>)> {
@@ -150,11 +154,23 @@ impl Worker {
         done
     }
 
+    /// Authenticates a connection (it holds a handshake slot until here), then serves it in an authenticated slot.
     fn serve(self: Arc<Self>, s: TcpStream) -> io::Result<()> {
-        s.set_nodelay(true)?;
-        s.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
-        let mut c = Channel::server(s, self.key)?;
-        c.get_ref().set_read_timeout(None)?;
+        let handshake = s
+            .set_nodelay(true)
+            .and_then(|_| Channel::server(s, self.key, HANDSHAKE_LIMIT));
+        self.handshaking.fetch_sub(1, Ordering::SeqCst);
+        let c = handshake?;
+        if self.authenticated.fetch_add(1, Ordering::SeqCst) >= MAX_AUTHENTICATED {
+            self.authenticated.fetch_sub(1, Ordering::SeqCst);
+            return Err(io::Error::other("too many connections"));
+        }
+        let result = self.clone().session(c);
+        self.authenticated.fetch_sub(1, Ordering::SeqCst);
+        result
+    }
+
+    fn session(self: Arc<Self>, mut c: Channel<TcpStream>) -> io::Result<()> {
         loop {
             let frame = match c.recv() {
                 Ok(f) => f,
@@ -246,20 +262,20 @@ fn main() {
         peers: RwLock::new(vec![]),
         store: Store::default(),
         prover: Mutex::new(()),
-        connections: AtomicUsize::new(0),
+        handshaking: AtomicUsize::new(0),
+        authenticated: AtomicUsize::new(0),
     });
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
-        if worker.connections.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
-            worker.connections.fetch_sub(1, Ordering::SeqCst);
+        if worker.handshaking.fetch_add(1, Ordering::SeqCst) >= MAX_HANDSHAKING {
+            worker.handshaking.fetch_sub(1, Ordering::SeqCst);
             continue;
         }
         let w = worker.clone();
         std::thread::spawn(move || {
-            if let Err(e) = w.clone().serve(stream) {
+            if let Err(e) = w.serve(stream) {
                 eprintln!("connection closed: {e}");
             }
-            w.connections.fetch_sub(1, Ordering::SeqCst);
         });
     }
 }
