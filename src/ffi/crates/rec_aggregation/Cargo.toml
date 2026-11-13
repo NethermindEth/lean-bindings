@@ -29,4 +29,6 @@ signers-cache = ["signatures/mock", "dep:rand"]
 
 [dev-dependencies]
 signatures = { workspace = true, features = ["mock"] }
+leanvm_core = { workspace = true, features = ["forge"] }
+verifier = { workspace = true, features = ["forge"] }
 rand.workspace = true

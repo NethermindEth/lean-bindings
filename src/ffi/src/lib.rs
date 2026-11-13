@@ -180,7 +180,7 @@ pub const ANY_INPUT_PROGRAM: &str = "def main():\n    h = StackBuf(2)\n    hint_
 /// leanSTARK witness and verification key of the dependency `(hash, key)`. For tests and fixtures.
 pub fn prove_stark(source: &str, hash: &[u8; 32]) -> Result<(Vec<u8>, [u8; 32]), ()> {
     let _guard = begin_proof();
-    let mut program = lean_compiler::compile(&lean_compiler::parse(source).map_err(|_| ())?);
+    let mut program = lean_compiler::compile(&lean_compiler::parse(source).map_err(|_| ())?).committed();
     let table: Vec<u64> = leanvm_core::cpu::bytecode_table(program.prog())
         .iter()
         .map(|word| word.0)

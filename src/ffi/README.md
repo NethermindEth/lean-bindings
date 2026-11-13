@@ -1,7 +1,9 @@
 # EIP-8288 native Lean integration
 
-This adapter proves on unmodified [leanEthereum/leanVM](https://github.com/leanEthereum/leanVM), pinned to
-`e4dcb8d5436c9bf76398d890c57c59613af12956` in `Cargo.toml`; `Cargo.lock` pins every other dependency. The EIP-8288
+This adapter proves on [leanEthereum/leanVM](https://github.com/leanEthereum/leanVM), pinned to
+`e4dcb8d5436c9bf76398d890c57c59613af12956` in `Cargo.toml`; `Cargo.lock` pins every other dependency. Until the
+committed bytecode key's core changes are upstream, a `[patch]` in `Cargo.toml` takes the core from those changes on
+top of the pin ([Marchhill/leanVM `feature/eip8288-bytecode-commitment`](https://github.com/Marchhill/leanVM/tree/feature/eip8288-bytecode-commitment)). The EIP-8288
 recursive guest and NiceTry v2 signatures live in `crates/`, vendored from the same revision with EIP-8288 changes on
 top (see `crates/README.md`). The guest verifies leanSPHINCS (NiceTry v2) signatures, generic leanVM execution proofs
 and its own child proofs. Upstream replacement belongs behind the existing `ILeanProofVerifier` interface and thin C
@@ -82,10 +84,13 @@ resolved dependency.
 * **SPHINCS witness:** public key (32 bytes), signature (6176 bytes). As in EIP-8288, the
   dependency key is the public key itself, root then public parameter. Both the key and the
   signature over `data_hash` are checked.
-* **leanSTARK witness (`0x11`, a deviation, see below):** `kgen` (one byte, at most 11), the program's stacked
-  bytecode table (`16 · 2^kgen` little-endian u64 words, zero padding included, as upstream's `bytecode_table`), then
-  the upstream execution proof (`Proof::to_bytes`). The dependency key is upstream's program digest and Fiat-Shamir
-  IV, `keccak256("leanvm-v1" || table)`, so the key binds the program before the proof's first challenge.
+* **leanSTARK witness (`0x11`, a deviation, see below):** `kgen` (one byte, at most 11), `root` (32 bytes), `ood`
+  (32 bytes), then the execution proof (`Proof::to_bytes`) of the committed program. `root` is the WHIR commitment to
+  the program's stacked bytecode table (`16 · 2^kgen` words, as upstream's `bytecode_table`) zero-padded to `2^16`
+  words at rate 1/16, and `ood` the table's value at an out-of-domain point drawn from `root`, as two 16-byte cells.
+  The dependency key is the program's Fiat-Shamir IV, `keccak256("leanvm-commit-1" || kgen || root || ood)`, so the
+  key binds one program before the proof's first challenge. The proof sends the table's value at the bus's point and
+  opens `root` there and at the out-of-domain point, so verifying it costs the same whatever the program's size.
   `data_hash` is the program's 32-byte public input, packed into two 128-bit field cells. At most 2048 instructions.
 * **aggregation input:** direct count then `(96-byte dependency, witness blob)` pairs;
   child count then `(dependency count/triples, proof blob)` pairs; discard count/triples.

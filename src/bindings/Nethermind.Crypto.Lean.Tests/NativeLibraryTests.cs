@@ -14,7 +14,7 @@ public partial class NativeLibraryTests
 {
     private const string Library = "nethermind_lean";
     private const uint ExpectedAbi = 12;
-    private const string ExpectedAggregatedVk = "f7cf74585d02043051f0575c23c6b441b0b08ac9e273f5e989c5984b8a4ac0e5";
+    private const string ExpectedAggregatedVk = "2ffa40c84653a16f1ddbe63e2bdc7586072f50d32e872f40a3029d02b46be01e";
     // Proof bytes, dependencies, recursive children, NiceTry v2 witness bytes, aggregation input bytes, leanSTARK claims
     // per list, leanSTARK instructions.
     private static readonly uint[] ExpectedLimits = [8 * 1024 * 1024, 256, 16, 32 + 6176, 18 * 1024 * 1024, 16, 2048];

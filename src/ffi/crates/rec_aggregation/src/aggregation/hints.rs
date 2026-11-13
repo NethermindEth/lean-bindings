@@ -28,6 +28,8 @@ thread_local! {
     /// An honest leanSTARK `(data_hash, witness)` whose proof the next nodes' leanSTARK sub-proof hints
     /// come from, whatever claim and witness they are handed: how a test shows the guest a false claim.
     pub(super) static HONEST_GENERIC: std::cell::RefCell<Option<([u8; 32], Vec<u8>)>> = const { std::cell::RefCell::new(None) };
+    /// The IV a forged leanSTARK proof was made under: its hints are replayed under it, unchecked.
+    pub(super) static FORGED_IV: std::cell::Cell<Option<[u8; 32]>> = const { std::cell::Cell::new(None) };
 }
 
 /// One `hint_witness` stream: a name and its entries, in the order the guest
@@ -48,6 +50,15 @@ impl Hints {
     pub(super) fn entry_mut(&mut self, name: &str, i: usize) -> &mut Vec<F192> {
         let (_, entries) = self.0.iter_mut().find(|(n, _)| n == name).expect("a hinted stream");
         &mut entries[i]
+    }
+
+    /// How many entries stream `name` holds, for a test to forge the last.
+    #[cfg(test)]
+    pub(super) fn len(&self, name: &str) -> usize {
+        self.0
+            .iter()
+            .find(|(n, _)| n == name)
+            .map_or(0, |(_, entries)| entries.len())
     }
 
     pub(super) fn install(self, guest: &mut Program) {

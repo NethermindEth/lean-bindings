@@ -3,7 +3,8 @@
 `rec_aggregation` and `signatures` derive from [leanEthereum/leanVM](https://github.com/leanEthereum/leanVM) at
 `e4dcb8d5436c9bf76398d890c57c59613af12956`, the revision `../Cargo.toml` pins for every other leanVM crate. Upstream
 licenses them under MIT or Apache-2.0 (each crate's `LICENSE-MIT`, `LICENSE-APACHE`). The core (`leanvm_core`, `verifier`,
-`lean_compiler`, `fiat_shamir`, `pcs`, `primitives`) stays an unmodified git dependency.
+`lean_compiler`, `fiat_shamir`, `pcs`, `primitives`) stays a git dependency at that revision, patched in `../Cargo.toml`
+to the committed bytecode key's core changes on top of it until they are upstream.
 
 Changes against upstream, all EIP-8288 specific:
 
@@ -11,7 +12,8 @@ Changes against upstream, all EIP-8288 specific:
   copy drops leanXMSS; test-only mock signers come from the upstream crate.
 - `rec_aggregation`: the aggregation guest (`guests/lean_ethereum.py`) commits to the EIP-8288 dependency digest with
   Keccak-256, verifies NiceTry v2 signatures (scheme `0x10`) and leanVM execution proofs of programs up to 2^11
-  instructions (scheme `0x11`, `src/aggregation/generic.rs`), and merges or discards child aggregates.
+  instructions (scheme `0x11`, `src/aggregation/generic.rs`) under a committed bytecode key, and merges or discards
+  child aggregates.
 
 `crates/upstream.sh diff` prints every change against upstream at the pinned revision; `crates/upstream.sh update <rev>`
 moves the crates and the pin to a newer upstream revision by three-way merge and lists what needs review. After an
