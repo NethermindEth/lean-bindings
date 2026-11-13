@@ -14,7 +14,8 @@ Changes against upstream, all EIP-8288 specific:
   instructions as EIP-8288 batch leaves (scheme `0x11`, `src/aggregation/generic.rs`), and merges or discards child
   aggregates. It compiles as two guests (`Guest`): EIP-8288's, with one-claim leaves, and one adding ethereum/EIPs#12664
   batch pricing, with leaves of up to 256 claims that also establish sponsored batch claims (`0x12`) bound to their leaf
-  payment (`0x13`), and finalization.
+  payment (`0x13`), and finalization. [`rec_aggregation/guests/BATCH_PRICING.md`](rec_aggregation/guests/BATCH_PRICING.md)
+  describes what the guest decides that the EIPs leave to the proof system.
 
 `crates/upstream.sh diff` prints every change against upstream at the pinned revision; `crates/upstream.sh update <rev>`
 moves the crates and the pin to a newer upstream revision by three-way merge and lists what needs review. After an
