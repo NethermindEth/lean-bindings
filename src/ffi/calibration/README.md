@@ -42,9 +42,16 @@ python3 -m unittest discover -s tests          # calibration maths, EVM import
 (cd .. && cargo test --release -p gas-calibration)   # scheduler, protocol, encodings
 ```
 
-`ci/run-calibration.sh --scenarios smoke|reference|CONFIG --out DIR` sizes local workers to the machine (or runs
-inside `rust:1.99.0-bookworm` with `--docker`), records the hardware and runs the calibration under a timeout; the
-partial report survives a timeout.
+`ci/run-calibration.sh --scenarios NAME[,NAME...] --out DIR` (names: `smoke`, `reference`, `box-committed`,
+`box-flat`, or a config path) sizes local workers to the machine (a config's `local_workers`, threads and memory split
+between them), records the hardware and runs each scenario into `DIR/NAME` under a shared timeout; partial reports
+survive it. `--docker IMAGE` runs inside a container that is removed afterwards, `--arch` refuses another
+architecture, and `--yield-to-manual-runs OWNER/REPO --runner-label LABEL` exits without running while a manual
+benchmark run is waiting for that runner (`ci/manual_runs.py`).
+
+Each cell and block first waits for a quiet machine (`quiet.max_load1`, no competing build or test process), logging
+while it waits. A block still measured under load after `quiet.timeout_s` is proved once more; if it is unquiet again it
+is reported as not counted, so it neither drives the recalibration nor passes.
 
 ## Configuration
 
@@ -107,10 +114,15 @@ linearly and labelled extrapolated.
 ## Running on Nethermind's benchmark boxes
 
 The `reproducible-benchmarks` runners are registered to NethermindEth/nethermind. Today a run uses a push-triggered
-vehicle branch there (`test/eip8288-gas-calibration`, never merged): its workflow reads `.github/eip8288-calibration.env`
-(`ARCH`, `LEAN_BINDINGS_REF`, `SCENARIOS`, `TIMEOUT_MINUTES`), yields if a manual benchmark run is waiting, checks
-out this repository at `LEAN_BINDINGS_REF` and calls `ci/run-calibration.sh --docker`. To re-run, edit that file and
-push. Two permanent homes would remove the vehicle:
+vehicle branch there (`test/eip8288-gas-calibration`, never merged, no PR): its workflow
+`.github/workflows/eip8288-gas-calibration.yml` reads `.github/eip8288-calibration.env` (`ARCHES`,
+`LEAN_BINDINGS_REF`, `SCENARIOS`, `TIMEOUT_MINUTES`), clones this repository at `LEAN_BINDINGS_REF` into the runner's
+temporary directory and calls `ci/run-calibration.sh --docker` with `--yield-to-manual-runs`, uploads
+`eip8288-calibration-<arch>` and removes the directory and any container. Only manual `workflow_dispatch` runs of
+`run-expb-reproducible-benchmarks.yml` and `run-rpc-benchmarks.yml` make it yield; automated runs queue as usual.
+To re-run, recreate the branch from `master` with those two files, edit the inputs and push over SSH (the workflow
+file needs a token with the `workflow` scope); delete the branch once the artifacts are downloaded. Two permanent
+homes would remove the vehicle:
 
 1. A `workflow_dispatch` / `workflow_call` workflow on nethermind `master`, in the `run-*-benchmarks` pattern, with the
    same four inputs.

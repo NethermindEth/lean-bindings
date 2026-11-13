@@ -1,0 +1,45 @@
+{
+  "label": "box, flat key: two workers (multi-worker makespan and transfers)",
+  "key": "flat",
+  "lib_ref": ".",
+  "local_workers": 2,
+  "batch_lib_ref": "origin/feature/eip8288-batch-leaves",
+  "gas_limits": [
+    60000000
+  ],
+  "builder_budget_s": 6.0,
+  "validator_budget_s": 3.0,
+  "margin": 1.5,
+  "fanin": 4,
+  "sigs_per_node": 64,
+  "bounds": {
+    "code_log": 11,
+    "trace_log": 30,
+    "inner_log_inv_rate": 1,
+    "claims": 256,
+    "max_inner_proofs_per_step": 16
+  },
+  "preflight": {
+    "mode": "scale",
+    "usable_fraction": 0.8
+  },
+  "reps": 3,
+  "max_iterations": 2,
+  "evm_fraction": 0.5,
+  "tx": {
+    "signature_gas": 4040,
+    "frames_per_tx": 1
+  },
+  "quiet": {
+    "max_load1": 4,
+    "timeout_s": 600
+  },
+  "workers": {
+    "mode": "local",
+    "count": 2,
+    "base_port": 47100
+  },
+  "threads_per_worker": 8,
+  "reference_workers": 2,
+  "memory_per_worker_gb": 24
+}

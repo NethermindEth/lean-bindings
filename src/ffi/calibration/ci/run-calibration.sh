@@ -4,22 +4,33 @@
 #
 # One entry point for any runner: records the hardware, sizes the run to it and runs the calibration.
 #
-#   run-calibration.sh --scenarios smoke|reference|CONFIG.json --out DIR [--timeout-minutes N]
+#   run-calibration.sh --scenarios NAME[,NAME...] --out DIR [--timeout-minutes N] [--arch amd64|arm64]
+#                      [--lean-bindings-ref REF] [--yield-to-manual-runs OWNER/REPO --runner-label LABEL]
 #                      [--workers W] [--threads T] [--memory-per-worker-gb M] [--docker IMAGE]
 #
-# `smoke` and `reference` are configs/smoke-m2max.json and configs/reference.example.json; a path selects any other.
-# Workers default to local processes sized to the machine: T = min(11, cores), W = max(1, cores / T), memory per worker
-# = 80% of available memory / W. With --docker (or without cargo), the run happens inside IMAGE (default
+# A NAME is `smoke` (configs/smoke-m2max.json), `reference` (configs/reference.example.json), `box-committed` or
+# `box-flat` (configs/box-*.json), or a path to any config. Several scenarios run in order, each into DIR/NAME, and
+# share the timeout: each gets the remaining time divided by the scenarios left. Workers default to local processes
+# sized to the machine: a config's `local_workers` (default max(1, cores / min(11, cores))), T = cores / W, memory per
+# worker = 80% of available memory / W. With --docker (or without cargo), the run happens inside IMAGE (default
 # rust:1.99.0-bookworm) with this checkout mounted, and the container is removed afterwards.
+#
+# --arch refuses to run on another architecture. --yield-to-manual-runs exits 0 without running when a manual
+# (workflow_dispatch) run of the repository's benchmark workflows is waiting for, or running on, LABEL; it reads
+# GH_TOKEN. --lean-bindings-ref is recorded with the hardware; the caller checks that revision out.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
-scenarios=smoke out= timeout_min=170 workers= threads= mem= docker=
+scenarios=smoke out= timeout_min=170 workers= threads= mem= docker= arch= lb_ref= yield_repo= runner_label=
 while [ $# -gt 0 ]; do
   case $1 in
     --scenarios) scenarios=$2; shift 2 ;;
     --out) out=$2; shift 2 ;;
     --timeout-minutes) timeout_min=$2; shift 2 ;;
+    --arch) arch=$2; shift 2 ;;
+    --lean-bindings-ref) lb_ref=$2; shift 2 ;;
+    --yield-to-manual-runs) yield_repo=$2; shift 2 ;;
+    --runner-label) runner_label=$2; shift 2 ;;
     --workers) workers=$2; shift 2 ;;
     --threads) threads=$2; shift 2 ;;
     --memory-per-worker-gb) mem=$2; shift 2 ;;
@@ -31,15 +42,30 @@ done
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 
+if [ -n "$arch" ]; then
+  case $(uname -m) in x86_64|amd64) here_arch=amd64 ;; aarch64|arm64) here_arch=arm64 ;; *) here_arch=$(uname -m) ;; esac
+  [ "$here_arch" = "$arch" ] || { echo "expected $arch, running on $here_arch" >&2; exit 3; }
+fi
+
+if [ -n "$yield_repo" ]; then
+  if ! python3 "$here/ci/manual_runs.py" "$yield_repo" "${runner_label:?--runner-label is required}"; then
+    echo "a manual benchmark run is waiting for or using $runner_label: yielding without running"
+    exit 0
+  fi
+fi
+
 if [ -n "$docker" ] || ! command -v cargo >/dev/null; then
   image=${docker:-rust:1.99.0-bookworm}
   repo=$(cd "$here/../../.." && pwd)
   name="lean-calibration-$$"
   trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
-  docker run --rm --name "$name" -v "$repo":/repo -v "$out":/out -w /repo/src/ffi/calibration \
+  # The library and cargo caches live under the mounted output so nothing outlives the caller's directory.
+  docker run --rm --name "$name" --label lean-calibration=1 -v "$repo":/repo -v "$out":/out \
+    -w /repo/src/ffi/calibration -e HOME=/out/.home -e CARGO_HOME=/usr/local/cargo \
     -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" "$image" bash -c \
-    "apt-get update -qq >/dev/null && apt-get install -y -qq python3 >/dev/null; \
+    "apt-get update -qq >/dev/null && apt-get install -y -qq python3 procps >/dev/null; \
      ci/run-calibration.sh --scenarios '$scenarios' --out /out --timeout-minutes $timeout_min \
+       ${lb_ref:+--lean-bindings-ref '$lb_ref'} \
        ${workers:+--workers $workers} ${threads:+--threads $threads} ${mem:+--memory-per-worker-gb $mem}; \
      rc=\$?; chown -R \$HOST_UID:\$HOST_GID /out /repo/src/ffi/target 2>/dev/null; exit \$rc"
   exit $?
@@ -53,24 +79,37 @@ fi
   echo "== load"; (cat /proc/loadavg 2>/dev/null || sysctl -n vm.loadavg)
   echo "== rustc"; rustc -vV
   echo "== suite"; git -c safe.directory="$(cd "$here/../../.." && pwd)" -C "$here" rev-parse HEAD 2>/dev/null || true
+  echo "== lean-bindings ref"; echo "${lb_ref:-unspecified}"
 } > "$out/host.txt" 2>&1
 cat "$out/host.txt"
 
-case $scenarios in
-  smoke) config=$here/configs/smoke-m2max.json ;;
-  reference) config=$here/configs/reference.example.json ;;
-  *) config=$scenarios ;;
-esac
-
 cores=$(nproc 2>/dev/null || sysctl -n hw.ncpu)
-threads=${threads:-$(( cores < 11 ? cores : 11 ))}
-workers=${workers:-$(( cores / threads > 0 ? cores / threads : 1 ))}
-if [ -z "$mem" ]; then
-  avail_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
-  [ "$avail_kb" -gt 0 ] && mem=$(( avail_kb * 8 / 10 / 1048576 / workers )) || mem=8
-fi
-echo "sized: $workers local workers x $threads threads, $mem GB each"
-
-timeout --signal=TERM "$(( timeout_min * 60 ))" python3 "$here/calib.py" run --config "$config" --out "$out" \
-  --set "workers={\"mode\":\"local\",\"count\":$workers,\"base_port\":47100}" --set "threads_per_worker=$threads" \
-  --set "reference_workers=$workers" --set "memory_per_worker_gb=$mem"
+deadline=$(( $(date +%s) + timeout_min * 60 ))
+IFS=, read -r -a names <<< "$scenarios"
+rc=0
+for i in "${!names[@]}"; do
+  name=${names[$i]}
+  case $name in
+    smoke) config=$here/configs/smoke-m2max.json ;;
+    reference) config=$here/configs/reference.example.json ;;
+    box-*) config=$here/configs/$name.json ;;
+    *) config=$name; name=$(basename "$name" .json) ;;
+  esac
+  left=$(( (deadline - $(date +%s)) / (${#names[@]} - i) ))
+  [ "$left" -gt 60 ] || { echo "no time left for $name" >&2; rc=124; continue; }
+  w=${workers:-$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("local_workers", 0))' "$config")}
+  [ "$w" -gt 0 ] || { t=$(( cores < 11 ? cores : 11 )); w=$(( cores / t > 0 ? cores / t : 1 )); }
+  t=${threads:-$(( cores / w > 0 ? cores / w : 1 ))}
+  m=$mem
+  if [ -z "$m" ]; then
+    avail_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    [ "$avail_kb" -gt 0 ] && m=$(( avail_kb * 8 / 10 / 1048576 / w )) || m=8
+  fi
+  echo "== $name: $w local workers x $t threads, $m GB each, $(( left / 60 )) min"
+  mkdir -p "$out/$name"
+  timeout --signal=TERM "$left" python3 "$here/calib.py" run --config "$config" --out "$out/$name" \
+    --set "workers={\"mode\":\"local\",\"count\":$w,\"base_port\":47100}" --set "threads_per_worker=$t" \
+    --set "reference_workers=$w" --set "memory_per_worker_gb=$m" || rc=$?
+  pkill -f "$out/$name/bin/" 2>/dev/null || true
+done
+exit $rc
