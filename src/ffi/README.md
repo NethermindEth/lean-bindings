@@ -31,12 +31,14 @@ fails if the backend is unavailable. Verification fails closed; proving requires
 
 `cargo run --release --locked --example fixtures -- <directory>`, run from `src/ffi`, produces genuine test
 signatures and proofs and prints the pinned recursive verification key; `fixtures --sign-message <hex> <file>` signs
-one message, and `fixtures --prove-stark <hex> <file>` proves a leanSTARK dependency on it. **Build Lean** packages the vectors,
+one message, and `fixtures --prove-stark <hex> <file>` proves a leanSTARK dependency on it, the singleton batch leaf
+`[hex]`. `cargo run --release --locked --example batch_leaves [n]` proves an `n`-claim batch leaf with the
+`examples/batch_leaves/batch.py` template and aggregates it. **Build Lean** packages the vectors,
 this tool and the `lean_startup_stub` example as opt-in test assets of `Nethermind.Crypto.Lean`.
 
-The C ABI is version 12, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
-`nlean_limits` writes seven u32 values (proof bytes, dependencies, recursive children,
-SPHINCS witness bytes, aggregation input bytes, leanSTARK claims per list, leanSTARK instructions); startup checks these against the managed protocol
+The C ABI is version 13, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
+`nlean_limits` writes seven u32 values (proof bytes, dependencies, inner proofs per step,
+SPHINCS witness bytes, aggregation input bytes, claims per batch leaf, leanSTARK instructions); startup checks these against the managed protocol
 bounds before accepting work.
 Verification/proving return 1 on success, 0 on failure and -1 for a contained panic. After -1, `nlean_last_error(out, len)` on the same
 thread copies up to `len` bytes of the panic message and returns its full length. Callers initialize proof output
@@ -53,7 +55,9 @@ All framing integers are unsigned 32-bit little-endian. The native backend bound
 individual witnesses to 8 MiB and aggregation input to 18 MiB; managed callers first apply
 the local 1.25 MiB pinned-prover bound (`Eip8288Constants.MaxAggregateProofBytes`, not an EIP-8288
 constant) to every aggregate proof. This is an input-buffer limit, not a process memory bound.
-Dependency lists are bounded to 256 and recursive children to 16. This format and the
+Dependency lists are bounded to 256, of either scheme. Direct leanSTARK witnesses (singleton leaves), batch leaves
+and recursive children together are bounded to EIP-8288's `MAX_INNER_PROOFS_PER_STEP` (16) per call, discarded and
+redundant ones included; leanSPHINCS witnesses do not count. This format and the
 pinned key are prototype protocol choices, pending finalized EIP-8288 encodings.
 
 The serialized mixed guest proof is the whole `stark_proof`; an empty dependency list has an
@@ -85,10 +89,19 @@ resolved dependency.
 * **leanSTARK witness (`0x11`, a deviation, see below):** `kgen` (one byte, at most 11), the program's stacked
   bytecode table (`16 · 2^kgen` little-endian u64 words, zero padding included, as upstream's `bytecode_table`), then
   the upstream execution proof (`Proof::to_bytes`). The dependency key is upstream's program digest and Fiat-Shamir
-  IV, `keccak256("leanvm-v1" || table)`, so the key binds the program before the proof's first challenge.
-  `data_hash` is the program's 32-byte public input, packed into two 128-bit field cells. At most 2048 instructions.
+  IV, `keccak256("leanvm-v1" || table)`, so the key binds the program before the proof's first challenge, as EIP-8288
+  batch leaves (EIPs#12654) require of the key. The program's 32-byte public input, packed into two 128-bit field
+  cells, is the singleton statement `get_batch_hash([data_hash])`. At most 2048 instructions, counting the padded
+  table. These bounds apply to every leaf, at direct admission and in aggregation, even when all its claims are
+  discarded.
 * **aggregation input:** direct count then `(96-byte dependency, witness blob)` pairs;
-  child count then `(dependency count/triples, proof blob)` pairs; discard count/triples.
+  child count then `(dependency count/triples, proof blob)` pairs; discard count/triples; then, only when nonempty,
+  batch-leaf count then `(32-byte key, claim count, 32-byte claims, leanSTARK witness blob)` entries.
+* **batch leaf:** a leanSTARK witness whose public input is
+  `get_batch_hash(claims) = keccak256(b"EIP8288:batch:v1" || claims)` over 1 to `MAX_CLAIMS_PER_BATCH_LEAF` (16, a
+  guest constant bound to `AGGREGATED_VK`) claims, strictly increasing in byte-lexicographic order: the host and the
+  guest check the order, the leaf program need not. Each claim yields `(0x11, claim, key)`. Leaves are private
+  aggregation inputs; mode-0 wrappers carry singleton proofs.
 * **aggregate:** the EIP-8288 `stark_proof`, one mixed guest proof without dependencies
   or raw witnesses. It verifies against `deps_hash` and `AGGREGATED_VK`
   alone; a child's dependencies come from the aggregation input. Proving an empty list
@@ -120,15 +133,12 @@ EIP, with the pinned guest's generic leanVM CPU proof as its leanSTARK profile:
 * Frames, wrappers and inclusion-list `proof_deps` accept `0x11`, charged
   `LEANSTARK_VERIFICATION_GAS`; any other scheme is rejected as before.
 * The guest checks every entry of the selected list and of each child list, discarded entries
-  included, against its run, and holds at most 16 leanSTARK entries per list. Like the
-  256-dependency bound it is part of the circuit's dependency-list limit: the builder never sends a
-  statement over it to the prover, a received mode-1 wrapper over it is invalid and an
-  inclusion-list proof over it imposes no obligation, both without penalty or verification.
+  included, against its run. Both schemes share the 256-dependency list bound; there is no separate leanSTARK cap.
 
-Startup checks ABI 12, the pinned key and the seven bounds together. New devnets require fresh
+Startup checks ABI 13, the pinned key and the seven bounds together. New devnets require fresh
 chain and database namespaces.
 
-The latest companion specification has no block dependency quota: blocks are bounded by gas, mode-0 wrappers by `MAX_LEANSIG_DEPS_PER_WRAPPER`, `MAX_LEANSTARK_DEPS_PER_WRAPPER` and `MAX_WRAPPER_BYTES`, and mode-1 wrappers by `MAX_WRAPPER_BYTES` and the dependency-list limit of the circuit behind `AGGREGATED_VK`, which EIP-8288 fixes from benchmarks before activation. This prototype guest's limit is 256 dependencies, at most 16 of them leanSTARK; a received mode-1 wrapper over it is invalid and discarded before verification, without penalizing its sender. Blocks have no such limit in the draft, so this key cannot prove every block the draft permits and this prototype is not full-capacity conformance. Raising the bound changes the guest and so `AGGREGATED_VK`. Local inability to prove or retain a set is not an inclusion-list omission excuse. Full activation requires a verifier and proof format supporting every set the fork's gas rules permit, with the complete construction, including recursive merges and discards, benchmarked against the slot deadline.
+The latest companion specification has no block dependency quota: blocks are bounded by gas, mode-0 wrappers by `MAX_LEANSIG_DEPS_PER_WRAPPER`, `MAX_LEANSTARK_DEPS_PER_WRAPPER` and `MAX_WRAPPER_BYTES`, and mode-1 wrappers by `MAX_WRAPPER_BYTES` and the dependency-list limit of the circuit behind `AGGREGATED_VK`, which EIP-8288 fixes from benchmarks before activation. This prototype guest's limit is 256 dependencies; a received mode-1 wrapper over it is invalid and discarded before verification, without penalizing its sender. Blocks have no such limit in the draft, so this key cannot prove every block the draft permits and this prototype is not full-capacity conformance. Raising the bound changes the guest and so `AGGREGATED_VK`. Local inability to prove or retain a set is not an inclusion-list omission excuse. Full activation requires a verifier and proof format supporting every set the fork's gas rules permit, with the complete construction, including recursive merges and discards, benchmarked against the slot deadline.
 
 ## Proving resources
 
