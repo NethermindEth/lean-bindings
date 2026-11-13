@@ -30,7 +30,55 @@ library or the package: a workspace member so CI keeps it compiling, with no dep
    path, total work, depth, transfers and per-worker peak memory are compared with the budgets. If a block misses, the
    rate is raised by the measured overshoot and the blocks are proved again (`max_iterations`).
 7. **Report.** `calibration.json` and `report.md`, every figure labelled measured, imported, extrapolated, modelled or
-   configured, with the requirement checklist and what remained unmeasured.
+   configured, in the methodology's sections (see below), with what remained uncovered.
+
+## Methodology coverage
+
+`report.md` follows the headings of EIP-8288's benchmark methodology (ethereum/EIPs#12654,
+`assets/eip-8288/benchmarks.md`): Configuration, Workloads, Measurements, Calibration, then what the run did not
+cover. Items from the batching supplement (ethereum/EIPs#12664, `assets/eip-draft_batched_dependency_pricing/benchmarks.md`)
+are marked #12664. Each section ends with a table of its items and what the run did for each.
+
+| methodology item | covered by |
+|---|---|
+| **Configuration** | |
+| Prover/verifier revisions and configurations, commitment construction | `lib_ref`, `batch_lib_ref`, `key`; builds record SHA and detected features |
+| Gas schedule, gas limit | `gas_limits`; derived constants per iteration |
+| Verifier resource bounds | `bounds` (program size `code_log`, trace `trace_log`, rate, claims, arity) |
+| Hardware, workers, threads and memory per worker, margins | `host` record and `host.txt`/`machine.txt`; `workers`, `threads_per_worker`, `memory_per_worker_gb`, `margin` |
+| Time and peak-memory budgets before calibration | `builder_budget_s`, `validator_budget_s`, `memory_per_worker_gb` |
+| **Workloads** | |
+| Maximum-resource leaf (support code, padding, authentication, openings) | corpus leaves sized by the preflight; `generic-leaf` cell |
+| #12664 claim count up to `MAX_CLAIMS_PER_BATCH_LEAF` | `bounds.claims`; `batch-leaf-r1`/`-r256` cells |
+| Full steps at the proposed arity, distinct keys, mixtures | `full-step-N`, `merge-*` cells; block trees mix leaves and recursive inputs |
+| Outer trace and proof-size bounds | per-cell committed log2 and proof bytes (reported, not checked against a fork limit) |
+| Gas-admissible blocks, complete transaction accounting | `calib/gasmath.py` (`tx`): native, generic, mixtures, EVM blocks |
+| One leaf per initial step, no shared-key savings | by construction in `plan_for` |
+| #12664 full leaves; one claim per maximum-resource leaf with payment | `batch_full`, `batch_one_claim`, `mix_native_batch` blocks |
+| #12664 source selection, payment lookup, pruning, finalization | batch blocks (`retain`, sources, `finalize`) |
+| **Measurements** | |
+| Makespan at W, critical path, inter-worker transfers | `calib-coord` per block: makespan, critical path, fetch time, bytes |
+| Authentication/recursion costs, total work, depth | per-node cycles and prove/fetch/decode time; block work and depth |
+| Per-worker and aggregate peak memory | per-worker peak RSS (aggregate = sum) |
+| Proof sizes, transmitted bytes | cell proof bytes; block input, transfer and root bytes |
+| Validator execution and verification | root verification time plus imported EVM time vs `validator_budget_s` |
+| #12664 claim hashing and payment binding through the tree, per-record vs amortized | `batch-leaf`, `mergebatch`, `finalize` cells at 1 and 256 claims (slopes = per record) |
+| Measured separated from modelled | every figure labelled |
+| **Calibration** | |
+| Native, generic, share and claim charges from the same budgets | `calib/gasmath.py` `derive` from measured marginals |
+| Re-prove the blocks with the proposed schedule; all must fit | iterations: verify, raise the rate on a miss (`max_iterations`) |
+| Calibration covers only measured limits and bounds | one calibration per entry in `gas_limits` |
+
+Not covered yet:
+
+- Inter-machine transfers: remote mode exists, but every run so far used local workers over loopback.
+- EVM execution on the calibration machine: EVM time is imported (expb, gas-benchmarks), not run alongside.
+- Jointly maximal table heights ("jointly valid combinations of all resource bounds"): the generator raises one
+  loop's trace; the other tables' maxima under the final verifier resource bounds are not defined.
+- Intended application verifiers fitting the resource bounds.
+- #12664 overlapping leaves, and the 192-byte intermediate records reported on their own (they are inside the
+  transferred bytes).
+- The batch guest under the committed key: no library revision has both.
 
 ## Run
 
