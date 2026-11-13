@@ -4,7 +4,6 @@ use super::deferred::{DeferredClaim, scalar_bytecode};
 use super::error::{AggregateVerifyError, SnarkVerifyError};
 use super::cells::cell_bytes;
 use super::guest::unified_guest;
-use super::generic::MAX_GENERIC_DEPENDENCIES;
 use super::statement::{deps_digest_cells, statement_digest, statement_digest_of};
 use fiat_shamir::merkle::hash_to_scalars;
 use super::{GenericClaim, LeanSphincsClaim};
@@ -26,7 +25,7 @@ use primitives::field::F192;
 /// committee threshold has to count distinct pubkeys itself.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EthereumClaims {
-    /// The leanSTARK (`0x11`) claims, at most [`MAX_GENERIC_DEPENDENCIES`].
+    /// The leanSTARK (`0x11`) claims.
     pub generic: Vec<GenericClaim>,
     pub lean_sphincs: Vec<LeanSphincsClaim>,
     /// `None` makes no blob claim. The statement carries its [`verifier::da::digest`].
@@ -85,7 +84,6 @@ pub(super) fn decode(bytes: &[u8]) -> Option<(Vec<F192>, &[u8])> {
 pub(super) fn check_signer_set(claims: &EthereumClaims) -> Result<(), AggregateVerifyError> {
     if !claims.generic.windows(2).all(|w| w[0] < w[1])
         || !claims.lean_sphincs.windows(2).all(|w| w[0] < w[1])
-        || claims.generic.len() > MAX_GENERIC_DEPENDENCIES
     {
         return Err(AggregateVerifyError::MalformedSignerSet);
     }

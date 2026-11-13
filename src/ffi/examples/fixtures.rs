@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Demerzel Solutions Limited
 // SPDX-License-Identifier: MIT
-use nethermind_lean::{ANY_INPUT_PROGRAM, aggregated_vk, keccak, prove_stark, verification_key};
+use nethermind_lean::{
+    ANY_INPUT_PROGRAM, aggregated_vk, batch_hash, keccak, prove_stark, verification_key,
+};
 use signatures::lean_sphincs::{key_gen_from_seed, sign};
 fn main() {
     let directory = std::env::args().nth(1).expect("fixture output directory");
@@ -14,9 +16,10 @@ fn main() {
         }
         let output = arguments.next().expect("witness output file");
         assert!(arguments.next().is_none(), "unexpected fixture arguments");
-        // `key ‖ witness`: a NiceTry v2 signature, or a leanSTARK proof of the accept-all program on the message.
+        // `key ‖ witness`: a NiceTry v2 signature, or a leanSTARK proof of the accept-all program on the message's
+        // singleton batch statement.
         let output_bytes = if directory == "--prove-stark" {
-            let (witness, key) = prove_stark(ANY_INPUT_PROGRAM, &message).unwrap();
+            let (witness, key) = prove_stark(ANY_INPUT_PROGRAM, &batch_hash(&[message])).unwrap();
             [&key[..], &witness[..]].concat()
         } else {
             let (sk, pk) = key_gen_from_seed([42; 32]);
@@ -57,11 +60,22 @@ fn main() {
         multi_keys.extend_from_slice(&sign(&sk, &message).unwrap().to_bytes());
     }
     save("sphincs-multi-keys.bin", &multi_keys);
-    let public_input = [9; 32];
-    let (witness, key) = prove_stark(ANY_INPUT_PROGRAM, &public_input).unwrap();
+    let data_hash = [9; 32];
+    let (witness, key) = prove_stark(ANY_INPUT_PROGRAM, &batch_hash(&[data_hash])).unwrap();
     save("stark-key.bin", &key);
-    save("stark-message.bin", &public_input);
+    save("stark-message.bin", &data_hash);
     save("stark-proof.bin", &witness);
+    // A two-claim batch leaf and each claim's singleton proof, all under the key above.
+    let mut claims = [keccak(b"batch claim 0"), keccak(b"batch claim 1")];
+    claims.sort();
+    let (batch, batch_key) = prove_stark(ANY_INPUT_PROGRAM, &batch_hash(&claims)).unwrap();
+    assert_eq!(batch_key, key);
+    save("stark-batch-claims.bin", &claims.concat());
+    save("stark-batch-proof.bin", &batch);
+    for (index, claim) in claims.iter().enumerate() {
+        let (single, _) = prove_stark(ANY_INPUT_PROGRAM, &batch_hash(&[*claim])).unwrap();
+        save(&format!("stark-batch-singleton-{index}.bin"), &single);
+    }
     let key = aggregated_vk();
     save("aggregated-key.bin", &key);
     println!(

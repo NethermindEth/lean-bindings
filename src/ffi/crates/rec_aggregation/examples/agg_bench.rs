@@ -1,11 +1,14 @@
 //! Shape and cost of fixed aggregation workloads, at log_inv_rate 1. `agg_bench sigs [n]` proves two disjoint
 //! leanSPHINCS leaves of `n` signatures and their 2-children merge; `agg_bench generic` proves leaves of leanSTARK
-//! dependencies (1 small, 1 of 2^11 instructions, 16 small, and 40 signatures + 4 small).
+//! dependencies (1 small, 1 of 2^11 instructions, 16 small, 40 signatures + 4 small, and one 16-claim batch leaf of
+//! 2^11 instructions).
 
 use lean_compiler::{compile, parse};
 use leanvm_core::cpu::{Program, bytecode_table, prove};
 use rec_aggregation::aggregation::unified_guest;
-use rec_aggregation::{EthereumProof, RawGeneric, aggregate_with_stats, generic_verification_key, generic_witness};
+use rec_aggregation::{
+    BATCH_DOMAIN, BatchLeaf, EthereumProof, aggregate_with_stats, batch_hash, generic_verification_key, generic_witness,
+};
 use signatures::lean_sphincs;
 use std::time::Instant;
 
@@ -28,13 +31,13 @@ fn signers(n: usize) -> Vec<RawSphincs> {
         .collect()
 }
 
-/// Publishes `keccak256` of a hinted 64-byte preimage.
+/// Publishes `keccak256` of a hinted 48-byte preimage: the batch hash of one claim.
 const PREIMAGE: &str = "\
 def main():
-    pre = StackBuf(4)
+    pre = StackBuf(3)
     hint_witness(pre, \"pre\")
     c = StackBuf(2)
-    keccak(pre[0:2], pre[2:4], c)
+    keccak_cells([pre[0], pre[1], pre[2]], c)
     p = 1
     p[1] = c[0]
     p[GEN] = c[1]
@@ -52,20 +55,22 @@ fn cells(digest: &[u8; 32]) -> [primitives::field::F192; 2] {
     fiat_shamir::merkle::hash_to_scalars(digest)
 }
 
-fn dependency(program: &Program, witness: (&str, Vec<primitives::field::F192>), data_hash: [u8; 32]) -> RawGeneric {
+/// A batch leaf of `claims`: the program proves `batch_hash(claims)` with its witness stream.
+fn dependency(program: &Program, witness: (&str, Vec<primitives::field::F192>), claims: Vec<[u8; 32]>) -> BatchLeaf {
     let table: Vec<u64> = bytecode_table(program.prog()).iter().map(|w| w.0).collect();
     let mut program = program.clone();
     program.set_witness(witness.0, vec![witness.1]);
-    let (proof, _) = prove(&program, cells(&data_hash), RATE).expect("the dependency proves");
+    let (proof, _) = prove(&program, cells(&batch_hash(&claims)), RATE).expect("the dependency proves");
     let vk = generic_verification_key(&table).expect("within the cap");
-    (data_hash, vk, generic_witness(&table, &proof).expect("a witness"))
+    (claims, vk, generic_witness(&table, &proof).expect("a witness"))
 }
 
-fn preimage_deps(n: usize) -> Vec<RawGeneric> {
+fn preimage_deps(n: usize) -> Vec<BatchLeaf> {
     let program = compile(&parse(PREIMAGE).expect("parse"));
     (0..n)
         .map(|i| {
-            let pre = [i as u8 + 1; 64];
+            let claim = [i as u8 + 1; 32];
+            let pre = [&BATCH_DOMAIN[..], &claim].concat();
             let pre_cells = pre.chunks(16).map(|c| {
                 primitives::field::F192::new(
                     u64::from_le_bytes(c[..8].try_into().unwrap()),
@@ -73,7 +78,7 @@ fn preimage_deps(n: usize) -> Vec<RawGeneric> {
                     0,
                 )
             });
-            dependency(&program, ("pre", pre_cells.collect()), primitives::hash::hash(&pre))
+            dependency(&program, ("pre", pre_cells.collect()), vec![claim])
         })
         .collect()
 }
@@ -106,7 +111,7 @@ fn main() {
         guest.code_len(),
         guest.prog().len().trailing_zeros()
     );
-    let leaf = |deps: Vec<RawGeneric>, sigs: Vec<RawSphincs>| {
+    let leaf = |deps: Vec<BatchLeaf>, sigs: Vec<RawSphincs>| {
         move || aggregate_with_stats(&[], deps, sigs, &[], None, RATE).expect("proves")
     };
     match mode.as_str() {
@@ -124,14 +129,18 @@ fn main() {
             println!("small program {small} instructions, wide program {}", wide.prog().len());
             let deps = preimage_deps(16);
             report("leaf 1 small generic", leaf(deps[..1].to_vec(), vec![]));
-            let data_hash = [9; 32];
-            let wide_dep = dependency(&wide, ("pi", cells(&data_hash).to_vec()), data_hash);
-            report("leaf 1 generic of 2^11 instructions", leaf(vec![wide_dep], vec![]));
+            let wide_leaf = |claims: Vec<[u8; 32]>| {
+                let pi = cells(&batch_hash(&claims)).to_vec();
+                dependency(&wide, ("pi", pi), claims)
+            };
+            report("leaf 1 generic of 2^11 instructions", leaf(vec![wide_leaf(vec![[9; 32]])], vec![]));
             report("leaf 16 small generic", leaf(deps.clone(), vec![]));
             report(
                 "leaf 40 sigs + 4 small generic",
                 leaf(deps[..4].to_vec(), signers(40)),
             );
+            let claims = (1..=16).map(|i| [i; 32]).collect();
+            report("leaf 1 batch of 16 claims, 2^11 instructions", leaf(vec![wide_leaf(claims)], vec![]));
         }
         _ => panic!("mode: sigs [n] | generic"),
     }

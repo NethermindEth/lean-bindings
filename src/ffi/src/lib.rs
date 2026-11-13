@@ -4,7 +4,8 @@
 //! Pinned LeanVM verification and recursive aggregation of complete dependency sets.
 
 use rec_aggregation::{
-    EthereumClaims, EthereumProof, MAX_GENERIC_BYTECODE_LOG, MAX_GENERIC_DEPENDENCIES,
+    BatchLeaf, EthereumClaims, EthereumProof, MAX_CLAIMS_PER_BATCH_LEAF, MAX_GENERIC_BYTECODE_LOG,
+    MAX_INNER_PROOFS_PER_STEP, valid_batch_claims, verify_batch_leaf,
 };
 use signatures::lean_sphincs::{self, LeanSphincsPublicKey, LeanSphincsSignature};
 use std::cell::{Cell, RefCell};
@@ -59,6 +60,11 @@ pub fn keccak(bytes: &[u8]) -> [u8; 32] {
 
 pub fn aggregated_vk() -> [u8; 32] {
     rec_aggregation::aggregated_vk()
+}
+
+/// EIP-8288 `get_batch_hash`: a batch leaf's public statement over its claims.
+pub fn batch_hash(claims: &[[u8; 32]]) -> [u8; 32] {
+    rec_aggregation::batch_hash(claims)
 }
 
 struct Reader<'a> {
@@ -142,8 +148,12 @@ pub fn commitment(ds: &[Dep]) -> [u8; 32] {
     let claims = claims(ds);
     rec_aggregation::deps_hash(&claims.lean_sphincs, &claims.generic)
 }
-fn generic_count(ds: &[Dep]) -> usize {
-    ds.iter().filter(|dep| dep[31] == LEAN_STARK).count()
+fn leanstark_dependency(claim: &[u8; 32], vk: &[u8; 32]) -> Dep {
+    let mut dep = [0; 96];
+    dep[31] = LEAN_STARK;
+    dep[32..64].copy_from_slice(claim);
+    dep[64..].copy_from_slice(vk);
+    dep
 }
 fn canonical(ds: Vec<Dep>) -> Vec<Dep> {
     ds.into_iter()
@@ -177,7 +187,8 @@ fn verify_witness(dep: &Dep, witness: &[u8]) -> bool {
 pub const ANY_INPUT_PROGRAM: &str = "def main():\n    h = StackBuf(2)\n    hint_witness(h, \"pi\")\n    p = 1\n    p[1] = h[0]\n    p[GEN] = h[1]\n    return\n";
 
 /// Compiles `source`, a leanVM program reading its public input from the `pi` hint, and proves it on `hash`: the
-/// leanSTARK witness and verification key of the dependency `(hash, key)`. For tests and fixtures.
+/// leanSTARK witness and verification key of the batch leaf whose `batch_hash(claims)` is `hash`, so of the
+/// dependency `(data_hash, key)` for `hash = batch_hash(&[data_hash])`. For tests and fixtures.
 pub fn prove_stark(source: &str, hash: &[u8; 32]) -> Result<(Vec<u8>, [u8; 32]), ()> {
     let _guard = begin_proof();
     let mut program = lean_compiler::compile(&lean_compiler::parse(source).map_err(|_| ())?);
@@ -229,13 +240,18 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
     let mut r = Reader { bytes: input };
     let mut all = Vec::new();
     let mut raw = Vec::new();
+    // EIP-8288 MAX_INNER_PROOFS_PER_STEP: every supplied leanSTARK proof, a direct one as a singleton leaf, and every
+    // child, discarded or redundant ones included; leanSPHINCS witnesses do not count.
+    let mut inner_proofs = 0;
     for _ in 0..r.count()? {
         let dep = r.dep()?;
+        inner_proofs += usize::from(dep[31] == LEAN_STARK);
         raw.push((dep, r.blob()?));
         all.push(dep);
     }
     let child_count = r.count()?;
-    if child_count > rec_aggregation::MAX_RECURSIONS {
+    inner_proofs += child_count;
+    if inner_proofs > MAX_INNER_PROOFS_PER_STEP {
         return Err(());
     }
     let mut children = Vec::new();
@@ -248,13 +264,34 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
             }
             continue;
         }
-        if generic_count(&declared) > MAX_GENERIC_DEPENDENCIES {
-            return Err(());
-        }
         children.push((decode_child(&declared, proof)?, proof, declared.clone()));
         all.extend(declared);
     }
     let discards: HashSet<_> = r.deps()?.into_iter().collect();
+    // An optional trailing section carries batch leaves; it is absent when there are none.
+    let mut leaves: Vec<BatchLeaf> = Vec::new();
+    if !r.bytes.is_empty() {
+        let leaf_count = r.number()?;
+        inner_proofs += leaf_count;
+        if leaf_count == 0 || inner_proofs > MAX_INNER_PROOFS_PER_STEP {
+            return Err(());
+        }
+        for _ in 0..leaf_count {
+            let vk: [u8; 32] = r.take(32)?.try_into().map_err(|_| ())?;
+            let claim_count = r.number()?;
+            if !(1..=MAX_CLAIMS_PER_BATCH_LEAF).contains(&claim_count) {
+                return Err(());
+            }
+            let claims = (0..claim_count)
+                .map(|_| r.take(32)?.try_into().map_err(|_| ()))
+                .collect::<Result<Vec<[u8; 32]>, ()>>()?;
+            if !valid_batch_claims(&claims) {
+                return Err(());
+            }
+            all.extend(claims.iter().map(|claim| leanstark_dependency(claim, &vk)));
+            leaves.push((claims, vk, r.blob()?.to_vec()));
+        }
+    }
     r.end()?;
     let union: HashSet<_> = all.iter().copied().collect();
     if !discards.is_subset(&union) {
@@ -266,14 +303,8 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    if deps.len() > MAX_DEPS
-        || generic_count(&deps) > MAX_GENERIC_DEPENDENCIES
-        || commitment(&deps) != *hash
-    {
+    if deps.len() > MAX_DEPS || commitment(&deps) != *hash {
         return Err(());
-    }
-    if deps.is_empty() {
-        return Ok(vec![]);
     }
     let kept: HashSet<_> = deps.iter().copied().collect();
     children.retain(|(_, _, declared)| declared.iter().any(|dep| kept.contains(dep)));
@@ -292,14 +323,31 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
     {
         return Err(());
     }
+    // A leaf proves when one of its claims is kept and not yet covered; it publishes only the kept ones. Every other
+    // leaf is checked here, so every leaf meets the verifier's bounds even when all its claims are discarded.
+    let (leaves, unused): (Vec<_>, Vec<_>) = leaves.into_iter().partition(|(claims, vk, _)| {
+        claims.iter().any(|claim| {
+            let dep = leanstark_dependency(claim, vk);
+            kept.contains(&dep) && !covered.contains(&dep)
+        })
+    });
+    if unused
+        .iter()
+        .any(|(claims, vk, witness)| !verify_batch_leaf(claims, vk, witness))
+    {
+        return Err(());
+    }
+    if deps.is_empty() {
+        return Ok(vec![]);
+    }
     if let Some((_, bytes, _)) = children.iter().find(|(_, _, declared)| *declared == deps) {
         return Ok(bytes.to_vec());
     }
     let mut signatures = Vec::new();
-    let mut generic = Vec::new();
+    let mut generic = leaves;
     for (dep, witness) in raw {
         if dep[31] == LEAN_STARK {
-            generic.push((data(&dep), key(&dep), witness.to_vec()));
+            generic.push((vec![data(&dep)], key(&dep), witness.to_vec()));
         } else {
             let (pk, signature) = parse_sphincs(&key(&dep), witness)?;
             signatures.push((pk, data(&dep), signature));
@@ -396,7 +444,7 @@ fn checked(f: impl FnOnce() -> Result<bool, ()>) -> i32 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn nlean_abi_version() -> u32 {
-    12
+    13
 }
 /// Copies up to `len` bytes of the calling thread's last contained panic message into `out` and returns its full
 /// length; empty unless that thread's latest `checked` call returned -1.
@@ -425,10 +473,10 @@ pub unsafe extern "C" fn nlean_limits(out: *mut u32, len: usize) -> i32 {
     let limits = [
         MAX_BYTES as u32,
         MAX_DEPS as u32,
-        rec_aggregation::MAX_RECURSIONS as u32,
+        MAX_INNER_PROOFS_PER_STEP as u32,
         (lean_sphincs::PUB_KEY_SIZE + lean_sphincs::SIG_SIZE) as u32,
         MAX_INPUT_BYTES as u32,
-        MAX_GENERIC_DEPENDENCIES as u32,
+        MAX_CLAIMS_PER_BATCH_LEAF as u32,
         1 << MAX_GENERIC_BYTECODE_LOG,
     ];
     unsafe {
@@ -566,6 +614,17 @@ mod tests {
         out.extend_from_slice(&(n as u32).to_le_bytes());
     }
     fn input(raw: &[(Dep, Vec<u8>)], children: &[(&[Dep], &[u8])], discards: &[Dep]) -> Vec<u8> {
+        input_with_leaves(raw, children, discards, &[])
+    }
+    /// A batch leaf in the aggregation input: key, claims, witness.
+    type LeafEntry<'a> = ([u8; 32], &'a [[u8; 32]], &'a [u8]);
+    /// The aggregation input with its trailing batch-leaf section.
+    fn input_with_leaves(
+        raw: &[(Dep, Vec<u8>)],
+        children: &[(&[Dep], &[u8])],
+        discards: &[Dep],
+        leaves: &[LeafEntry],
+    ) -> Vec<u8> {
         let mut out = Vec::new();
         put_number(&mut out, raw.len());
         for (dep, witness) in raw {
@@ -582,6 +641,16 @@ mod tests {
         }
         put_number(&mut out, discards.len());
         out.extend(discards.iter().flatten());
+        if !leaves.is_empty() {
+            put_number(&mut out, leaves.len());
+            for (key, claims, witness) in leaves {
+                out.extend_from_slice(key);
+                put_number(&mut out, claims.len());
+                out.extend(claims.iter().flatten());
+                put_number(&mut out, witness.len());
+                out.extend_from_slice(witness);
+            }
+        }
         out
     }
     fn hash_of(deps: &[Dep]) -> [u8; 32] {
@@ -606,12 +675,141 @@ mod tests {
 
     fn proven(index: u8) -> (Dep, Vec<u8>) {
         let message = keccak(&[0x51, index]);
-        let (witness, key) = prove_stark(ANY_INPUT_PROGRAM, &message).unwrap();
-        let mut dep = [0; 96];
-        dep[31] = LEAN_STARK;
-        dep[32..64].copy_from_slice(&message);
-        dep[64..].copy_from_slice(&key);
-        (dep, witness)
+        let (witness, key) = prove_stark(ANY_INPUT_PROGRAM, &batch_hash(&[message])).unwrap();
+        (leanstark_dependency(&message, &key), witness)
+    }
+
+    /// A leaf of `claims` under the accept-all program's key, and that key.
+    fn batch(claims: &[[u8; 32]]) -> (Vec<u8>, [u8; 32]) {
+        prove_stark(ANY_INPUT_PROGRAM, &batch_hash(claims)).unwrap()
+    }
+
+    #[test]
+    fn exported_abi_and_limits() {
+        assert_eq!(nlean_abi_version(), 13);
+        let mut limits = [0u32; 7];
+        assert_eq!(unsafe { nlean_limits(limits.as_mut_ptr(), 7) }, 1);
+        assert_eq!(limits[2], 16, "MAX_INNER_PROOFS_PER_STEP");
+        assert_eq!(limits[5], 16, "MAX_CLAIMS_PER_BATCH_LEAF");
+        assert_eq!(limits[6], 2048, "leanSTARK instructions");
+        assert_eq!(unsafe { nlean_limits(limits.as_mut_ptr(), 6) }, 0);
+    }
+
+    /// EIP-8288 Test Cases 2 and 12: a batch leaf and singleton proofs under one key cover the same dependencies; the
+    /// leaf's claim list is exact, and a discarded claim cannot come back.
+    #[test]
+    fn batch_leaf_and_singletons_prove_the_same_dependencies() {
+        let (a, b, c) = ([0xa0; 32], [0xb0; 32], [0xc0; 32]);
+        let (leaf, key) = batch(&[a, b]);
+        let (single_a, key_a) = batch(&[a]);
+        let (single_b, _) = batch(&[b]);
+        assert_eq!(key, key_a);
+        let deps = [
+            leanstark_dependency(&a, &key),
+            leanstark_dependency(&b, &key),
+        ];
+        let hash = commitment(&deps);
+        assert!(verify_batch_leaf(&[a, b], &key, &leaf));
+        let leaves = |entries: &[LeafEntry]| input_with_leaves(&[], &[], &[], entries);
+        let batched = prove_aggregate(&hash, &leaves(&[(key, &[a, b], &leaf)])).unwrap();
+        let direct = [(deps[1], single_b.clone()), (deps[0], single_a)];
+        let singles = prove_aggregate(&hash, &input(&direct, &[], &[])).unwrap();
+        for proof in [&batched, &singles] {
+            verify_aggregate(&hash, proof).unwrap();
+        }
+        // One singleton alone, or a leaf under another key, does not satisfy both claims.
+        assert!(prove_aggregate(&hash, &input(&direct[..1], &[], &[])).is_err());
+        assert!(prove_aggregate(&hash, &leaves(&[([7; 32], &[a, b], &leaf)])).is_err());
+        // The leaf statement binds the exact nonempty, strictly increasing claim list.
+        for claims in [&[b, a][..], &[a, a], &[], &[a], &[a, b, c]] {
+            assert!(prove_aggregate(&hash, &leaves(&[(key, claims, &leaf)])).is_err());
+        }
+        // Union with an overlapping leaf, then discard a: {b, c} is kept; a's proof alone cannot restore b.
+        let (bc, _) = batch(&[b, c]);
+        let retained = [deps[1], leanstark_dependency(&c, &key)];
+        let pair = [(key, &[a, b][..], &leaf[..]), (key, &[b, c], &bc)];
+        let pruned = prove_aggregate(
+            &commitment(&retained),
+            &input_with_leaves(&[], &[], &deps[..1], &pair),
+        )
+        .unwrap();
+        verify_aggregate(&commitment(&retained), &pruned).unwrap();
+        let only_a = prove_aggregate(
+            &commitment(&deps[..1]),
+            &input_with_leaves(&[], &[], &deps[1..], &pair[..1]),
+        )
+        .unwrap();
+        assert!(prove_aggregate(&hash, &input(&[], &[(&deps[..1], &only_a)], &[])).is_err());
+    }
+
+    /// EIP-8288 `MAX_INNER_PROOFS_PER_STEP` counts direct leanSTARK proofs, batch leaves and children together,
+    /// discarded and redundant ones included; leanSPHINCS witnesses do not count.
+    #[test]
+    fn inner_proofs_per_step_count_every_proof_kind() {
+        let (stark, witness) = proven(1);
+        let parent = prove_aggregate(
+            &hash_of(&[stark]),
+            &input(&[(stark, witness.clone())], &[], &[]),
+        )
+        .unwrap();
+        let (leaf, leaf_key) = batch(&[[2; 32]]);
+        let discarded = leanstark_dependency(&[2; 32], &leaf_key);
+        let sig = signed(3);
+        let step = |children: usize| {
+            let deps = [stark];
+            let children = vec![(&deps[..], &parent[..]); children];
+            let raw = [(stark, witness.clone()), sig.clone()];
+            let leaves = [(leaf_key, &[[2; 32]][..], &leaf[..])];
+            prove_aggregate(
+                &hash_of(&[stark]),
+                &input_with_leaves(&raw, &children, &[discarded, sig.0], &leaves),
+            )
+        };
+        // A child covering the statement is returned unchanged, so these calls prove nothing.
+        assert_eq!(step(MAX_INNER_PROOFS_PER_STEP - 2).unwrap(), parent);
+        assert!(step(MAX_INNER_PROOFS_PER_STEP - 1).is_err());
+    }
+
+    /// A batch leaf witness at the verifier's resource bounds, and one byte off them.
+    fn bounded_witnesses(witness: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
+        let mut over = witness.to_vec();
+        over[0] = MAX_GENERIC_BYTECODE_LOG as u8 + 1;
+        let mut short = witness.to_vec();
+        short.remove(1);
+        let mut long = witness.to_vec();
+        long.push(0);
+        vec![
+            ("above the instruction bound", over),
+            ("table one byte short", short),
+            ("trailing byte", long),
+        ]
+    }
+
+    /// EIP-8288 Test Case 12: every leaf meets the verifier's resource bounds, at direct admission and in aggregation,
+    /// even when all its claims are discarded; the program bound counts the padded table, support code included.
+    #[test]
+    fn resource_bounds_apply_to_discarded_leaves() {
+        // 900 multiply-adds fill the 2^11-instruction table.
+        let source = format!(
+            "def main():\n    h = StackBuf(2)\n    hint_witness(h, \"pi\")\n    acc = h[0]\n{}    p = 1\n    p[1] = h[0]\n    p[GEN] = h[1]\n    return\n",
+            "    acc = acc * h[1] + h[0]\n".repeat(900)
+        );
+        let claim = [0x31; 32];
+        let (witness, key) = prove_stark(&source, &batch_hash(&[claim])).unwrap();
+        assert_eq!(witness[0] as usize, MAX_GENERIC_BYTECODE_LOG);
+        let dep = leanstark_dependency(&claim, &key);
+        assert!(verify_witness(&dep, &witness));
+        let empty = commitment(&[]);
+        let discarded = |witness: &[u8]| {
+            let as_leaf = input_with_leaves(&[], &[], &[dep], &[(key, &[claim], witness)]);
+            let as_direct = input(&[(dep, witness.to_vec())], &[], &[dep]);
+            [as_leaf, as_direct].map(|input| prove_aggregate(&empty, &input))
+        };
+        assert_eq!(discarded(&witness), [Ok(vec![]), Ok(vec![])]);
+        for (name, forged) in bounded_witnesses(&witness) {
+            assert!(!verify_witness(&dep, &forged), "{name}");
+            assert!(discarded(&forged).iter().all(Result::is_err), "{name}");
+        }
     }
 
     #[test]

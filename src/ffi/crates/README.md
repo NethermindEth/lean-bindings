@@ -11,7 +11,8 @@ Changes against upstream, all EIP-8288 specific:
   copy drops leanXMSS; test-only mock signers come from the upstream crate.
 - `rec_aggregation`: the aggregation guest (`guests/lean_ethereum.py`) commits to the EIP-8288 dependency digest with
   Keccak-256, verifies NiceTry v2 signatures (scheme `0x10`) and leanVM execution proofs of programs up to 2^11
-  instructions (scheme `0x11`, `src/aggregation/generic.rs`), and merges or discards child aggregates.
+  instructions as EIP-8288 batch leaves (scheme `0x11`, `src/aggregation/generic.rs`), and merges or discards child
+  aggregates.
 
 `crates/upstream.sh diff` prints every change against upstream at the pinned revision; `crates/upstream.sh update <rev>`
 moves the crates and the pin to a newer upstream revision by three-way merge and lists what needs review. After an

@@ -1,6 +1,6 @@
 //! The entry points that prove one node of an aggregation tree.
 
-use super::cells::count;
+use super::cells::{count, exponent_bytes};
 use super::child::gen_verify;
 use super::coverage::plan_coverage;
 use super::deferred::{DeferredClaim, aggregate_deferred_claims, bytecode_sums, bytecode_value, scalar_bytecode};
@@ -8,11 +8,11 @@ use super::error::{AggregateVerifyError, AggregationError, SnarkProveError, Snar
 use super::guest::unified_guest;
 #[cfg(test)]
 use super::hints::FORGE;
-use super::generic::{MAX_GENERIC_DEPENDENCIES, generic_hints};
+use super::generic::{batch_hash, generic_hints, valid_batch_claims};
 use super::hints::{Hints, lean_sphincs_hints};
 use super::proof::{EthereumClaims, EthereumProof, check_signer_set};
 use super::statement::{generic_claim_cells, lean_sphincs_claim_cells, list_split, statement_digest};
-use super::{GenericClaim, LeanSphincsClaim, MAX_RECURSIONS, RawGeneric};
+use super::{BatchLeaf, GenericClaim, LeanSphincsClaim, MAX_INNER_PROOFS_PER_STEP, MAX_RECURSIONS};
 use fiat_shamir::merkle::hash_to_scalars;
 use lean_da::{BLOB_SYMBOLS, CELL_SYMBOLS, CELLS_PER_ROW, CODEWORD_SYMBOLS};
 use leanvm_core::cpu::{from_scalar, prove, public_input_bytes, scalar_proof};
@@ -20,10 +20,10 @@ use primitives::field::{F64, F192};
 use signatures::lean_sphincs;
 use signatures::lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
 
-/// Test builds only: whether this thread lifts the host's leanSTARK cap, so the guest's own is tested.
-fn allow_many_generic() -> bool {
+/// Test builds only: whether this thread skips the host's batch-leaf checks, so the guest's own are tested.
+fn skip_leaf_checks() -> bool {
     #[cfg(test)]
-    return super::hints::ALLOW_MANY_GENERIC.with(std::cell::Cell::get);
+    return super::hints::SKIP_LEAF_CHECKS.with(std::cell::Cell::get);
     #[cfg(not(test))]
     false
 }
@@ -31,9 +31,10 @@ fn allow_many_generic() -> bool {
 /// Prove existence of signatures and valid encoding of PQ-blobs, potentially using recursive children.
 ///
 /// - `children`: child proofs; at most [`MAX_RECURSIONS`].
-/// - `raw_generic`: leanSTARK (`0x11`) dependencies `(data_hash, vk, witness)`
-///   ([`generic_witness`](super::generic_witness)), any order; at most
-///   [`MAX_GENERIC_DEPENDENCIES`] distinct ones.
+/// - `leaves`: EIP-8288 batch leaves `(claims, vk, witness)` ([`generic_witness`](super::generic_witness)),
+///   any order, each covering its claims' leanSTARK (`0x11`) dependencies; a direct dependency is a
+///   [`singleton_leaf`](super::singleton_leaf). Distinct leaves and children together are at most
+///   [`MAX_INNER_PROOFS_PER_STEP`].
 /// - `raw_lean_sphincs`: list of `(public_key, message, signature)`, any order.
 /// - `blobs`: concatenated blobs, each containing [`BLOB_SYMBOLS`] little-endian `u64` symbols;
 ///   at most [`lean_da::DA_MAX_ROWS`] blobs. A node with blobs publishes their matrix's root, and none
@@ -49,8 +50,8 @@ fn allow_many_generic() -> bool {
 /// - `aggregate` should not be called more than once at a time in parallel per process.
 /// - Raw signatures are assumed valid: one that does not decode returns
 ///   [`AggregationError::MalformedRawSignature`], and any other invalid one fails the guest's run,
-///   [`AggregationError::ProofError`]. A raw leanSTARK witness is checked natively first
-///   ([`verify_generic`](super::verify_generic)): one that fails returns
+///   [`AggregationError::ProofError`]. A batch leaf is checked natively first
+///   ([`verify_batch_leaf`](super::verify_batch_leaf)): one that fails returns
 ///   [`AggregationError::InvalidGenericWitness`].
 /// - Children are assumed verified by the caller ([`EthereumProof::verify`]): a child the replay
 ///   cannot walk, or one carrying a false deferred value, returns [`AggregationError::InvalidChild`],
@@ -58,19 +59,19 @@ fn allow_many_generic() -> bool {
 ///   return the index of invalid proof).
 pub fn aggregate(
     children: &[EthereumProof],
-    raw_generic: Vec<RawGeneric>,
+    leaves: Vec<BatchLeaf>,
     raw_lean_sphincs: Vec<(LeanSphincsPublicKey, lean_sphincs::Message, LeanSphincsSignature)>,
     blobs: &[u64],
     declare: Option<&EthereumClaims>,
     log_inv_rate: usize,
 ) -> Result<EthereumProof, AggregationError> {
-    aggregate_with_stats(children, raw_generic, raw_lean_sphincs, blobs, declare, log_inv_rate).map(|(sig, _)| sig)
+    aggregate_with_stats(children, leaves, raw_lean_sphincs, blobs, declare, log_inv_rate).map(|(sig, _)| sig)
 }
 
 /// [`aggregate`], under the same contract, also returning the prover's statistics (what the CLI's benchmarks report).
 pub fn aggregate_with_stats(
     children: &[EthereumProof],
-    raw_generic: Vec<RawGeneric>,
+    leaves: Vec<BatchLeaf>,
     raw_lean_sphincs: Vec<(LeanSphincsPublicKey, lean_sphincs::Message, LeanSphincsSignature)>,
     blobs: &[u64],
     declare: Option<&EthereumClaims>,
@@ -113,15 +114,20 @@ pub fn aggregate_with_stats(
     };
 
     let guest = unified_guest();
-    // On the whole claim: one claim needs one proof.
-    let mut raw_generic = raw_generic;
-    raw_generic.sort_by(|(a, ak, _), (b, bk, _)| (a, ak).cmp(&(b, bk)));
-    raw_generic.dedup_by(|(a, ak, _), (b, bk, _)| (a, ak) == (b, bk));
+    // On the whole leaf: one statement needs one proof.
+    let mut leaves = leaves;
+    leaves.sort_by(|(a, ak, _), (b, bk, _)| (a, ak).cmp(&(b, bk)));
+    leaves.dedup_by(|(a, ak, _), (b, bk, _)| (a, ak) == (b, bk));
     let mut raw_lean_sphincs = raw_lean_sphincs;
     // Test builds only: `EIP8288_FORGE` plays a malicious host, to show what the guest does not enforce.
     let forge = if cfg!(feature = "forge") { std::env::var("EIP8288_FORGE").unwrap_or_default() } else { String::new() };
-    if raw_generic.len() > MAX_GENERIC_DEPENDENCIES && !allow_many_generic() {
-        return Err(AggregationError::TooManyGeneric);
+    if !skip_leaf_checks() {
+        if leaves.len() + children.len() > MAX_INNER_PROOFS_PER_STEP {
+            return Err(AggregationError::TooManyInnerProofs);
+        }
+        if !leaves.iter().all(|(claims, ..)| valid_batch_claims(claims)) {
+            return Err(AggregationError::InvalidGenericWitness);
+        }
     }
     raw_lean_sphincs.sort_by_key(|(pk, message, _)| (*message, *pk));
     if forge != "dup" {
@@ -163,15 +169,15 @@ pub fn aggregate_with_stats(
     drop(_span);
 
     let _span = tracing::info_span!("Build witness").entered();
-    let raw_generic_claims: Vec<GenericClaim> = raw_generic.iter().map(|(data_hash, vk, _)| (*data_hash, *vk)).collect();
+    let raw_generic_claims: Vec<GenericClaim> = leaves
+        .iter()
+        .flat_map(|(claims, vk, _)| claims.iter().map(|claim| (*claim, *vk)))
+        .collect();
     let raw_lean_sphincs_claims: Vec<LeanSphincsClaim> = raw_lean_sphincs
         .iter()
         .map(|(pk, message, _)| (*message, *pk))
         .collect();
     let mut cover = plan_coverage(&raw_generic_claims, &raw_lean_sphincs_claims, children, declare)?;
-    if cover.generic.signers.len() > MAX_GENERIC_DEPENDENCIES && !allow_many_generic() {
-        return Err(AggregationError::TooManyGeneric);
-    }
     match forge.as_str() {
         // Publish the duplicate slots too: the declared list repeats a claim.
         "dup" => {
@@ -195,7 +201,7 @@ pub fn aggregate_with_stats(
         vec![
             count(cover.generic.signers.len()),
             count(cover.generic.dups.len()),
-            count(raw_generic.len()),
+            count(leaves.len()),
             count(cover.lean_sphincs.signers.len()),
             count(cover.lean_sphincs.dups.len()),
             count(raw_lean_sphincs.len()),
@@ -227,14 +233,18 @@ pub fn aggregate_with_stats(
         hints.push("dup_claims", claim.to_vec());
     }
     // Each slot is hinted as an offset into its scheme's region, which is how one
-    // range check keeps a scheme's writers off the other's claims.
+    // range check keeps a scheme's writers off the other's claims. A leaf's claims take
+    // consecutive raw slots, each with its bytes in the exponent.
     // A leanSTARK sub-proof pops the same streams as a child's, ahead of every child's.
     // Sequential: the native verification inside dispatches on the pool itself.
-    let generic_hints: Vec<_> =
-        raw_generic.iter().map(|(data_hash, vk, witness)| generic_hints(data_hash, vk, witness)).collect();
-    for (&offset, sub) in cover.generic.raw.iter().zip(generic_hints) {
-        hints.push("raw_index", vec![count(offset)]);
-        for (name, entry) in sub? {
+    let mut offsets = cover.generic.raw.iter();
+    for (claims, vk, witness) in &leaves {
+        hints.push("leaf_claims", vec![count(claims.len() - 1)]);
+        for (claim, &offset) in claims.iter().zip(offsets.by_ref()) {
+            hints.push("raw_index", vec![count(offset)]);
+            hints.push("batch_bytes", exponent_bytes(claim));
+        }
+        for (name, entry) in generic_hints(&batch_hash(claims), vk, witness)? {
             hints.push(name, entry);
         }
     }

@@ -378,12 +378,14 @@ STMT_CELLS = STMT_DEFER_OFF + 3 * STMT_PAIRS
 # carries that state through a heap run between loop frames, KECCAK_STATE cells a
 # step (`claim_list_digest`).
 KECCAK_STATE = KECCAK_STATE_PLACEHOLDER
-# leanSTARK (0x11) dependencies: the most instructions (log) and claims a list, and the
-# leanVM tag's first 8 bytes as a lane and its 9th byte, and the mixed dependency
-# digest's 32-byte domain as two cells.
+# leanSTARK (0x11) dependencies: the most instructions (log) of a program and claims of a
+# batch leaf, get_batch_hash's 16-byte domain as a cell, the leanVM tag's first 8 bytes as a
+# lane and its 9th byte, and the mixed dependency digest's 32-byte domain as two cells.
 MAX_GENERIC_BYTECODE_LOG = MAX_GENERIC_BYTECODE_LOG_PLACEHOLDER
 GEN_KGEN_ARMS = MAX_GENERIC_BYTECODE_LOG + 1
-MAX_GENERIC_DEPENDENCIES = MAX_GENERIC_DEPENDENCIES_PLACEHOLDER
+MAX_CLAIMS_PER_BATCH_LEAF = MAX_CLAIMS_PER_BATCH_LEAF_PLACEHOLDER
+BATCH_PRE_CELLS = 1 + 2 * MAX_CLAIMS_PER_BATCH_LEAF
+BATCH_DOMAIN = BATCH_DOMAIN_PLACEHOLDER
 TAG_LANE0 = TAG_LANE0_PLACEHOLDER
 TAG_BYTE8 = TAG_BYTE8_PLACEHOLDER
 DEPS_DOMAIN_0 = DEPS_DOMAIN_0_PLACEHOLDER
@@ -441,8 +443,10 @@ SP_DIGITS_PER_BYTE = 1
 # The coverage table's slots, both schemes' declared claims and their duplicates, are
 # bounded by the memory itself: each count is a g-power address (`assert_gpow`), so its
 # log is below the announced memory size, at most 2^30, and sums of a few never wrap.
-# MAX_RECURSIONS is the arity of an aggregation tree.
+# MAX_RECURSIONS is the arity of an aggregation tree; EIP-8288's MAX_INNER_PROOFS_PER_STEP
+# bounds a node's batch leaves and children together.
 MAX_RECURSIONS = MAX_RECURSIONS_PLACEHOLDER
+MAX_INNER_PROOFS_PER_STEP = MAX_INNER_PROOFS_PER_STEP_PLACEHOLDER
 
 
 # ---------------------------------- LeanDA ------------------------------------------
@@ -3553,19 +3557,101 @@ def gen_table(t8, zeta, alpha, k: Const):
     return digest[0], digest[1], v[1]
 
 
-def verify_generic(slot, g_squares):
-    # One 0x11 claim, slot = data_hash | vk (four cells); vk seeds the sub-proof's transcript.
+def verify_generic(pi_0, pi_1, vk_0, vk_1, t8, g_squares):
+    # One leanSTARK proof of the statement (pi_0, pi_1) under vk; vk seeds the sub-proof's transcript.
     g_kgen = hint_witness("gen_kbc")
     assert log(g_kgen) < MAX_GENERIC_BYTECODE_LOG + 1
-    zeta, alpha, bc_share = verify_sub(slot[GEN ** 0], slot[GEN ** 1], slot[GEN ** 2], slot[GEN ** 3], g_kgen, g_squares)
-    t8 = HeapBuf(256)
-    for b in unroll(0, 256):
-        t8[GEN ** b] = b
+    zeta, alpha, bc_share = verify_sub(pi_0, pi_1, vk_0, vk_1, g_kgen, g_squares)
     d0, d1, value = match(log(g_kgen), range(0, GEN_KGEN_ARMS), lambda k: gen_table(t8, zeta, alpha, k))
-    assert d0 == slot[GEN ** 2]
-    assert d1 == slot[GEN ** 3]
+    assert d0 == vk_0
+    assert d1 == vk_1
     assert value == bc_share
     return
+
+
+# ================================ EIP-8288 batch leaves ===============================
+# A leanSTARK proof is a batch leaf: its statement is get_batch_hash(claims) =
+# keccak256(BATCH_DOMAIN | claims) over 1 to MAX_CLAIMS_PER_BATCH_LEAF 32-byte claims, each
+# claim covering its own slot claim | vk under the leaf's one vk. A direct dependency is the
+# singleton leaf [data_hash]. The leaf program need not order its claims; this checks that
+# they strictly increase byte-lexicographically, from bytes hinted in the exponent and
+# range-checked, so a claim's bytes are the bytes of its slot's cells (see gen_table).
+
+
+def verify_leaf(table, cover, slots_g, mark, t8, g_squares):
+    # Covers one slot per claim with the marks from `mark` on, and returns the mark past them.
+    last_g = hint_witness("leaf_claims")  # g^(claims - 1)
+    assert log(last_g) < MAX_CLAIMS_PER_BATCH_LEAF
+    n_g = last_g * GEN
+    slots = HeapBuf(n_g)
+    claim_bytes = HeapBuf(n_g ** 32)
+    for c in mul_range(1, n_g):
+        idx = hint_witness("raw_index")
+        assert log(idx) < log(slots_g)
+        cover[idx] = mark * c
+        slot = table * (idx ** 4)
+        slots[c] = slot
+        batch_claim_bytes(slot, claim_bytes * c ** 32, t8)
+    first = slots[1]
+    for c in mul_range(GEN, n_g):
+        slot = slots[c]
+        assert slot[GEN ** 2] == first[GEN ** 2]
+        assert slot[GEN ** 3] == first[GEN ** 3]
+        batch_increasing(claim_bytes * (c / GEN) ** 32, claim_bytes * c ** 32)
+    pi_0, pi_1 = match(log(last_g), range(0, MAX_CLAIMS_PER_BATCH_LEAF), lambda last: batch_digest(slots, last))
+    verify_generic(pi_0, pi_1, first[GEN ** 2], first[GEN ** 3], t8, g_squares)
+    return mark * n_g
+
+
+def batch_claim_bytes(slot, claim_bytes, t8):
+    # A claim's 32 bytes, each a g-power below g^256, are its slot's two cells: a cell is two
+    # lanes of eight bytes at their own shifts, the second lane above Y_TOWER.
+    hint_witness(claim_bytes[0:32], "batch_bytes")
+    for h in unroll(0, 2):
+        lo = 0
+        hi = 0
+        for b in unroll(0, 8):
+            d = claim_bytes[GEN ** (16 * h + b)]
+            e = claim_bytes[GEN ** (16 * h + 8 + b)]
+            assert log(d) < 256
+            assert log(e) < 256
+            lo += (2 ** (8 * b)) * t8[d]
+            hi += (2 ** (8 * b)) * t8[e]
+        assert slot[GEN ** h] == lo + Y_TOWER * hi
+    return
+
+
+def batch_increasing(prev, cur):
+    # prev < cur byte-lexicographically: at the first byte where they differ, cur's is larger,
+    # so the quotient of the two g-powers is a small g-power.
+    equal = StackBuf(33)
+    equal[0] = 1
+    for j in unroll(0, 32):
+        p = prev[GEN ** j]
+        q = cur[GEN ** j]
+        if equal[j] == 1:
+            if p == q:
+                equal[j + 1] = 1
+            else:
+                assert log(q / p) < 256
+                equal[j + 1] = 0
+        else:
+            equal[j + 1] = 0
+    assert equal[32] == 0
+    return
+
+
+def batch_digest(slots, last: Const):
+    # get_batch_hash over claims 0..last: the domain cell, then each claim's two cells.
+    pre = StackBuf(BATCH_PRE_CELLS)
+    pre[0] = BATCH_DOMAIN
+    for i in unroll(0, last + 1):
+        slot = slots[GEN ** i]
+        pre[1 + 2 * i] = slot[GEN ** 0]
+        pre[2 + 2 * i] = slot[GEN ** 1]
+    digest = StackBuf(2)
+    keccak_cells(pre[0:3 + 2 * last], digest)
+    return digest[0], digest[1]
 
 
 # ================= NiceTry SPHINCS- v2 signature verification (prototype) ================
@@ -4187,7 +4273,7 @@ def da_column_offsets(zs):
 
 
 def main():
-    # One node of an aggregation tree: n_raw_generic leanSTARK proofs, n_raw_lean_sphincs
+    # One node of an aggregation tree: n_raw_generic leanSTARK batch leaves, n_raw_lean_sphincs
     # leanSPHINCS signatures and n_children sub-proofs OF THIS SAME BYTECODE. A claim is
     # data_hash | vk (leanSTARK) or message | pubkey (leanSPHINCS), and each raw proof or
     # signature is verified against the claim in its own coverage slot. It publishes at most one DA digest: that of the blob matrix it
@@ -4212,15 +4298,16 @@ def main():
     n_raw_s_g = meta[5]
     n_children_g = meta[6]
     n_direct_da_g = meta[7]
-    # The first list is the leanSTARK (0x11) one, at most MAX_GENERIC_DEPENDENCIES
-    # declared claims and as many proofs verified here.
-    assert log(n_lx_g) < MAX_GENERIC_DEPENDENCIES + 1
+    # The first list is the leanSTARK (0x11) one; n_raw_x is its batch leaves verified here,
+    # which with the children are at most MAX_INNER_PROOFS_PER_STEP.
+    assert_gpow(n_lx_g)
     assert_gpow(n_xdup_g)
-    assert log(n_raw_x_g) < MAX_GENERIC_DEPENDENCIES + 1
+    assert log(n_raw_x_g) < MAX_INNER_PROOFS_PER_STEP + 1
     assert_gpow(n_lean_sphincs_g)
     assert_gpow(n_sdup_g)
     assert_gpow(n_raw_s_g)
     assert log(n_children_g) < MAX_RECURSIONS + 1
+    assert log(n_raw_x_g * n_children_g) < MAX_INNER_PROOFS_PER_STEP + 1
     assert log(n_direct_da_g) < 2
     lx_slots_g = n_lx_g * n_xdup_g
     lean_sphincs_slots_g = n_lean_sphincs_g * n_sdup_g
@@ -4269,19 +4356,22 @@ def main():
     # child. Each writer is confined to its own region.
     cover = HeapBuf(n_total_g)
     sp_cover = cover * lx_slots_g  # the leanSPHINCS region
+    # A leaf's claims take consecutive marks. Each claim's index is bounded by the leanSTARK
+    # region (`verify_leaf`), small by `assert_gpow(n_total_g)` above (its log below the
+    # memory size). Without it this degenerates to what DEREF alone gives and an index could
+    # reach past `cover`, which is the whole bijection; with it a leaf covers no leanSPHINCS claim.
+    t8 = HeapBuf(256)
+    for b in unroll(0, 256):
+        t8[GEN ** b] = b
+    leaf_marks = HeapBuf(n_raw_x_g * GEN)
+    leaf_marks[1] = 1
     for xi in mul_range(1, n_raw_x_g):
-        idx = hint_witness("raw_index")
-        # The runtime bound is small by `assert_gpow(n_total_g)` above (its log below
-        # the memory size). Without it this degenerates to what DEREF alone gives and an
-        # index could reach past `cover`, which is the whole bijection. The bound is the
-        # leanSTARK region, so a raw leanSTARK proof covers no leanSPHINCS claim.
-        assert log(idx) < log(lx_slots_g)
-        cover[idx] = xi
-        verify_generic(lx_table * (idx ** 4), g_squares)
+        leaf_marks[xi * GEN] = verify_leaf(lx_table, cover, lx_slots_g, leaf_marks[xi], t8, g_squares)
+    n_raw_xc_g = leaf_marks[n_raw_x_g]
     for xj in mul_range(1, n_raw_s_g):
         off_hint = hint_witness("sp_raw_index")
         assert log(off_hint) < log(lean_sphincs_slots_g)
-        sp_cover[off_hint] = n_raw_x_g * xj
+        sp_cover[off_hint] = n_raw_xc_g * xj
         verify_sig_lean_sphincs(lean_sphincs_table * (off_hint ** 4))
 
     # ---- data availability ----
@@ -4301,7 +4391,7 @@ def main():
     child_fresh = HeapBuf(n_children_g ** DEFER_SIZE)
     child_carried = HeapBuf(n_children_g ** DEFER_STMT_CELLS)
     written = HeapBuf(n_children_g * GEN)  # loop-carried write count, one per child
-    written[GEN ** 0] = n_raw_x_g * n_raw_s_g
+    written[GEN ** 0] = n_raw_xc_g * n_raw_s_g
     for xc in mul_range(1, n_children_g):
         base = written[xc]
         # The child's two list lengths, then its two lists, rebuilt from THIS node's
@@ -4312,7 +4402,7 @@ def main():
         hint_witness(child_meta, "child_meta")  # n_generic, n_lean_sphincs
         nsub_x_g = child_meta[0]
         nsub_s_g = child_meta[1]
-        assert log(nsub_x_g) < MAX_GENERIC_DEPENDENCIES + 1
+        assert_gpow(nsub_x_g)
         assert_gpow(nsub_s_g)
         nsub_g = nsub_x_g * nsub_s_g
         cx_0, cx_1 = child_claim_list_digest(lx_table, cover, base, lx_slots_g, nsub_x_g)

@@ -1,13 +1,13 @@
 //! The constants baked into the guest.
 
-use super::MAX_RECURSIONS;
+use super::{MAX_INNER_PROOFS_PER_STEP, MAX_RECURSIONS};
 use super::cells::{dsl_u128, pack_16_bytes};
 use super::child::{
     KBC_SOURCE, MU_CAP, QUERY_WINDOW_BITS, QUERY_WINDOWS_CAP, STREAM_CAP, block_groups, block_sources, col_sources, col_groups, merkle_cap_depth, whir_shape,
 };
 use super::claim_pool::{ClaimSite, coord_difference, coord_kind, coord_scale, push_coord_terms, walk_claims};
 use super::deferred::RECURSION_AGG_LABEL;
-use super::generic::{LEANSTARK_DEPS_DOMAIN, MAX_GENERIC_BYTECODE_LOG, MAX_GENERIC_DEPENDENCIES};
+use super::generic::{BATCH_DOMAIN, LEANSTARK_DEPS_DOMAIN, MAX_CLAIMS_PER_BATCH_LEAF, MAX_GENERIC_BYTECODE_LOG};
 use super::statement::{BIG_GROUPS, CLAIM_GROUP, STATEMENT_HEADER};
 use fiat_shamir::merkle::hash_to_scalars;
 use lean_compiler::f192_literal;
@@ -895,7 +895,8 @@ fn da_placeholders(ps: &mut impl FnMut(&str, String)) {
 /// The signature scheme, the leanSTARK caps and domains, and the coverage caps.
 fn signature_placeholders(ps: &mut impl FnMut(&str, String)) {
     ps("MAX_GENERIC_BYTECODE_LOG", MAX_GENERIC_BYTECODE_LOG.to_string());
-    ps("MAX_GENERIC_DEPENDENCIES", MAX_GENERIC_DEPENDENCIES.to_string());
+    ps("MAX_CLAIMS_PER_BATCH_LEAF", MAX_CLAIMS_PER_BATCH_LEAF.to_string());
+    ps("BATCH_DOMAIN", dsl_u128(pack_16_bytes(&BATCH_DOMAIN)).to_string());
     ps("DEPS_DOMAIN_0", dsl_u128(pack_16_bytes(&LEANSTARK_DEPS_DOMAIN[..16])).to_string());
     ps("DEPS_DOMAIN_1", dsl_u128(pack_16_bytes(&LEANSTARK_DEPS_DOMAIN[16..])).to_string());
     // The leanVM tag ahead of a program's table in its digest: its first 8 bytes as a lane, its 9th byte.
@@ -905,6 +906,7 @@ fn signature_placeholders(ps: &mut impl FnMut(&str, String)) {
     ps("CLAIM_GROUP", CLAIM_GROUP.to_string());
     ps("BIG_GROUPS", BIG_GROUPS.to_string());
     ps("MAX_RECURSIONS", MAX_RECURSIONS.to_string());
+    ps("MAX_INNER_PROOFS_PER_STEP", MAX_INNER_PROOFS_PER_STEP.to_string());
 
     // NiceTry SPHINCS- v2 (prototype).
     for (name, value) in [

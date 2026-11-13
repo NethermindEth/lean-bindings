@@ -1,5 +1,13 @@
 //! leanSTARK (scheme `0x11`) dependencies: "the leanVM program `vk` commits to accepts `data_hash`".
 //!
+//! # Batch leaves
+//!
+//! A leanSTARK proof is an EIP-8288 batch leaf: its public input is
+//! `get_batch_hash(claims) = keccak256(b"EIP8288:batch:v1" ‖ claims)` ([`batch_hash`]) over 1 to
+//! [`MAX_CLAIMS_PER_BATCH_LEAF`] strictly increasing 32-byte claims, and each claim yields the dependency
+//! `(0x11, claim, vk)`. A direct dependency on `data_hash` is the singleton leaf `[data_hash]`. The aggregation
+//! guest checks the claims' order; the leaf program need not.
+//!
 //! # Verification key
 //!
 //! `vk = keccak256(verifier::TAG ‖ table)`: upstream's own program digest, the Fiat-Shamir IV every
@@ -16,7 +24,7 @@
 //!
 //! `u8 kgen ‖ table (16 · 2^kgen words, 8 bytes each, little-endian) ‖ proof`, the proof in
 //! [`leanvm_core::cpu::Proof::to_bytes`]'s encoding, of an execution of the table on the public input
-//! `data_hash` (two 16-byte halves).
+//! `get_batch_hash(claims)` (two 16-byte halves).
 
 use super::cells::count;
 use super::cells::pack_16_bytes;
@@ -27,8 +35,12 @@ use primitives::field::F192;
 
 /// The most instructions, as a log, of a leanSTARK dependency's program.
 pub const MAX_GENERIC_BYTECODE_LOG: usize = 11;
-/// The most leanSTARK claims one aggregation list holds.
-pub const MAX_GENERIC_DEPENDENCIES: usize = 16;
+/// EIP-8288 `MAX_CLAIMS_PER_BATCH_LEAF` (TBD in the EIP): the most claims one leanSTARK batch leaf proves. A guest
+/// constant, so changing it changes `AGGREGATED_VK`.
+pub const MAX_CLAIMS_PER_BATCH_LEAF: usize = 16;
+
+/// EIP-8288 `get_batch_hash`'s domain, one 16-byte cell.
+pub const BATCH_DOMAIN: [u8; 16] = *b"EIP8288:batch:v1";
 
 /// The domain closing the dependency digest of a list with leanSTARK claims: `"eip8288/leanstark-deps"`, zero-padded.
 pub const LEANSTARK_DEPS_DOMAIN: [u8; 32] = *b"eip8288/leanstark-deps\0\0\0\0\0\0\0\0\0\0";
@@ -99,14 +111,30 @@ pub(super) fn parse_witness(witness: &[u8]) -> Option<GenericWitness> {
     })
 }
 
+/// EIP-8288 `get_batch_hash`: a batch leaf's public statement over its claims.
+pub fn batch_hash(claims: &[[u8; 32]]) -> [u8; 32] {
+    let mut hasher = primitives::hash::Hasher::new();
+    hasher.update(&BATCH_DOMAIN);
+    for claim in claims {
+        hasher.update(claim);
+    }
+    hasher.finalize()
+}
+
+/// Whether `claims` is a batch leaf's claim list: 1 to [`MAX_CLAIMS_PER_BATCH_LEAF`] claims, strictly increasing in
+/// byte-lexicographic order.
+pub fn valid_batch_claims(claims: &[[u8; 32]]) -> bool {
+    (1..=MAX_CLAIMS_PER_BATCH_LEAF).contains(&claims.len()) && claims.is_sorted_by(|a, b| a < b)
+}
+
 /// A digest as the two canonical cells the VM takes it in.
 pub(super) fn digest_cells(digest: &[u8; 32]) -> [F192; 2] {
     [pack_16_bytes(&digest[..16]), pack_16_bytes(&digest[16..])]
 }
 
-/// The verifier's verdict on a parsed witness, with what the guest's witness is built from.
+/// The verifier's verdict on a parsed witness for public input `statement`, with what the guest's witness is built from.
 pub(super) fn check(
-    data_hash: &[u8; 32],
+    statement: &[u8; 32],
     vk: &[u8; 32],
     w: &GenericWitness,
 ) -> Option<(verifier::Bytecode, verifier::Summary)> {
@@ -114,24 +142,34 @@ pub(super) fn check(
         return None;
     }
     let bytecode = verifier::Bytecode::new(&w.table);
-    let summary = verifier::verify_execution(&bytecode, data_hash, &scalar_proof(&w.proof)).ok()?;
+    let summary = verifier::verify_execution(&bytecode, statement, &scalar_proof(&w.proof)).ok()?;
     Some((bytecode, summary))
 }
 
-/// Native check of a leanSTARK dependency: `witness` parses, its table's program digest is `vk`, and its
-/// proof shows an execution of the table on `data_hash`. Accepts exactly what the aggregation guest accepts.
+/// Native check of a leanSTARK dependency on `data_hash`: the singleton batch leaf `[data_hash]`
+/// ([`verify_batch_leaf`]).
+pub fn verify_generic(data_hash: &[u8; 32], vk: &[u8; 32], witness: &[u8]) -> bool {
+    verify_batch_leaf(&[*data_hash], vk, witness)
+}
+
+/// Native check of a batch leaf: `claims` is a valid claim list ([`valid_batch_claims`]), `witness` parses, its
+/// table's program digest is `vk`, and its proof shows an execution of the table on `get_batch_hash(claims)`.
+/// Accepts exactly what the aggregation guest accepts.
 ///
 /// Also builds the guest's hints, so a proof the native verifier accepts but the guest's fixed capacities
 /// (`gen_verify`'s fit check) cannot take is rejected here rather than when the block is proved.
-pub fn verify_generic(data_hash: &[u8; 32], vk: &[u8; 32], witness: &[u8]) -> bool {
-    parse_witness(witness).is_some_and(|w| {
-        check(data_hash, vk, &w).is_some_and(|(bytecode, summary)| sub_hints(&w, &w, data_hash, &bytecode, &summary).is_ok())
-    })
+pub fn verify_batch_leaf(claims: &[[u8; 32]], vk: &[u8; 32], witness: &[u8]) -> bool {
+    let statement = batch_hash(claims);
+    valid_batch_claims(claims)
+        && parse_witness(witness).is_some_and(|w| {
+            check(&statement, vk, &w)
+                .is_some_and(|(bytecode, summary)| sub_hints(&w, &w, &statement, &bytecode, &summary).is_ok())
+        })
 }
 
-/// The guest's hints for one leanSTARK claim (`verify_generic` in the guest): `kgen`, the sub-proof's
-/// witness, then the table a row at a time, each byte in the exponent.
-pub(super) fn generic_hints(data_hash: &[u8; 32], vk: &[u8; 32], witness: &[u8]) -> Result<SubHints, AggregationError> {
+/// The guest's hints for one batch leaf's proof (`verify_generic` in the guest), whose public input is
+/// `statement`: `kgen`, the sub-proof's witness, then the table a row at a time, each byte in the exponent.
+pub(super) fn generic_hints(statement: &[u8; 32], vk: &[u8; 32], witness: &[u8]) -> Result<SubHints, AggregationError> {
     let w = parse_witness(witness).ok_or(AggregationError::InvalidGenericWitness)?;
     // Test builds only: the sub-proof's hints come from an honest witness, the table from `witness`.
     #[cfg(test)]
@@ -142,24 +180,24 @@ pub(super) fn generic_hints(data_hash: &[u8; 32], vk: &[u8; 32], witness: &[u8])
         return sub_hints(&w, &h, &honest_hash, &bytecode, &summary);
     }
     let unchecked = cfg!(feature = "forge") && std::env::var_os("EIP8288_NO_HOST_SIGCHECK").is_some();
-    let (bytecode, summary) = match check(data_hash, vk, &w) {
+    let (bytecode, summary) = match check(statement, vk, &w) {
         Some(checked) => checked,
         None if unchecked => {
             let bytecode = verifier::Bytecode::new(&w.table);
-            let summary = verifier::replay_unchecked(&bytecode, data_hash, &scalar_proof(&w.proof))
+            let summary = verifier::replay_unchecked(&bytecode, statement, &scalar_proof(&w.proof))
                 .map_err(|_| AggregationError::InvalidGenericWitness)?;
             (bytecode, summary)
         }
         None => return Err(AggregationError::InvalidGenericWitness),
     };
-    sub_hints(&w, &w, data_hash, &bytecode, &summary)
+    sub_hints(&w, &w, statement, &bytecode, &summary)
 }
 
 /// The hints of `shown`'s size and table around the sub-proof hints of `proved`'s proof.
 fn sub_hints(
     shown: &GenericWitness,
     proved: &GenericWitness,
-    data_hash: &[u8; 32],
+    statement: &[u8; 32],
     bytecode: &verifier::Bytecode,
     summary: &verifier::Summary,
 ) -> Result<SubHints, AggregationError> {
@@ -174,7 +212,7 @@ fn sub_hints(
         Default::default(),
         0,
     );
-    let (sub, _) = super::child::gen_verify(&stand_in, digest_cells(data_hash), &proved.proof, summary, value)?;
+    let (sub, _) = super::child::gen_verify(&stand_in, digest_cells(statement), &proved.proof, summary, value)?;
     let mut hints: SubHints = vec![("gen_kbc", vec![count(shown.kgen)])];
     hints.extend(sub);
     for row in shown.table.chunks(ROW_WORDS) {

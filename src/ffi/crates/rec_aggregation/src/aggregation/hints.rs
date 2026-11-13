@@ -23,9 +23,10 @@ thread_local! {
 
 #[cfg(test)]
 thread_local! {
-    /// Lets the next nodes this thread aggregates take more leanSTARK claims than the cap, to see the guest refuse them.
-    pub(super) static ALLOW_MANY_GENERIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// An honest leanSTARK `(data_hash, witness)` whose proof the next nodes' leanSTARK sub-proof hints
+    /// Lets the next nodes this thread aggregates take more batch leaves than the cap and invalid claim lists, to see the
+    /// guest refuse them.
+    pub(super) static SKIP_LEAF_CHECKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// An honest leanSTARK `(statement, witness)` whose proof the next nodes' leanSTARK sub-proof hints
     /// come from, whatever claim and witness they are handed: how a test shows the guest a false claim.
     pub(super) static HONEST_GENERIC: std::cell::RefCell<Option<([u8; 32], Vec<u8>)>> = const { std::cell::RefCell::new(None) };
 }
