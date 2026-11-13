@@ -399,8 +399,8 @@ mod tests {
         let _b = local.admit(lo).unwrap();
         assert!(local.admit(lo).is_none(), "per-IP limit");
         drop(a);
-        assert!(local.admit(lo).is_some());
-        // Other loopback addresses share the one bucket.
+        let _c = local.admit(lo).unwrap();
+        // Other loopback addresses share the one bucket, which is full.
         assert!(local.admit("127.0.0.2".parse().unwrap()).is_none());
         let remote = Admission::new(vec![other], 2, 3);
         assert!(remote.admit(lo).is_none());
