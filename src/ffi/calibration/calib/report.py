@@ -146,6 +146,9 @@ def render(res: dict) -> str:
     if m:
         L.append("Marginal machine-seconds (measured slopes): " + ", ".join(
             f"{k} {_f(v, 5)}" for k, v in m.items() if k != "labels") + ".\n")
+        for k, v in (m.get("labels") or {}).items():
+            L.append(f"- {k}: {v}")
+        L.append("")
 
     for G, g in res.get("gas_limits", {}).items():
         L.append(f"## Gas limit {int(G):,}\n")
