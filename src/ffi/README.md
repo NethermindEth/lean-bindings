@@ -92,6 +92,7 @@ resolved dependency.
   key binds one program before the proof's first challenge. The proof sends the table's value at the bus's point and
   opens `root` there and at the out-of-domain point, so verifying it costs the same whatever the program's size.
   `data_hash` is the program's 32-byte public input, packed into two 128-bit field cells. At most 2048 instructions.
+  [`crates/rec_aggregation/EIP8288-PROFILE.md`](crates/rec_aggregation/EIP8288-PROFILE.md) is the full profile.
 * **aggregation input:** direct count then `(96-byte dependency, witness blob)` pairs;
   child count then `(dependency count/triples, proof blob)` pairs; discard count/triples.
 * **aggregate:** the EIP-8288 `stark_proof`, one mixed guest proof without dependencies

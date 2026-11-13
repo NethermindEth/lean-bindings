@@ -24,6 +24,9 @@ lean_compiler.workspace = true
 leanvm_core.workspace = true
 fiat_shamir.workspace = true
 
+[dev-dependencies]
+verifier.workspace = true
+
 [workspace]
 members = ["crates/*"]
 resolver = "3"

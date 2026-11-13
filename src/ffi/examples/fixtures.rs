@@ -62,10 +62,57 @@ fn main() {
     save("stark-key.bin", &key);
     save("stark-message.bin", &public_input);
     save("stark-proof.bin", &witness);
+    save_commitment_vectors(&save, &public_input, &key, &witness);
     let key = aggregated_vk();
     save("aggregated-key.bin", &key);
     println!(
         "AGGREGATED_VK={}",
         key.iter().map(|b| format!("{b:02x}")).collect::<String>()
     );
+}
+
+/// Key-hash and key-opening consistency vectors (`crates/rec_aggregation/EIP8288-PROFILE.md`) for `stark-proof.bin`'s
+/// dependency, whose witness is `kgen ‖ root ‖ ood ‖ proof`: `stark-key-hash-vectors.txt` spells out the derivation of
+/// its `program_commitment` and EIP-8288 `get_vk_hash` of it, and each `stark-key-opening-wrong-*.bin` is a
+/// `program_commitment ‖ witness` pair with `ood` or the root tampered and the commitment recomputed over it, which
+/// verification must reject.
+fn save_commitment_vectors(save: &dyn Fn(&str, &[u8]), data_hash: &[u8; 32], key: &[u8; 32], witness: &[u8]) {
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let limbs = |e: verifier::E| format!("{:016x} {:016x} {:016x}", e.c0, e.c1, e.c2);
+    let kgen = witness[0] as usize;
+    let root: [u8; 32] = witness[1..33].try_into().unwrap();
+    let ood: [u8; 32] = witness[33..65].try_into().unwrap();
+    assert_eq!(verifier::committed_key(kgen, &root, &ood), *key, "the key is the derivation below");
+    let program = lean_compiler::compile(&lean_compiler::parse(ANY_INPUT_PROGRAM).unwrap());
+    let table: Vec<u8> = leanvm_core::cpu::bytecode_table(program.prog())
+        .iter()
+        .flat_map(|word| word.0.to_le_bytes())
+        .collect();
+    let vk_hash = keccak(&[&b"EIP8288:vk:v1"[..], &key[..]].concat());
+    let mut text = format!(
+        "# leanSTARK EIP-8288 profile v1. program_commitment = keccak256(\"leanvm-commit-1\" || u8 kgen || root || ood);\n\
+         # ood_point = {} sponge challenges, IV root, public input \"leanvm-ood-pt-1\" || u8 kgen || 16 zero bytes;\n\
+         # vk_hash = keccak256(\"EIP8288:vk:v1\" || program_commitment). Limbs are c0 c1 c2 of y^0, y^1, y^2.\n\
+         data_hash {}\ntable {}\nkgen {kgen}\nroot {}\nood {}\nprogram_commitment {}\nvk_hash {}\n",
+        verifier::MIN_STACKED_LOG,
+        hex(data_hash),
+        hex(&table),
+        hex(&root),
+        hex(&ood),
+        hex(key),
+        hex(&vk_hash),
+    );
+    for (j, coordinate) in verifier::committed_ood_point(kgen, &root).into_iter().enumerate() {
+        text += &format!("ood_point[{j}] {}\n", limbs(coordinate));
+    }
+    save("stark-key-hash-vectors.txt", text.as_bytes());
+    for (name, at) in [("stark-key-opening-wrong-ood.bin", 33), ("stark-key-opening-wrong-root.bin", 1)] {
+        let mut tampered = witness.to_vec();
+        tampered[at] ^= 1;
+        let root: [u8; 32] = tampered[1..33].try_into().unwrap();
+        let ood: [u8; 32] = tampered[33..65].try_into().unwrap();
+        let tampered_key = verifier::committed_key(kgen, &root, &ood);
+        assert!(!rec_aggregation::verify_generic(data_hash, &tampered_key, &tampered), "{name} is rejected");
+        save(name, &[&tampered_key[..], &tampered[..]].concat());
+    }
 }
