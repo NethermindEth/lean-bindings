@@ -116,7 +116,7 @@ pub fn deps_hash(lean_sphincs: &[LeanSphincsClaim], generic: &[GenericClaim]) ->
         .expect("two 16-byte cells")
 }
 
-/// [`deps_hash`] of a finalized statement (ethereum/EIPs#12664): `keccak256(S ‖ G ‖ FINAL_DEPS_DOMAIN)`, `G` over the
+/// A finalized statement (ethereum/EIPs#12664): `get_batch_final_hash(deps_hash(lean_sphincs, generic))`, `generic` the
 /// finalized leanSTARK list, a batch claim keyed by [`super::finalized_claim_key`].
 pub fn final_deps_hash(lean_sphincs: &[LeanSphincsClaim], generic: &[GenericClaim]) -> [u8; 32] {
     cell_bytes(deps_digest_cells(lean_sphincs, generic, true))

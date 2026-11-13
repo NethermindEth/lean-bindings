@@ -55,8 +55,8 @@ mod tests;
 
 pub use error::{AggregateVerifyError, AggregationError, SnarkProveError, SnarkVerifyError};
 pub use generic::{
-    BATCH_DOMAIN, BATCHED_LEANSTARK_SCHEME, FINAL_DEPS_DOMAIN, LEANSTARK_DEPS_DOMAIN, LEANSTARK_LEAF_PAYMENT_SCHEME,
-    MAX_CLAIMS_PER_BATCH_LEAF, MAX_GENERIC_BYTECODE_LOG, batch_claim_key, batch_hash, finalized_claim_key,
+    BATCH_DOMAIN, BATCH_FINAL_TAG, BATCHED_LEANSTARK_SCHEME, LEANSTARK_DEPS_DOMAIN, LEANSTARK_LEAF_PAYMENT_SCHEME,
+    MAX_CLAIMS_PER_BATCH_LEAF, MAX_GENERIC_BYTECODE_LOG, batch_claim_key, batch_final_hash, batch_hash, finalized_claim_key,
     generic_verification_key, generic_witness, payment_key, scheme_word, valid_batch_claims, verify_batch_leaf,
     verify_generic,
 };
@@ -92,6 +92,10 @@ pub type LeanSphincsClaim = (lean_sphincs::Message, LeanSphincsPublicKey);
 /// an aggregation tree.
 pub const MAX_RECURSIONS: usize = 16;
 
-/// EIP-8288 `MAX_INNER_PROOFS_PER_STEP` (provisional): the most batch leaves and earlier aggregates one
+/// EIP-8288 `MAX_INNER_PROOFS_PER_STEP` (provisional, 16 in the EIP): the most batch leaves and earlier aggregates one
 /// [`aggregate`] call verifies together. Raw leanSPHINCS signatures do not count.
-pub const MAX_INNER_PROOFS_PER_STEP: usize = 16;
+///
+/// Chosen with the leaf bounds, as EIPs#12654 requires: a step of 13 maximum-resource leaves (2^11 instructions, 256
+/// claims, finalized) fits the outer proof's 2^30 committed-witness bound and 14 do not, and 16 children cost about one
+/// leaf. 12 leaves room for the leanSPHINCS signatures a step may add.
+pub const MAX_INNER_PROOFS_PER_STEP: usize = 12;

@@ -1,6 +1,6 @@
 //! The entry points that prove one node of an aggregation tree.
 
-use super::cells::{count, exponent_bytes};
+use super::cells::{cell_bytes, count, exponent_bytes};
 use super::child::gen_verify;
 use super::coverage::plan_coverage;
 use super::deferred::{DeferredClaim, aggregate_deferred_claims, bytecode_sums, bytecode_value, scalar_bytecode};
@@ -13,7 +13,7 @@ use super::generic::{
 };
 use super::hints::{Hints, lean_sphincs_hints};
 use super::proof::{EthereumClaims, EthereumProof, check_signer_set};
-use super::statement::{generic_claim_cells, lean_sphincs_claim_cells, list_split, statement_digest};
+use super::statement::{deps_digest_cells, generic_claim_cells, lean_sphincs_claim_cells, list_split, statement_digest};
 use super::{BatchLeaf, GenericClaim, LeanSphincsClaim, MAX_INNER_PROOFS_PER_STEP, MAX_RECURSIONS};
 use fiat_shamir::merkle::hash_to_scalars;
 use lean_da::{BLOB_SYMBOLS, CELL_SYMBOLS, CELLS_PER_ROW, CODEWORD_SYMBOLS};
@@ -133,7 +133,8 @@ fn prove_node(
     if children.len() > MAX_RECURSIONS {
         return Err(AggregationError::TooLarge);
     }
-    if children.iter().any(|child| child.guest != guest || child.finalized) {
+    // Test builds may hand the guest a finalized child, to see it refused there too.
+    if children.iter().any(|child| child.guest != guest || child.finalized && !skip_leaf_checks()) {
         return Err(AggregationError::InvalidChild(AggregateVerifyError::MalformedClaim));
     }
     let direct = if blobs.is_empty() {
@@ -433,6 +434,11 @@ fn prove_node(
         }
     };
     let finalized = sources.is_some();
+    if finalized {
+        // get_batch_final_hash's preimage takes the plain digest's bytes, re-cut in the guest.
+        let digest = deps_digest_cells(&cover.lean_sphincs.signers, &published, false);
+        hints.push("batch_bytes", exponent_bytes(&cell_bytes(digest)));
+    }
     let public_input =
         statement_digest(guest, &published, &cover.lean_sphincs.signers, finalized, da, &defer);
     let mut program = aggregator.clone();

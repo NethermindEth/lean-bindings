@@ -59,7 +59,8 @@ individual witnesses to 8 MiB and aggregation input to 18 MiB; managed callers f
 the local 1.25 MiB pinned-prover bound (`Eip8288Constants.MaxAggregateProofBytes`, not an EIP-8288
 constant) to every aggregate proof. This is an input-buffer limit, not a process memory bound.
 Dependency lists are bounded to 256, of either scheme. Direct leanSTARK witnesses (singleton leaves), batch leaves
-and recursive children together are bounded to EIP-8288's `MAX_INNER_PROOFS_PER_STEP` (16) per call, discarded and
+and recursive children together are bounded to EIP-8288's `MAX_INNER_PROOFS_PER_STEP` (12 here, provisional: 13
+maximum-resource leaves fit a step's 2^30 committed-witness bound and 14 do not) per call, discarded and
 redundant ones included; leanSPHINCS witnesses do not count. This format and the
 pinned key are prototype protocol choices, pending finalized EIP-8288 encodings.
 
@@ -114,9 +115,11 @@ resolved dependency.
   the key `keccak256(scheme word || vk)` for a payment. A batch claim's key in an intermediate statement is
   `keccak256(scheme word || vk || source digest)`, binding it to the payment of the leaf that established it; only a
   leaf derives it, so a union cannot create a source and pruning cannot change one. A finalizing node publishes its
-  list with each batch claim keyed `keccak256(scheme word || vk)` once its source payment is in the list, under the
-  domain `eip8288/batched-deps`, which no child statement is rebuilt with: a finalized proof is no child. Block
-  validation computes that finalized digest from the dependencies alone.
+  list with each batch claim keyed `keccak256(scheme word || vk)` once its source payment is in the list, and its
+  statement is `get_batch_final_hash(deps_hash) = keccak256("EIP8288:batch-final:v1" || deps_hash)`, which no child
+  statement is rebuilt with: a finalized proof is no child, payment-only ones included. A block holding either scheme
+  is verified against `get_batch_final_hash(block_deps_hash)`. Records are deduplicated by dependency: of several
+  verified sources the prover keeps a paid one.
 * **aggregate:** the EIP-8288 `stark_proof`, one mixed guest proof without dependencies
   or raw witnesses. It verifies against `deps_hash` and `AGGREGATED_VK`
   alone; a child's dependencies come from the aggregation input. Proving an empty list

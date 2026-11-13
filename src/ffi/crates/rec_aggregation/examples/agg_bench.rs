@@ -127,6 +127,16 @@ fn main() {
                 aggregate_with_stats(GUEST, &[left, right], vec![], vec![], &[], None, RATE).expect("proves")
             });
         }
+        "children" => {
+            // A step of `n` recursive inputs, each a one-signature node, as an arity bound must also fit.
+            let n: usize = std::env::args().nth(2).map_or(16, |a| a.parse().expect("n"));
+            let all = signers(n);
+            let children: Vec<EthereumProof> =
+                all.iter().map(|sig| leaf(vec![], vec![sig.clone()])().0).collect();
+            report(&format!("merge {n} children"), || {
+                aggregate_with_stats(GUEST, &children, vec![], vec![], &[], None, RATE).expect("proves")
+            });
+        }
         "generic" => {
             let wide = compile(&parse(&wide_source()).expect("parse"));
             let small = compile(&parse(PREIMAGE).expect("parse")).prog().len();
@@ -187,7 +197,7 @@ fn main() {
                 aggregate_finalized_with_stats(GUEST, &[], leaves.clone(), vec![], &kept, &[], RATE).expect("proves")
             });
         }
-        _ => panic!("mode: sigs [n] | generic | batch [n] [size]"),
+        _ => panic!("mode: sigs [n] | children [n] | generic | batch [n] [size]"),
     }
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     println!(

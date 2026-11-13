@@ -663,9 +663,10 @@ fn check_final(proof: &EthereumProof, expected: &[GenericClaim]) {
     let hash = final_deps_hash(&proof.claims().lean_sphincs, expected);
     let g_bytes: Vec<u8> = expected.iter().flat_map(|(d, k)| d.iter().chain(k).copied()).collect();
     let s = primitives::hash::hash(&[]);
-    let independent = primitives::hash::hash(
-        &[s.as_slice(), &primitives::hash::hash(&g_bytes), b"eip8288/batched-deps\0\0\0\0\0\0\0\0\0\0\0\0"].concat(),
+    let plain = primitives::hash::hash(
+        &[s.as_slice(), &primitives::hash::hash(&g_bytes), b"eip8288/leanstark-deps\0\0\0\0\0\0\0\0\0\0"].concat(),
     );
+    let independent = primitives::hash::hash(&[&b"EIP8288:batch-final:v1"[..], &plain].concat());
     assert_eq!(hash, independent);
     verify_deps_hash(proof.guest(), &hash, &proof.proof_bytes()).expect("verifies under its digest");
     assert!(verify_deps_hash(proof.guest(), &deps_hash(&[], expected), &proof.proof_bytes()).is_err());
@@ -711,8 +712,9 @@ fn sponsored_leaves_finalize_with_their_payment() {
     // An unused payment, alone.
     let unused = declaring(vec![payment(&full)]);
     check_final(&finalize(std::slice::from_ref(&state), vec![], &unused, &source).expect("an unused payment"), &[payment(&full)]);
-    // A retained claim without its payment, or without a known source, does not finalize.
+    // A retained claim without its payment is an intermediate state; it does not finalize, nor without a known source.
     let unpaid = declaring(batch_claims(&full, &claims[..1]));
+    check(&aggregate(Guest::Batched, std::slice::from_ref(&state), vec![], vec![], &[], Some(&unpaid), RATE).expect("an unpaid state"));
     assert_eq!(finalize(std::slice::from_ref(&state), vec![], &unpaid, &source).err(), Some(AggregationError::UnpaidClaim));
     // Without its source the claim stays bound: the statement is none a block computes.
     let unnamed = finalize(std::slice::from_ref(&state), vec![], &one, &[]).expect("finalizes as is");
@@ -727,6 +729,24 @@ fn sponsored_leaves_finalize_with_their_payment() {
         }))
     });
     refused_by_the_guest("a claim paid by itself", finalize(std::slice::from_ref(&state), vec![], &entries, &source));
+    // Nor by an entry with the payment's digest under another scheme's key: an ordinary claim on the digest.
+    let digest = batch_hash(&full.0);
+    let decoy = leaf(&[digest]);
+    let mut generic = vec![batch_claims(&full, &claims[..1])[0], payment(&full), (digest, decoy.1)];
+    generic.sort();
+    let (decoy_at, payment_at) = (
+        generic.iter().position(|e| *e == (digest, decoy.1)).unwrap(),
+        generic.iter().position(|e| *e == payment(&full)).unwrap(),
+    );
+    let with_decoy = EthereumClaims { generic, ..Default::default() };
+    let run = || finalize(std::slice::from_ref(&state), vec![decoy.clone()], &with_decoy, &source);
+    let mut expected = finalized(&full, &claims[..1]);
+    expected.push((digest, decoy.1));
+    expected.sort();
+    check_final(&run().expect("the decoy is an ordinary claim"), &expected);
+    assert_ne!(decoy_at, payment_at);
+    FORGE.with(|f| *f.borrow_mut() = Some(Box::new(move |h: &mut Hints| *h.entry_mut("final_payment_index", 0) = vec![count(decoy_at)])));
+    refused_by_the_guest("a claim paid by an ordinary claim on the digest", run());
 }
 
 /// ethereum/EIPs#12664 Test Cases: singleton leaves under one key need their distinct payments, a union cannot claim the
@@ -824,4 +844,21 @@ fn the_base_guest_refuses_batching() {
     for (name, result) in ["a two-claim leaf", "a batch claim and payment", "finalization"].into_iter().zip(results) {
         refused_by_the_guest(name, result);
     }
+}
+
+/// ethereum/EIPs#12664 Test Case: a finalized proof, a payment-only one included, is imported as neither an ordinary nor an
+/// intermediate input; the guest rebuilds every child statement in the plain domain.
+#[test]
+fn finalized_proofs_are_no_inputs() {
+    leanvm_core::init_prover();
+    let single = leaf(&[[0xa7; 32]]);
+    let paid = aggregate_finalized(Guest::Batched, &[], vec![single.clone()], vec![], &declaring(vec![payment(&single)]), &[], RATE)
+        .expect("a payment-only finalized proof");
+    check_final(&paid, &[payment(&single)]);
+    let import = || aggregate(Guest::Batched, std::slice::from_ref(&paid), vec![], vec![], &[], None, RATE);
+    assert_eq!(import().err(), Some(AggregationError::InvalidChild(AggregateVerifyError::MalformedClaim)));
+    SKIP_LEAF_CHECKS.with(|skip| skip.set(true));
+    let result = import();
+    SKIP_LEAF_CHECKS.with(|skip| skip.set(false));
+    refused_by_the_guest("a finalized child", result);
 }

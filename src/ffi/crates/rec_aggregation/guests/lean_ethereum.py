@@ -382,8 +382,7 @@ KECCAK_STATE = KECCAK_STATE_PLACEHOLDER
 # leaf (1 in EIP-8288's guest), whether leaves may establish batch (0x12) and leaf-payment
 # (0x13) dependencies, the claim digest's 16-byte domain as a cell, a leaf digest's cells a
 # block pair, the low cells of the 0x12 and 0x13 scheme words, the leanVM tag's first 8 bytes
-# as a lane and its 9th byte, and the mixed dependency digest's 32-byte domains as two cells,
-# the second closing a finalized list with batch claims.
+# as a lane and its 9th byte, and the mixed dependency digest's 32-byte domain as two cells.
 MAX_GENERIC_BYTECODE_LOG = MAX_GENERIC_BYTECODE_LOG_PLACEHOLDER
 GEN_KGEN_ARMS = MAX_GENERIC_BYTECODE_LOG + 1
 MAX_CLAIMS_PER_BATCH_LEAF = MAX_CLAIMS_PER_BATCH_LEAF_PLACEHOLDER
@@ -396,8 +395,9 @@ TAG_LANE0 = TAG_LANE0_PLACEHOLDER
 TAG_BYTE8 = TAG_BYTE8_PLACEHOLDER
 DEPS_DOMAIN_0 = DEPS_DOMAIN_0_PLACEHOLDER
 DEPS_DOMAIN_1 = DEPS_DOMAIN_1_PLACEHOLDER
-FINAL_DOMAIN_0 = FINAL_DOMAIN_0_PLACEHOLDER
-FINAL_DOMAIN_1 = FINAL_DOMAIN_1_PLACEHOLDER
+# get_batch_final_hash's 22-byte tag: its first 16 bytes as a cell, the last 6 as a cell's low bytes.
+FINAL_TAG_0 = FINAL_TAG_0_PLACEHOLDER
+FINAL_TAG_1 = FINAL_TAG_1_PLACEHOLDER
 # Claims a declared claim list absorbs a loop frame: 68 cells, four block pairs. The
 # list's bulk goes CLAIM_BIG claims a frame, BIG_GROUPS of those groups, so that the
 # sponge state's trip through the heap is paid once per CLAIM_BIG claims; the rest
@@ -3654,11 +3654,39 @@ def establish(slot, claims, n_g, vk_0, vk_1, d_0, d_1):
     return
 
 
+def batch_final_hash(h_0, h_1, t8):
+    # ethereum/EIPs#12664 get_batch_final_hash: keccak256(tag | h) over the 22-byte tag and the
+    # 32-byte digest h, cells h_0 | h_1. h's bytes, hinted and range-checked, are re-cut 6 bytes on.
+    h = HeapBuf(2)
+    h[1] = h_0
+    h[GEN] = h_1
+    hb = HeapBuf(32)
+    batch_claim_bytes(h, hb, t8)
+    c1 = shifted_cell(hb, t8, FINAL_TAG_1, 6, 2, 8, 0)
+    c2 = shifted_cell(hb, t8, 0, 0, 8, 8, 10)
+    c3 = shifted_cell(hb, t8, 0, 0, 6, 0, 26)
+    out = StackBuf(2)
+    keccak_cells([FINAL_TAG_0, c1, c2, c3], out, len=54)
+    return out[0], out[1]
+
+
+def shifted_cell(hb, t8, base, first: Const, lo_count: Const, hi_count: Const, src: Const):
+    # base plus bytes of hb from `src`: lo_count at a cell's low-lane positions from `first`, then hi_count
+    # filling its high lane from position 8.
+    lo = 0
+    hi = 0
+    for k in unroll(0, lo_count):
+        lo += (2 ** (8 * (first + k))) * t8[hb[GEN ** (src + k)]]
+    for k in unroll(0, hi_count):
+        hi += (2 ** (8 * k)) * t8[hb[GEN ** (src + lo_count + k)]]
+    return base + lo + Y_TOWER * hi
+
+
 def finalize(table, n_g):
     # ethereum/EIPs#12664 finalization: the n published leanSTARK entries, a bijection of the
     # node's own: each 0x12 entry claim | keccak256(W12 | vk | d) as claim | keccak256(W12 | vk)
     # once its source d | keccak256(W13 | vk) is in the node's list, every other entry as is.
-    # Returns the digest of the finalized list, which only a statement under FINAL_DOMAIN carries.
+    # Returns the digest of the finalized list, which only a finalized statement carries.
     finalized = HeapBuf(n_g ** 4)
     fd_0, fd_1 = claim_list_digest(finalized, n_g)
     marks = HeapBuf(n_g)
@@ -4560,8 +4588,8 @@ def main():
     else:
         aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_stmt)
 
-    # A finalized statement publishes the finalized leanSTARK list under FINAL_DOMAIN, which no
-    # child statement is rebuilt with, so its batch claims never re-enter recursion unbound.
+    # A finalized statement publishes get_batch_final_hash of the finalized lists' digest, a
+    # domain no child statement is rebuilt with, so its claims never re-enter recursion unbound.
     final_g = hint_witness("final")
     assert log(final_g) < 2
     dd = StackBuf(2)
@@ -4574,7 +4602,10 @@ def main():
             assert final_g == 1
         assert n_lx_g != 1
         fd_0, fd_1 = finalize(lx_table, n_lx_g)
-        keccak([sd_0, sd_1], [fd_0, fd_1], dd, tail=[FINAL_DOMAIN_0, FINAL_DOMAIN_1, 0, 0], len=96)
+        od_0, od_1 = deps_digest(fd_0, fd_1, sd_0, sd_1, n_lx_g)
+        f0, f1 = batch_final_hash(od_0, od_1, t8)
+        dd[0] = f0
+        dd[1] = f1
     dd_0 = dd[0]
     dd_1 = dd[1]
     own_0, own_1 = statement_digest(seed_0, seed_1, dd_0, dd_1, da[1], da[GEN], defer_stmt)

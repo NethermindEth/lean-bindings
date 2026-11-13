@@ -56,9 +56,14 @@ pub const BATCH_DOMAIN: [u8; 16] = *b"EIP8288:batch:v1";
 /// The domain closing the dependency digest of a list with leanSTARK claims: `"eip8288/leanstark-deps"`, zero-padded.
 pub const LEANSTARK_DEPS_DOMAIN: [u8; 32] = *b"eip8288/leanstark-deps\0\0\0\0\0\0\0\0\0\0";
 
-/// The domain closing a finalized dependency digest (ethereum/EIPs#12664): `"eip8288/batched-deps"`, zero-padded. No child
-/// statement is rebuilt with it, so a finalized proof's batch claims never re-enter recursion without their sources.
-pub const FINAL_DEPS_DOMAIN: [u8; 32] = *b"eip8288/batched-deps\0\0\0\0\0\0\0\0\0\0\0\0";
+/// ethereum/EIPs#12664 `get_batch_final_hash`'s tag. No child statement is rebuilt under it, so a finalized proof's claims
+/// never re-enter recursion without their sources.
+pub const BATCH_FINAL_TAG: [u8; 22] = *b"EIP8288:batch-final:v1";
+
+/// ethereum/EIPs#12664 `get_batch_final_hash(deps_hash) = DEPS_HASH(tag ‖ deps_hash)`: a finalized proof's statement.
+pub fn batch_final_hash(deps_hash: &[u8; 32]) -> [u8; 32] {
+    primitives::hash::hash(&[&BATCH_FINAL_TAG[..], deps_hash].concat())
+}
 
 /// Stacked table words a row of the bytecode: the table is `16 · 2^kgen` words.
 const ROW_WORDS: usize = 16;
