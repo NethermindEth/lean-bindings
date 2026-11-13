@@ -16,7 +16,7 @@
     <SourceRevisionId Condition="'$(Commit)' != ''">$(Commit.Substring(0, 8))</SourceRevisionId>
     <!-- The src/ffi crate version; set by Build Lean. -->
     <VersionPrefix>0.13.0</VersionPrefix>
-    <VersionSuffix></VersionSuffix>
+    <VersionSuffix>batchleaves</VersionSuffix>
   </PropertyGroup>
 
 </Project>
