@@ -15,7 +15,7 @@
   "sigs_per_node": 16,
   "bounds": {"code_log": 11, "trace_log": 30, "inner_log_inv_rate": 1, "claims": 256, "max_inner_proofs_per_step": 16},
   "preflight": {"mode": "scale", "usable_fraction": 0.6},
-  "reps": 3,
+  "reps": 4,
   "max_iterations": 2,
   "evm_fraction": 0.5,
   "tx": {"signature_gas": 4040, "frames_per_tx": 1},

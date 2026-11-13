@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-# EIP-8141 @ the EIPs#12654 head: frame transaction intrinsic costs, and EIP-7976 calldata pricing of a 96-byte triple
+# EIP-8141 as referenced by ethereum/EIPs#12664: frame transaction intrinsic costs, and EIP-7976 calldata pricing of a 96-byte triple
 # (31 zero padding bytes, a nonzero scheme byte, 64 data and key bytes).
 FRAME_TX_INTRINSIC_COST = 12_000
 FRAME_TX_PER_FRAME_COST = 475

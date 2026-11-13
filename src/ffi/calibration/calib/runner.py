@@ -85,25 +85,34 @@ class Runner:
         raw: dict[str, list[dict]] = {name: [] for name, _ in cells}
         for rep in range(reps):
             for name, args in cells:
-                g = self.gate()
-                mem0 = host.memory()
-                t0 = time.time()
-                p = subprocess.run([os.path.join(build["bin"], "calib-node"), "cell", *args], capture_output=True,
-                                   text=True, env=self.env())
-                wall = time.time() - t0
-                mem1 = host.memory()
-                tag = f"{build['label']}_{name}_rep{rep}"
-                open(os.path.join(self.out, "logs", tag + ".out"), "w").write(p.stdout + "\n---stderr---\n" + p.stderr)
-                rec = {"kind": "cell", "build": build["label"], "cell": name, "args": args, "rep": rep, "rc": p.returncode,
-                       "wall_s": wall, "gate": g, "swap_used_before": mem0["swap_used"], "swap_used_after": mem1["swap_used"],
-                       "available_before": mem0["available"], "result": result_line(p.stdout)}
-                self.jsonl.write(json.dumps(rec) + "\n")
-                self.jsonl.flush()
+                rec = self.cell(build, name, args, rep)
+                if rep >= 1 and violated(rec):
+                    # A timed repetition under load or with swap growth is repeated once; summarize() drops it if the
+                    # repeat is also violated.
+                    rec = self.cell(build, name, args, rep, retry=True)
                 raw[name].append(rec)
-                r = rec["result"] or {}
-                self.log(f"  cell {name} rep{rep}: rc={p.returncode} {r.get('status')} prove={r.get('prove_s')} "
-                         f"rss={r.get('peak_rss', 0) / 2**30:.2f}G load={g['load1']:.1f}")
         return {name: summarize(recs) for name, recs in raw.items()}
+
+    def cell(self, build: dict, name: str, args: list[str], rep: int, retry: bool = False) -> dict:
+        g = self.gate()
+        mem0 = host.memory()
+        t0 = time.time()
+        p = subprocess.run([os.path.join(build["bin"], "calib-node"), "cell", *args], capture_output=True,
+                           text=True, env=self.env())
+        wall = time.time() - t0
+        mem1 = host.memory()
+        tag = f"{build['label']}_{name}_rep{rep}{'-retry' if retry else ''}"
+        open(os.path.join(self.out, "logs", tag + ".out"), "w").write(p.stdout + "\n---stderr---\n" + p.stderr)
+        rec = {"kind": "cell", "build": build["label"], "cell": name, "args": args, "rep": rep, "retry": retry,
+               "rc": p.returncode, "wall_s": wall, "gate": g, "swap_used_before": mem0["swap_used"],
+               "swap_used_after": mem1["swap_used"], "available_before": mem0["available"], "result": result_line(p.stdout)}
+        self.jsonl.write(json.dumps(rec) + "\n")
+        self.jsonl.flush()
+        r = rec["result"] or {}
+        self.log(f"  cell {name} rep{rep}{' retry' if retry else ''}: rc={p.returncode} {r.get('status')} "
+                 f"prove={r.get('prove_s')} rss={r.get('peak_rss', 0) / 2**30:.2f}G load={g['load1']:.1f}"
+                 f"{'' if not violated(rec) else ' (unquiet or swapped)'}")
+        return rec
 
     # ---- workers and blocks -------------------------------------------------------------------------------------
     def start_workers(self, build: dict) -> tuple[list[str], list[subprocess.Popen]]:
@@ -179,21 +188,30 @@ class Runner:
         return res
 
 
+SWAP_GROWTH = 64 * 2**20
+
+
+def violated(rec: dict) -> bool:
+    """Whether a measurement broke the conditions: competing load at the gate, or swap growth while it ran."""
+    return not rec["gate"]["quiet"] or rec["swap_used_after"] > rec["swap_used_before"] + SWAP_GROWTH
+
+
 def summarize(recs: list[dict]) -> dict:
-    timed = [r for r in recs if r["rep"] >= 1 and r["rc"] == 0 and r["result"] and r["result"].get("status") == "ok"]
+    timed = [r for r in recs if r["rep"] >= 1 and r["rc"] == 0 and r["result"] and r["result"].get("status") == "ok"
+             and not violated(r)]
+    excluded = sum(1 for r in recs if r["rep"] >= 1 and violated(r))
     first = next((r["result"] for r in recs if r["result"]), None) or {}
     if first.get("status") == "skipped":
         return {"status": "skipped", "reason": first.get("reason")}
     if not timed:
-        return {"status": "failed", "reps": len(recs), "error": first.get("error"),
+        return {"status": "failed", "reps": len(recs), "error": first.get("error") or
+                (f"all {excluded} timed repetitions violated the measurement conditions" if excluded else None),
                 "rc": [r["rc"] for r in recs]}
     res = [r["result"] for r in timed]
     pv = [x["prove_s"] for x in res]
-    swapped = any(r["swap_used_after"] > r["swap_used_before"] + 64 * 2**20 for r in timed)
-    return {"status": "ok", "reps": len(timed), "prove_s": statistics.median(pv), "prove_min": min(pv),
+    return {"status": "ok", "reps": len(timed), "excluded": excluded, "prove_s": statistics.median(pv), "prove_min": min(pv),
             "prove_max": max(pv), "cycles": statistics.median(x["node_cycles"] for x in res),
             "log_committed": res[0].get("node_log_committed"), "proof_bytes": res[0].get("proof_bytes"),
             "peak_rss": max(x["peak_rss"] for x in res), "verify_ms": statistics.median(x["verify_ms"] for x in res),
-            "swapped": swapped, "load1_max": max(r["gate"]["load1"] for r in timed),
-            "quiet": all(r["gate"]["quiet"] for r in timed), "extra": {k: v for k, v in res[0].items()
+            "load1_max": max(r["gate"]["load1"] for r in timed), "extra": {k: v for k, v in res[0].items()
                                                                       if k in ("sigs", "children", "claims_per_child", "leaves", "claims", "retain", "records")}}

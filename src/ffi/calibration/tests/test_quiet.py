@@ -68,3 +68,20 @@ class Quiet(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def cell_rec(rep: int, prove: float, quiet: bool = True, swap_growth: int = 0, retry: bool = False) -> dict:
+    return {"rep": rep, "retry": retry, "rc": 0, "gate": {"quiet": quiet, "load1": 1.0}, "swap_used_before": 0,
+            "swap_used_after": swap_growth, "result": {"status": "ok", "prove_s": prove, "node_cycles": 100,
+                                                       "peak_rss": 1, "verify_ms": 1.0}}
+
+
+class CellConditions(unittest.TestCase):
+    def test_violated_repetition_is_repeated_and_excluded_if_the_repeat_fails(self):
+        from calib import runner
+        attempts = iter([cell_rec(0, 9.0), cell_rec(1, 9.0, quiet=False), cell_rec(1, 1.0, retry=True),
+                         cell_rec(2, 9.0, swap_growth=2**30), cell_rec(2, 9.0, swap_growth=2**30, retry=True)])
+        r = runner.Runner.__new__(runner.Runner)
+        r.cell = lambda build, name, args, rep, retry=False: next(attempts)
+        s = r.cells({"label": "b"}, [("c", [])], reps=3)["c"]
+        self.assertEqual((s["status"], s["reps"], s["excluded"], s["prove_s"]), ("ok", 1, 1, 1.0))

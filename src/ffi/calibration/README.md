@@ -1,8 +1,8 @@
-# Gas calibration (EIP-8288, ethereum/EIPs#12664)
+# Gas calibration (ethereum/EIPs#12664)
 
 A reproducible activation calibration: it measures aggregation on a machine, derives the gas constants from one
 published budget, and checks them by proving the worst gas-admissible blocks across workers. It follows the activation
-requirements of EIP-8288 (ethereum/EIPs#12654) and the batch-pricing draft (ethereum/EIPs#12664). It is not part of the
+requirements and benchmark methodology of "Generic Proof Verification and Batching" (ethereum/EIPs#12664). It is not part of the
 library or the package: a workspace member so CI keeps it compiling, with no dependency the library lacks.
 
 ## What it does
@@ -34,40 +34,46 @@ library or the package: a workspace member so CI keeps it compiling, with no dep
 
 ## Methodology coverage
 
-`report.md` follows the headings of EIP-8288's benchmark methodology (ethereum/EIPs#12654,
-`assets/eip-8288/benchmarks.md`): Configuration, Workloads, Measurements, Calibration, then what the run did not
-cover. Items from the batching supplement (ethereum/EIPs#12664, `assets/eip-draft_batched_dependency_pricing/benchmarks.md`)
-are marked #12664. Each section ends with a table of its items and what the run did for each.
+`report.md` follows the headings of the benchmark methodology (ethereum/EIPs#12664,
+`assets/eip-draft_batched_dependency_pricing/benchmarks.md`): Configuration, Workloads, Measurements, Calibration,
+then what the run did not cover. Each section ends with a table of its items and what the run did for each.
 
 | methodology item | covered by |
 |---|---|
 | **Configuration** | |
-| Prover/verifier revisions and configurations, commitment construction | `lib_ref`, `batch_lib_ref`, `key`; builds record SHA and detected features |
+| Revisions and configurations, commitment construction, hashes | `lib_ref`, `batch_lib_ref`, `key`; builds record SHA and detected features |
 | Gas schedule, gas limit | `gas_limits`; derived constants per iteration |
 | Verifier resource bounds | `bounds` (program size `code_log`, trace `trace_log`, rate, claims, arity) |
-| Hardware, workers, threads and memory per worker, margins | `host` record and `host.txt`/`machine.txt`; `workers`, `threads_per_worker`, `memory_per_worker_gb`, `margin` |
+| Hardware, workers, threads and memory per worker, margins | `host` record, `host.txt`/`machine.txt`; `workers`, `threads_per_worker`, `memory_per_worker_gb`, `margin` |
 | Time and peak-memory budgets before calibration | `builder_budget_s`, `validator_budget_s`, `memory_per_worker_gb` |
+| Memory per worker fixed jointly with commitment construction and arity | preflight: whether a full maximum-resource step fits one worker (`refuse` mode stops if not) |
 | **Workloads** | |
-| Maximum-resource leaf (support code, padding, authentication, openings) | corpus leaves sized by the preflight; `generic-leaf` cell |
-| #12664 claim count up to `MAX_CLAIMS_PER_BATCH_LEAF` | `bounds.claims`; `batch-leaf-r1`/`-r256` cells |
-| Full steps at the proposed arity, distinct keys, mixtures | `full-step-N`, `merge-*` cells; block trees mix leaves and recursive inputs |
+| Maximum-resource leaf, claim count included | corpus leaves sized by the preflight; `generic-leaf`, `batch-leaf-r1`/`-r256` cells |
+| Jointly valid resource combinations | not covered (see below) |
+| Full steps at the proposed arity, distinct keys, recursive inputs, mixtures | `full-step-N`, `merge-*` cells; block trees mix leaves and recursive inputs |
 | Outer trace and proof-size bounds | per-cell committed log2 and proof bytes (reported, not checked against a fork limit) |
-| Gas-admissible blocks, complete transaction accounting | `calib/gasmath.py` (`tx`): native, generic, mixtures, EVM blocks |
+| Gas-admissible blocks, complete transaction accounting | `calib/gasmath.py` (`tx`) |
+| EVM-dominated, native, singleton generic, full batch leaves, one claim per leaf with payment, mixtures | blocks `evm`, `native`, `generic`, `batch_full`, `batch_one_claim`, `mix_*` |
 | One leaf per initial step, no shared-key savings | by construction in `plan_for` |
-| #12664 full leaves; one claim per maximum-resource leaf with payment | `batch_full`, `batch_one_claim`, `mix_native_batch` blocks |
-| #12664 source selection, payment lookup, pruning, finalization | batch blocks (`retain`, sources, `finalize`) |
+| Overlapping leaves, source selection, payment lookup, pruning, finalization | batch blocks (sources, `retain`, `finalize`); overlapping leaves not exercised |
+| Intended application verifiers fit the bounds | not covered |
 | **Measurements** | |
-| Makespan at W, critical path, inter-worker transfers | `calib-coord` per block: makespan, critical path, fetch time, bytes |
-| Authentication/recursion costs, total work, depth | per-node cycles and prove/fetch/decode time; block work and depth |
+| Makespan at W, critical paths, inter-worker transfers | `calib-coord` per block: makespan, critical path, fetch time, bytes |
+| Authentication/recursion costs, total work, depth, critical path | per-node cycles and prove/fetch/decode time; block work and depth |
 | Per-worker and aggregate peak memory | per-worker peak RSS (aggregate = sum) |
 | Proof sizes, transmitted bytes | cell proof bytes; block input, transfer and root bytes |
 | Validator execution and verification | root verification time plus imported EVM time vs `validator_budget_s` |
-| #12664 claim hashing and payment binding through the tree, per-record vs amortized | `batch-leaf`, `mergebatch`, `finalize` cells at 1 and 256 claims (slopes = per record) |
+| 192-byte intermediate records | inside transferred bytes; not reported separately |
+| Own process, discarded warm-up, >= 3 timed repetitions, median and range | `reps` (default 4: one warm-up, 3 timed) |
+| No competing load or swap growth; repeat, then exclude | quiet gate (`quiet`) and swap check; a violated cell repetition or block is repeated once, then excluded |
+| Cycle counts alongside times | cycles per cell and per block node |
+| Cumulative claim hashing and payment binding, per-record vs amortized | `batch-leaf`, `mergebatch`, `finalize` cells at 1 and 256 claims (slopes = per record) |
+| Batch leaf measured separately from a generic leaf | `batch-leaf-r1` vs `generic-leaf` cells |
 | Measured separated from modelled | every figure labelled |
 | **Calibration** | |
-| Native, generic, share and claim charges from the same budgets | `calib/gasmath.py` `derive` from measured marginals |
+| Native, generic, share and batch-claim charges from the same budgets | `calib/gasmath.py` `derive` from measured marginals |
 | Re-prove the blocks with the proposed schedule; all must fit | iterations: verify, raise the rate on a miss (`max_iterations`) |
-| Calibration covers only measured limits and bounds | one calibration per entry in `gas_limits` |
+| Covers only measured limits, configurations and bounds | one calibration per entry in `gas_limits` |
 
 Not covered yet:
 
@@ -76,8 +82,8 @@ Not covered yet:
 - Jointly maximal table heights ("jointly valid combinations of all resource bounds"): the generator raises one
   loop's trace; the other tables' maxima under the final verifier resource bounds are not defined.
 - Intended application verifiers fitting the resource bounds.
-- #12664 overlapping leaves, and the 192-byte intermediate records reported on their own (they are inside the
-  transferred bytes).
+- Overlapping leaves, and the 192-byte intermediate records reported on their own (they are inside the transferred
+  bytes).
 - The batch guest under the committed key: no library revision has both.
 
 ## Run
@@ -98,8 +104,9 @@ architecture, and `--yield-to-manual-runs OWNER/REPO --runner-label LABEL` exits
 benchmark run is waiting for that runner (`ci/manual_runs.py`).
 
 Each cell and block first waits for a quiet machine (`quiet.max_load1`, no competing build or test process), logging
-while it waits. A block still measured under load after `quiet.timeout_s` is proved once more; if it is unquiet again it
-is reported as not counted, so it neither drives the recalibration nor passes.
+while it waits. A timed cell repetition measured under load or with swap growth, or a block measured under load after
+`quiet.timeout_s`, is run once more; if the repeat is violated too it is excluded, so it neither drives the
+recalibration nor passes.
 
 ## Configuration
 

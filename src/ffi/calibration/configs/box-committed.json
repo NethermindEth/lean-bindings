@@ -23,7 +23,7 @@
     "mode": "scale",
     "usable_fraction": 0.8
   },
-  "reps": 3,
+  "reps": 4,
   "max_iterations": 2,
   "evm_fraction": 0.5,
   "tx": {

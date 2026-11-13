@@ -4,31 +4,31 @@ from __future__ import annotations
 
 GB = 2**30
 
-# The methodology's items, under its headings: EIPs#12654 assets/eip-8288/benchmarks.md (Configuration, Workloads,
-# Measurements, Calibration) and the EIPs#12664 batching supplement (marked #12664). The status column is computed from
-# the run; README.md maps each item to the scenario, config key or output that covers it.
+# The items of the benchmark methodology (ethereum/EIPs#12664, assets/eip-draft_batched_dependency_pricing/benchmarks.md),
+# under its headings. The status column is computed from the run; README.md maps each item to the scenario, config key
+# or output that covers it.
 METHODOLOGY = {
     "Configuration": [
-        ("Prover and verifier revisions and configurations, commitment construction", "revisions"),
+        ("Prover and verifier revisions and configurations, commitment construction, hashes", "revisions"),
         ("Gas schedule and gas limit", "gas_limits"),
         ("Verifier resource bounds", "bounds"),
         ("Hardware, worker count, threads and memory per worker, safety margins", "hardware"),
-        ("Builder aggregation and validator time budgets, fixed before calibration", "budgets"),
-        ("Peak-memory budgets", "memory"),
+        ("Builder and validator time and peak-memory budgets, fixed before calibration", "budgets"),
+        ("Memory per worker fixed jointly with the commitment construction and MAX_INNER_PROOFS_PER_STEP", "joint_memory"),
     ],
     "Workloads": [
-        ("Maximum-resource leaf, with support code, padding, authentication and openings", "max_leaf"),
-        ("#12664: claim count up to MAX_CLAIMS_PER_BATCH_LEAF", "max_claims"),
-        ("Jointly valid combinations of all resource bounds", "joint"),
-        ("Full steps at the proposed arity, distinct keys, with recursive inputs and mixtures", "full_step"),
-        ("Outer trace and proof-size bounds of full steps", "outer"),
+        ("Maximum-resource leaf, claim count included, with support code, padding, authentication and openings", "max_leaf"),
+        ("Jointly valid resource combinations", "joint"),
+        ("Full steps at the proposed arity: distinct keys, recursive inputs, mixtures", "full_step"),
+        ("Outer trace and proof-size bounds", "outer"),
         ("Complete transaction gas accounting", "tx"),
         ("EVM-dominated blocks", "evm"),
         ("Native-signature blocks", "native"),
-        ("Singleton generic proofs under distinct keys, one leaf per initial step", "generic"),
+        ("Unaggregated singleton generic proofs under distinct keys", "generic"),
+        ("Full batch leaves; one claim per maximum-resource leaf with its payment", "batch_blocks"),
         ("Adversarial mixtures", "mix"),
-        ("#12664: full leaves; one claim per maximum-resource leaf with its payment", "batch_blocks"),
-        ("#12664: overlapping leaves, source selection, payment lookup, pruning, finalization", "batch_tree"),
+        ("One leaf per initial step, no shared-key preprocessing savings", "unpacked"),
+        ("Overlapping leaves, source selection, payment lookup, pruning, finalization", "batch_tree"),
         ("Intended application verifiers fit the resource bounds", "apps"),
     ],
     "Measurements": [
@@ -37,8 +37,12 @@ METHODOLOGY = {
         ("Per-worker and aggregate peak memory", "memory_measured"),
         ("Proof sizes and transmitted bytes", "bytes"),
         ("Validator execution and proof verification against their budgets", "validator"),
-        ("#12664: claim hashing and payment binding through the tree; per-record vs amortized work", "binding"),
-        ("#12664: 192-byte intermediate records in memory and serialization", "records"),
+        ("192-byte intermediate records in memory and serialization", "records"),
+        ("Own process per step, warm-up discarded, >= 3 timed repetitions, median and range", "reps"),
+        ("No competing load or swap growth; violations repeated, then excluded", "conditions"),
+        ("Deterministic cycle counts alongside times", "cycles"),
+        ("Cumulative claim hashing and payment binding; per-record vs amortized carry", "binding"),
+        ("Maximum-resource batch leaf measured separately from an ordinary generic leaf", "batch_leaf"),
         ("Measured results separated from models and extrapolations", "labels"),
     ],
     "Calibration": [
@@ -99,9 +103,12 @@ def _status(res: dict, key: str) -> str:
         c = cells.get(f"full-step-{n}", {})
         s = c.get("status", "not run")
         return f"{s} with {n} of {mi} leaves" + (" (scaled down)" if n != mi else "")
+    if key == "unpacked":
+        return "by construction: one generic leaf per initial step"
     if key == "max_leaf":
+        claims = f", {res['config']['bounds']['claims']} claims" if res.get("builds", {}).get("batch") else ", claims not measured"
         return (f"code 2^{pre.get('code_log_used')} of 2^{res['config']['bounds']['code_log']}, trace 2^{pre.get('trace_log_used')} "
-                f"of 2^{pre.get('trace_log_requested')}" + (" (scaled down)" if pre.get("trace_log_used") != pre.get("trace_log_requested") else ""))
+                f"of 2^{pre.get('trace_log_requested')}" + (" (scaled down)" if pre.get("trace_log_used") != pre.get("trace_log_requested") else "") + claims)
     if key == "binding":
         return "measured" if cells.get("finalize-r1", {}).get("status") == "ok" else "not measured (no batch build)"
     if key == "batch_blocks":
@@ -112,9 +119,26 @@ def _status(res: dict, key: str) -> str:
     if key == "budgets":
         c = res["config"]
         return f"configured: builder {c['builder_budget_s']} s, validator {c['validator_budget_s']} s, {c['memory_per_worker_gb']} GB per worker"
-    if key == "max_claims":
-        return (f"{res['config']['bounds']['claims']} claims per batched leaf" if res.get("builds", {}).get("batch")
-                else "not measured (no batch build)")
+    if key == "joint_memory":
+        n, mi = pre.get("step_leaves"), res["config"]["bounds"]["max_inner_proofs_per_step"]
+        if n is None:
+            return "not run"
+        return (f"fits: a full {mi}-leaf step within {res['config']['memory_per_worker_gb']} GB per worker ({res['config']['key']} key)"
+                if n == mi else f"does not fit: {n} of {mi} leaves within {pre.get('budget_gb', 0):.0f} GB ({res['config']['key']} key)")
+    if key == "reps":
+        c = res["config"]
+        timed = c.get("reps", 4) - 1
+        return (f"configured: {timed + 1} runs per cell, the first discarded; median and range of {timed} timed"
+                + ("" if timed >= 3 else " (fewer than the 3 required)"))
+    if key == "conditions":
+        ex = sum(c.get("excluded", 0) for c in cells.values())
+        return (f"measured: quiet gate (load1 < {c_quiet(res)}) and swap check; {ex} cell repetitions excluded; "
+                "an unquiet block is proved again, then not counted")
+    if key == "cycles":
+        return "measured: cycles per cell and per block node"
+    if key == "batch_leaf":
+        ok = all(cells.get(n, {}).get("status") == "ok" for n in ("batch-leaf-r1", "generic-leaf"))
+        return "measured: batch-leaf vs generic-leaf cells" if ok else "not measured"
     if key == "joint":
         return "not covered: the generator raises one loop's trace; the other tables' joint maxima are not defined"
     if key == "outer":
@@ -122,7 +146,7 @@ def _status(res: dict, key: str) -> str:
         return (f"measured: committed 2^{_f(c.get('log_committed'), 2)}, proof {_f(c.get('proof_bytes'))} B; "
                 "not checked against a fork bound") if c.get("status") == "ok" else "not measured"
     if key == "batch_tree":
-        return ("partly: sources, payment lookup, pruning (retain) and finalization in batch blocks; overlapping leaves not exercised"
+        return ("partly: source selection, payment lookup, pruning (retain) and finalization in batch blocks; overlapping leaves not exercised"
                 if res.get("builds", {}).get("batch") else "not measured (no batch build)")
     if key == "apps":
         return "not covered"
@@ -190,11 +214,11 @@ def render(res: dict) -> str:
     L.append("## Measurements\n")
     _items(L, res, "Measurements")
     L.append("### Steps (measured, one step per process, median of timed repetitions)\n")
-    L.append("| cell | status | prove s [min–max] | cycles | committed log2 | peak RSS GB | swapped |\n|---|---|---|---|---|---|---|")
+    L.append("| cell | status | prove s [min–max] | cycles | committed log2 | peak RSS GB | excluded |\n|---|---|---|---|---|---|---|")
     for name, c in res.get("cells", {}).items():
         if c.get("status") == "ok":
             L.append(f"| {name} | ok ({c['reps']}) | {c['prove_s']:.3f} [{c['prove_min']:.3f}–{c['prove_max']:.3f}] | "
-                     f"{c['cycles']:,.0f} | {_f(c['log_committed'], 2)} | {c['peak_rss'] / GB:.2f} | {'yes' if c['swapped'] else 'no'} |")
+                     f"{c['cycles']:,.0f} | {_f(c['log_committed'], 2)} | {c['peak_rss'] / GB:.2f} | {c.get('excluded', '—')} |")
         else:
             L.append(f"| {name} | {c.get('status')}: {c.get('reason') or c.get('error') or ''} | | | | | |")
     L.append("")
@@ -248,6 +272,10 @@ def render(res: dict) -> str:
     return "\n".join(L) + "\n"
 
 
+def c_quiet(res: dict) -> float:
+    return res["config"].get("quiet", {}).get("max_load1", 5)
+
+
 def _items(L: list[str], res: dict, section: str):
     L.append("| methodology item | this run |\n|---|---|")
     for text, key in METHODOLOGY[section]:
@@ -266,7 +294,7 @@ def unmeasured(res: dict) -> list[str]:
     if pre.get("step_leaves") != cfg["bounds"]["max_inner_proofs_per_step"]:
         out.append(f"Full steps of {cfg['bounds']['max_inner_proofs_per_step']} leaves: measured {pre.get('step_leaves')}.")
     if not res.get("builds", {}).get("batch"):
-        out.append("#12664 payment binding and batch blocks: no batch-pricing build.")
+        out.append("Payment binding and batch blocks: no batch-pricing build.")
     if not res.get("evm_records"):
         out.append("EVM execution: no timings imported; EVM-dominated blocks and EVM mixtures have no validator time.")
     if cfg.get("block_scale", 1.0) != 1.0:

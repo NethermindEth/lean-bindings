@@ -20,7 +20,7 @@ from calib import build, host, pipeline, report  # noqa: E402
 
 def load(path: str) -> dict:
     cfg = json.load(open(path))
-    cfg.setdefault("reps", 3)
+    cfg.setdefault("reps", 4)
     cfg.setdefault("fanin", 4)
     cfg.setdefault("sigs_per_node", 64)
     return cfg
