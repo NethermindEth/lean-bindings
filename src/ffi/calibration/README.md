@@ -115,7 +115,7 @@ linearly and labelled extrapolated.
 
 The `reproducible-benchmarks` runners are registered to NethermindEth/nethermind. Today a run uses a push-triggered
 vehicle branch there (`test/eip8288-gas-calibration`, never merged, no PR): its workflow
-`.github/workflows/eip8288-gas-calibration.yml` reads `.github/eip8288-calibration.env` (`ARCHES`,
+`.github/workflows/eip8288-gas-calibration.yml` reads `.github/eip8288-calibration.inputs` (`ARCHES`,
 `LEAN_BINDINGS_REF`, `SCENARIOS`, `TIMEOUT_MINUTES`), clones this repository at `LEAN_BINDINGS_REF` into the runner's
 temporary directory and calls `ci/run-calibration.sh --docker` with `--yield-to-manual-runs`, uploads
 `eip8288-calibration-<arch>` and removes the directory and any container. Only manual `workflow_dispatch` runs of
