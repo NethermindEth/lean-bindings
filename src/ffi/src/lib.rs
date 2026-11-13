@@ -272,9 +272,6 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
     {
         return Err(());
     }
-    if deps.is_empty() {
-        return Ok(vec![]);
-    }
     let kept: HashSet<_> = deps.iter().copied().collect();
     children.retain(|(_, _, declared)| declared.iter().any(|dep| kept.contains(dep)));
     let covered: HashSet<_> = children
@@ -291,6 +288,9 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
         .any(|(dep, witness)| !verify_witness(dep, witness))
     {
         return Err(());
+    }
+    if deps.is_empty() {
+        return Ok(vec![]);
     }
     if let Some((_, bytes, _)) = children.iter().find(|(_, _, declared)| *declared == deps) {
         return Ok(bytes.to_vec());
@@ -639,6 +639,21 @@ mod tests {
         assert!(
             prove_aggregate(&hash_of(&[dep]), &input(&[(unknown, witness)], &[], &[])).is_err()
         );
+    }
+
+    /// An empty selection still checks the witnesses it discards, as every other selection does.
+    #[test]
+    fn empty_selection_verifies_discarded_witnesses() {
+        let empty = commitment(&[]);
+        for (dep, witness) in [proven(1), signed(2)] {
+            let discarded =
+                |witness: Vec<u8>| prove_aggregate(&empty, &input(&[(dep, witness)], &[], &[dep]));
+            assert_eq!(discarded(witness.clone()), Ok(vec![]));
+            let mut forged = witness;
+            *forged.last_mut().unwrap() ^= 1;
+            assert!(!verify_witness(&dep, &forged));
+            assert!(discarded(forged).is_err());
+        }
     }
 
     #[test]
