@@ -113,8 +113,10 @@ class Runner:
             for i, addr in enumerate(w["hosts"]):
                 if w.get("launch"):
                     hostname, port = addr.rsplit(":", 1)
+                    # Peers a worker accepts: the coordinator and the other workers, by IP.
+                    allow = ",".join(dict.fromkeys([w["coordinator_ip"], *(h.rsplit(":", 1)[0] for h in w["hosts"])]))
                     cmd = w["launch"].format(host=hostname, port=port, threads=self.cfg["threads_per_worker"], index=i,
-                                             token_file=self.token_path())
+                                             token_file=self.token_path(), allow=allow)
                     procs.append(subprocess.Popen(shlex.split(cmd), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
             addrs = list(w["hosts"])
         else:

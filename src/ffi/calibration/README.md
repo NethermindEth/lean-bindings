@@ -66,12 +66,19 @@ See `configs/reference.example.json`. The keys:
 ### Remote workers
 
 Copy `calib-worker` (from `DIR/bin/<label>/`) to each host and give a `launch` template; `{token_file}` is a private
-temporary file holding the run key, which the template copies to the host (see `configs/reference.example.json`).
-Workers listen on loopback unless started with `--remote`, and fetch child proofs from each other directly over TCP,
-so their addresses must be mutually reachable. Every connection proves knowledge of the per-run key (a
-challenge-response, then a Keccak MAC with a sequence number on every frame); frames are bounded (64 KiB before
-authentication, 256 MiB after) and buffered only as they arrive; a worker fetches children only from the workers the
-coordinator listed. A handshake must complete within 5 s in total; at most 8 connections may be handshaking and 64 authenticated, counted separately so unauthenticated peers cannot crowd out the coordinator. Traffic is not encrypted: use a private network.
+temporary file holding the run key, which the template copies to the host, and `{allow}` lists the IPs that may
+connect: `workers.coordinator_ip` and the worker hosts (see `configs/reference.example.json`). Workers fetch child
+proofs from each other directly over TCP, so their addresses must be mutually reachable.
+
+**Remote mode is for trusted networks or ssh tunnels.** Traffic is authenticated, not encrypted:
+
+- A worker listens on loopback and accepts loopback peers only, unless started with `--remote --allow IP,...`; other
+  peers are dropped at accept, before they take any handshake slot, and each allowed IP may have 4 handshakes open.
+- Every connection proves knowledge of the per-run key within 5 s in total (challenge-response), then every frame
+  carries a Keccak MAC over the key, the challenge, its direction and a sequence number.
+- Frames are bounded (64 KiB before authentication, 256 MiB after) and buffered only as they arrive; at most 64
+  authenticated connections are served.
+- A worker fetches children only from the workers the coordinator listed.
 
 ## EVM execution
 

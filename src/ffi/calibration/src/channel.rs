@@ -8,8 +8,10 @@
 //! The key is 32 bytes, hex in `CALIB_TOKEN` or in the file `CALIB_TOKEN_FILE`; it is never printed.
 
 use crate::wire::{MAX_CONTROL_FRAME, MAX_DATA_FRAME, read_frame, write_frame};
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::net::TcpStream;
+use std::net::{IpAddr, TcpStream};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub type Key = [u8; 32];
@@ -67,6 +69,72 @@ fn challenge() -> io::Result<[u8; 32]> {
     let mut c = [0; 32];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut c)?;
     Ok(c)
+}
+
+/// Who may open a connection: loopback in local mode, else the run's allowlisted IPs, each with at most `per_ip`
+/// connections in the handshake. A refused peer never takes a slot.
+pub struct Admission {
+    allow: Vec<IpAddr>,
+    per_ip: usize,
+    handshaking: Mutex<HashMap<IpAddr, usize>>,
+}
+
+/// Holds one handshake slot of its peer IP until dropped.
+pub struct Slot<'a> {
+    admission: &'a Admission,
+    ip: IpAddr,
+}
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        let mut h = self.admission.handshaking.lock().unwrap();
+        if let Some(n) = h.get_mut(&self.ip) {
+            *n -= 1;
+            if *n == 0 {
+                h.remove(&self.ip);
+            }
+        }
+    }
+}
+
+impl Admission {
+    /// `allow` empty admits loopback only.
+    pub fn new(allow: Vec<IpAddr>, per_ip: usize) -> Self {
+        Self {
+            allow,
+            per_ip,
+            handshaking: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn permitted(&self, ip: IpAddr) -> bool {
+        if self.allow.is_empty() {
+            ip.is_loopback()
+        } else {
+            self.allow.contains(&ip)
+        }
+    }
+
+    /// A handshake slot for a peer, or `None` if the peer is not allowlisted or already has `per_ip` handshakes open.
+    pub fn admit(&self, ip: IpAddr) -> Option<Slot<'_>> {
+        if !self.permitted(ip) {
+            return None;
+        }
+        let mut h = self.handshaking.lock().unwrap();
+        let n = h.entry(ip).or_insert(0);
+        if *n >= self.per_ip {
+            return None;
+        }
+        *n += 1;
+        Some(Slot {
+            admission: self,
+            ip,
+        })
+    }
+
+    pub fn handshaking(&self) -> usize {
+        self.handshaking.lock().unwrap().values().sum()
+    }
 }
 
 pub struct Channel<S> {
@@ -302,6 +370,25 @@ mod tests {
         let (err, took) = t.join().unwrap();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
         assert!(took < Duration::from_millis(1500), "took {took:?}");
+    }
+
+    #[test]
+    fn peers_off_the_allowlist_are_refused_without_a_slot() {
+        let local = Admission::new(vec![], 2);
+        let lo: IpAddr = "127.0.0.1".parse().unwrap();
+        let other: IpAddr = "192.0.2.7".parse().unwrap();
+        assert!(local.admit(other).is_none());
+        assert_eq!(local.handshaking(), 0);
+        let a = local.admit(lo).unwrap();
+        let _b = local.admit(lo).unwrap();
+        assert!(local.admit(lo).is_none(), "per-IP limit");
+        drop(a);
+        assert!(local.admit(lo).is_some());
+        let remote = Admission::new(vec![other], 2);
+        assert!(remote.admit(lo).is_none());
+        assert!(remote.admit("192.0.2.8".parse().unwrap()).is_none());
+        assert_eq!(remote.handshaking(), 0);
+        assert!(remote.admit(other).is_some());
     }
 
     #[test]

@@ -1,22 +1,23 @@
-//! A proving worker: `calib-worker [--remote] LISTEN [ADVERTISE]`.
+//! A proving worker: `calib-worker [--remote --allow IP,...] LISTEN [ADVERTISE]`.
 //!
 //! Proves one task at a time for the coordinator, fetching each child proof from the worker that holds it, and serves
 //! its own finished proofs to peers. `LEANVM_NUM_THREADS` sets its prover threads. `ADVERTISE` is the `host:port`
 //! peers reach it at (default `LISTEN`).
 //!
 //! Every connection authenticates under the run key (`CALIB_TOKEN` or `CALIB_TOKEN_FILE`, see the `channel` module).
-//! `LISTEN` must be a loopback address unless `--remote` is given. Children are fetched only from this worker or the
+//! `LISTEN` must be a loopback address and only loopback peers connect, unless `--remote` is given with the IPs that may
+//! connect (the coordinator and the other workers); others are dropped at accept, before taking a handshake slot. Children are fetched only from this worker or the
 //! workers the coordinator listed in HELLO.
 
 use gas_calibration::api;
-use gas_calibration::channel::{self, Channel, Key};
+use gas_calibration::channel::{self, Admission, Channel, Key, Slot};
 use gas_calibration::proto::{self, Done, Task};
 use gas_calibration::wire::{Reader, Writer, get_claims, put_claims};
 use gas_calibration::{capabilities, sys};
 use rec_aggregation::EthereumClaims;
 use std::collections::HashMap;
 use std::io;
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -26,9 +27,8 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 /// Authenticated connections served at once: the coordinator's and one per peer fetching, with room to spare.
 const MAX_AUTHENTICATED: usize = 64;
-/// Connections still in the handshake. Kept small and separate, so unauthenticated peers cannot take the
-/// coordinator's room.
-const MAX_HANDSHAKING: usize = 8;
+/// Handshakes one allowlisted IP may have open at once.
+const HANDSHAKES_PER_IP: usize = 4;
 /// The whole handshake, not each read, must finish within this.
 const HANDSHAKE_LIMIT: Duration = Duration::from_secs(5);
 
@@ -41,7 +41,6 @@ struct Worker {
     peers: RwLock<Vec<String>>,
     store: Store,
     prover: Mutex<()>,
-    handshaking: AtomicUsize,
     authenticated: AtomicUsize,
 }
 
@@ -155,11 +154,11 @@ impl Worker {
     }
 
     /// Authenticates a connection (it holds a handshake slot until here), then serves it in an authenticated slot.
-    fn serve(self: Arc<Self>, s: TcpStream) -> io::Result<()> {
+    fn serve(self: Arc<Self>, s: TcpStream, slot: Slot<'_>) -> io::Result<()> {
         let handshake = s
             .set_nodelay(true)
             .and_then(|_| Channel::server(s, self.key, HANDSHAKE_LIMIT));
-        self.handshaking.fetch_sub(1, Ordering::SeqCst);
+        drop(slot);
         let c = handshake?;
         if self.authenticated.fetch_add(1, Ordering::SeqCst) >= MAX_AUTHENTICATED {
             self.authenticated.fetch_sub(1, Ordering::SeqCst);
@@ -228,12 +227,29 @@ impl Worker {
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let mut allow: Vec<IpAddr> = vec![];
     let remote = args.first().is_some_and(|a| a == "--remote");
     if remote {
         args.remove(0);
+        if args.len() < 2 || args[0] != "--allow" {
+            eprintln!(
+                "calib-worker: --remote needs --allow IP[,IP...] (the coordinator and the other workers)"
+            );
+            std::process::exit(2);
+        }
+        allow = args[1]
+            .split(',')
+            .map(|ip| {
+                ip.trim().parse().unwrap_or_else(|_| {
+                    eprintln!("calib-worker: {ip} is not an IP address");
+                    std::process::exit(2)
+                })
+            })
+            .collect();
+        args.drain(..2);
     }
     let Some(listen) = args.first().cloned() else {
-        eprintln!("usage: calib-worker [--remote] LISTEN [ADVERTISE]");
+        eprintln!("usage: calib-worker [--remote --allow IP,...] LISTEN [ADVERTISE]");
         std::process::exit(2)
     };
     let loopback = listen
@@ -262,18 +278,23 @@ fn main() {
         peers: RwLock::new(vec![]),
         store: Store::default(),
         prover: Mutex::new(()),
-        handshaking: AtomicUsize::new(0),
         authenticated: AtomicUsize::new(0),
     });
+    let admission: &'static Admission =
+        Box::leak(Box::new(Admission::new(allow, HANDSHAKES_PER_IP)));
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
-        if worker.handshaking.fetch_add(1, Ordering::SeqCst) >= MAX_HANDSHAKING {
-            worker.handshaking.fetch_sub(1, Ordering::SeqCst);
+        // Refused before any slot is taken: peers off the allowlist, and an allowlisted IP's surplus handshakes.
+        let Some(slot) = stream
+            .peer_addr()
+            .ok()
+            .and_then(|a| admission.admit(a.ip()))
+        else {
             continue;
-        }
+        };
         let w = worker.clone();
         std::thread::spawn(move || {
-            if let Err(e) = w.serve(stream) {
+            if let Err(e) = w.serve(stream, slot) {
                 eprintln!("connection closed: {e}");
             }
         });
