@@ -256,9 +256,13 @@ class Calibration:
                     continue
                 v = gasmath.verdict(r["makespan_s"], cfg["builder_budget_s"], r["peak_rss_max_worker"], mem_pw)
                 verify_ms = r["root_verify_ms"]
-            else:
+            elif evm_gas:
                 v = {"time_ok": True, "memory_ok": True, "pass": True, "headroom": math.inf}
                 verify_ms = 0.0
+            else:
+                row.update(status="empty: these constants admit no such dependency in the block")
+                out.append(row)
+                continue
             if row["evm"]["ms"] is not None:
                 row["validator_ms"] = row["evm"]["ms"] + verify_ms
                 v["validator_ok"] = row["validator_ms"] <= cfg["validator_budget_s"] * 1e3
