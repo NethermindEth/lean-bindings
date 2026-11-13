@@ -51,11 +51,39 @@ jobs:
           - ubuntu-latest
           - ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          lfs: true
+          lfs: ${{ inputs.build-run == '' }}
+
+      # The binaries a staging publish takes from a Build Lean run are the ones tested; Publish checks the run.
+      - name: Remove the committed outputs
+        if: inputs.build-run != ''
+        run: rm -rf src/bindings/Nethermind.Crypto.Lean/runtimes src/bindings/Nethermind.Crypto.Lean/testing
+
+      - name: Download the libraries
+        if: inputs.build-run != ''
+        uses: actions/download-artifact@v8
+        with:
+          pattern: linux-*
+          merge-multiple: true
+          path: src/bindings/Nethermind.Crypto.Lean/runtimes
+          run-id: ${{ inputs.build-run }}
+          github-token: ${{ github.token }}
+
+      - name: Download the test assets
+        if: inputs.build-run != ''
+        uses: actions/download-artifact@v8
+        with:
+          pattern: testing-linux-*
+          merge-multiple: true
+          path: src/bindings/Nethermind.Crypto.Lean/testing
+          run-id: ${{ inputs.build-run }}
+          github-token: ${{ github.token }}
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
