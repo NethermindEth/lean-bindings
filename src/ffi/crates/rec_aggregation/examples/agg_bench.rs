@@ -54,7 +54,7 @@ fn cells(digest: &[u8; 32]) -> [primitives::field::F192; 2] {
 
 fn dependency(program: &Program, witness: (&str, Vec<primitives::field::F192>), data_hash: [u8; 32]) -> RawGeneric {
     let table: Vec<u64> = bytecode_table(program.prog()).iter().map(|w| w.0).collect();
-    let mut program = program.clone();
+    let mut program = program.clone().committed();
     program.set_witness(witness.0, vec![witness.1]);
     let (proof, _) = prove(&program, cells(&data_hash), RATE).expect("the dependency proves");
     let vk = generic_verification_key(&table).expect("within the cap");

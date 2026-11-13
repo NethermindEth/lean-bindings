@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 [package]
 name = "nethermind-lean"
-version = "0.12.0"
+version = "0.12.1"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT"
@@ -23,6 +23,9 @@ bench.workspace = true
 lean_compiler.workspace = true
 leanvm_core.workspace = true
 fiat_shamir.workspace = true
+
+[dev-dependencies]
+verifier.workspace = true
 
 [workspace]
 members = ["crates/*"]
@@ -64,3 +67,19 @@ codegen-units = 1
 name = "lean_startup_stub"
 crate-type = ["cdylib"]
 test = false
+
+# TODO: the committed bytecode key needs leanVM core changes that are not upstream yet. They live on
+# Marchhill/leanVM feature/eip8288-bytecode-commitment, four commits on the pinned e4dcb8d5. Upstream them (or move
+# them into this repository) and drop this patch before merging.
+[patch."https://github.com/leanEthereum/leanVM"]
+primitives = { git = "https://github.com/Marchhill/leanVM", rev = "2ce918752cbdcf3c341da70f532e8523f89d402b" }
+fiat_shamir = { git = "https://github.com/Marchhill/leanVM", rev = "2ce918752cbdcf3c341da70f532e8523f89d402b" }
+pcs = { git = "https://github.com/Marchhill/leanVM", rev = "2ce918752cbdcf3c341da70f532e8523f89d402b" }
+keccak_gkr = { git = "https://github.com/Marchhill/leanVM", rev = "2ce918752cbdcf3c341da70f532e8523f89d402b" }
+leanvm_core = { git = "https://github.com/Marchhill/leanVM", rev = "2ce918752cbdcf3c341da70f532e8523f89d402b" }
+lean_compiler = { git = "https://github.com/Marchhill/leanVM", rev = "2ce918752cbdcf3c341da70f532e8523f89d402b" }
+bench = { git = "https://github.com/Marchhill/leanVM", rev = "2ce918752cbdcf3c341da70f532e8523f89d402b" }
+lean_da = { git = "https://github.com/Marchhill/leanVM", rev = "2ce918752cbdcf3c341da70f532e8523f89d402b" }
+parallel = { git = "https://github.com/Marchhill/leanVM", rev = "2ce918752cbdcf3c341da70f532e8523f89d402b" }
+verifier = { git = "https://github.com/Marchhill/leanVM", rev = "2ce918752cbdcf3c341da70f532e8523f89d402b" }
+signatures = { git = "https://github.com/Marchhill/leanVM", rev = "2ce918752cbdcf3c341da70f532e8523f89d402b" }

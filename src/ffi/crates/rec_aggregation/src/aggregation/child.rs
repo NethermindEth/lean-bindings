@@ -206,12 +206,55 @@ pub(super) fn gen_verify(
         "a column group's columns are consecutive"
     );
 
-    // ---- Hints for the stacked WHIR opening ----
-    // Share the upper Merkle tree across a level's queries, one cap entry a level. Unknown,
-    // unused subtrees stay opaque; the guest authenticates every cap leaf a query reaches.
+    // ---- Hints for the stacked WHIR opening, then a committed program's bytecode opening ----
+    let mut query_hints = opening_hints(&stack, &proof.merkle);
+    let main_levels = stack.config.queries.len();
+    if proof.merkle.len() > main_levels {
+        let bytecode_stack = whir_shape(
+            verifier::committed_bytecode_stack_log(program.prog().len() << leanvm_core::leaf::N_TUPLE_BITS),
+            verifier::COMMITTED_BYTECODE_LOG_INV_RATE,
+        );
+        query_hints.extend(opening_hints(&bytecode_stack, &proof.merkle[main_levels..]));
+    }
+    let deferred = DeferredSubproof {
+        public_input,
+        bytecode_point,
+        bytecode_value,
+    };
+
+    let mut hints = vec![
+        ("stream", {
+            // The guest replays the WHIR opening off the same stream the native
+            // verifier reads: every transmitted scalar (sumcheck messages, level
+            // roots, OOD claims, grind nonces, `yr`) is already there in protocol
+            // order, so there is nothing to reassemble. The guest's `open_stacked`
+            // picks it up at `msg_cursor = cursor`, which sits where the Keccak
+            // reduction stopped; the ring-switch messages are struct-observed and
+            // still do not advance that cursor.
+            let mut stream = proof.stream.clone();
+            stream.resize(STREAM_CAP, F192::ZERO);
+            stream
+        }),
+        ("bytecode_val", bcv),
+        // the table sumcheck's round count: max_t tau_t, certified in-guest as a
+        // maximum (one of the taus, and dominating them all).
+        ("zc_tau_max", vec![count(*taus.iter().max().unwrap())]),
+        // Every table's log height, which the guest certifies against its row count.
+        ("table_logs", taus.iter().map(|&t| count(t)).collect()),
+        ("col_group_order", col_group_order),
+        ("block_group_order", sort_order),
+    ];
+    hints.extend(query_hints);
+    Ok((hints, deferred))
+}
+
+/// The Merkle hints of one stacked WHIR opening, a level's phase at a time. Share the upper Merkle tree across a
+/// level's queries, one cap entry a level. Unknown, unused subtrees stay opaque; the guest authenticates every cap
+/// leaf a query reaches.
+fn opening_hints(shape: &WhirShape, phases: &[Vec<fiat_shamir::merkle::MerklePath>]) -> Vec<(&'static str, Vec<F192>)> {
     let mut query_hints = Vec::new();
-    let levels = stack.config.queries.iter().zip(&stack.depth);
-    for ((&queries, &depth), phase) in levels.zip(&proof.merkle) {
+    let levels = shape.config.queries.iter().zip(&shape.depth);
+    for ((&queries, &depth), phase) in levels.zip(phases) {
         let cap_depth = merkle_cap_depth(queries, depth);
         let n = 1 << cap_depth;
         let path_depth = depth - cap_depth;
@@ -249,36 +292,7 @@ pub(super) fn gen_verify(
         query_hints.push(("merkle_caps", nodes.iter().flat_map(hash_to_scalars).collect()));
         query_hints.push(("merkle_cap_active", active));
     }
-    let deferred = DeferredSubproof {
-        public_input,
-        bytecode_point,
-        bytecode_value,
-    };
-
-    let mut hints = vec![
-        ("stream", {
-            // The guest replays the WHIR opening off the same stream the native
-            // verifier reads: every transmitted scalar (sumcheck messages, level
-            // roots, OOD claims, grind nonces, `yr`) is already there in protocol
-            // order, so there is nothing to reassemble. The guest's `open_stacked`
-            // picks it up at `msg_cursor = cursor`, which sits where the Keccak
-            // reduction stopped; the ring-switch messages are struct-observed and
-            // still do not advance that cursor.
-            let mut stream = proof.stream.clone();
-            stream.resize(STREAM_CAP, F192::ZERO);
-            stream
-        }),
-        ("bytecode_val", bcv),
-        // the table sumcheck's round count: max_t tau_t, certified in-guest as a
-        // maximum (one of the taus, and dominating them all).
-        ("zc_tau_max", vec![count(*taus.iter().max().unwrap())]),
-        // Every table's log height, which the guest certifies against its row count.
-        ("table_logs", taus.iter().map(|&t| count(t)).collect()),
-        ("col_group_order", col_group_order),
-        ("block_group_order", sort_order),
-    ];
-    hints.extend(query_hints);
-    Ok((hints, deferred))
+    query_hints
 }
 
 /// The guest's baked buffer caps, which `placeholder_map` compiles in and
