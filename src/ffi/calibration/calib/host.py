@@ -60,16 +60,26 @@ def busy_processes(ignore: set[int]) -> list[str]:
     return out
 
 
-def wait_quiet(max_load: float, timeout_s: int, ignore: set[int] | None = None, poll_s: int = 15) -> dict:
-    """Waits until no competing process is busy and the 1-minute load is below `max_load`."""
+def wait_quiet(max_load: float, timeout_s: int, ignore: set[int] | None = None, poll_s: int = 15, log=None,
+               report_every_s: int = 300) -> dict:
+    """Waits until no competing process is busy and the 1-minute load is below `max_load`, reporting through `log`
+    when it starts waiting, every `report_every_s` while it waits, and when it gives up."""
     ignore = (ignore or set()) | {os.getpid()}
     waited = 0
     while True:
         busy, l1 = busy_processes(ignore), load1()
         if not busy and l1 < max_load:
+            if waited and log:
+                log(f"  machine quiet after {waited} s (load1 {l1:.1f})")
             return {"waited_s": waited, "load1": l1, "quiet": True}
         if waited >= timeout_s:
+            if log:
+                log(f"  machine still busy after {waited} s (load1 {l1:.1f}, busy {busy}); measuring anyway, "
+                    "the result is marked unquiet")
             return {"waited_s": waited, "load1": l1, "quiet": False, "busy": busy}
+        if log and waited % report_every_s == 0:
+            log(f"  waiting for a quiet machine: load1 {l1:.1f} (max {max_load}), busy {busy}, "
+                f"{waited}/{timeout_s} s")
         time.sleep(poll_s)
         waited += poll_s
 

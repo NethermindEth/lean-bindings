@@ -51,7 +51,7 @@ class Runner:
         return self.token_file
 
     def gate(self) -> dict:
-        return host.wait_quiet(self.quiet.get("max_load1", 5), self.quiet.get("timeout_s", 1800))
+        return host.wait_quiet(self.quiet.get("max_load1", 5), self.quiet.get("timeout_s", 1800), log=self.log)
 
     # ---- corpus -------------------------------------------------------------------------------------------------
     def leaf(self, build: dict, code_log: int, iters: int, rate: int, claims: int, seed: int) -> tuple[str, dict]:
@@ -174,7 +174,7 @@ class Runner:
         self.jsonl.write(json.dumps({"kind": "block", "build": build["label"], "label": label,
                                      "result": {k: v for k, v in res.items() if k != "node_records"}}) + "\n")
         self.jsonl.flush()
-        self.log(f"  block {label}: {res.get('status')} makespan={res.get('makespan_s')} work={res.get('total_work_s')}"
+        self.log(f"  block {label}: {res.get('status')}{'' if g['quiet'] else ' (unquiet)'} makespan={res.get('makespan_s')} work={res.get('total_work_s')}"
                  f" depth={res.get('depth')} nodes={res.get('nodes')}")
         return res
 

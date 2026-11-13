@@ -251,10 +251,18 @@ class Calibration:
                 continue
             if any(blk.get(k) for k in ("native", "generic", "batch_leaves")):
                 label = f"g{G // 10**6}M-{name}-it{it}"
-                r = self.run.block(build, label, self.plan_for(blk, "batched" if batched else "base", build))
+                plan = self.plan_for(blk, "batched" if batched else "base", build)
+                r = self.run.block(build, label, plan)
+                if r.get("status") == "ok" and not r["gate"]["quiet"]:
+                    # A makespan measured under load would drive the recalibration; prove the block once more.
+                    r = self.run.block(build, label + "-retry", plan)
                 row["measurement"] = r
                 if r.get("status") != "ok":
                     row.update(status="failed")
+                    out.append(row)
+                    continue
+                if not r["gate"]["quiet"]:
+                    row.update(status="unquiet: measured under load, not counted")
                     out.append(row)
                     continue
                 v = gasmath.verdict(r["makespan_s"], cfg["builder_budget_s"], r["peak_rss_max_worker"], mem_pw)
@@ -306,7 +314,8 @@ class Calibration:
             final = iters[-1]
             measured = [r for r in final["blocks"] if r.get("verdict")]
             ok = bool(measured) and all(r["verdict"]["pass"] for r in measured)
-            skipped = [r["block"] for r in final["blocks"] if r.get("status") in ("skipped", "failed")]
+            skipped = [r["block"] for r in final["blocks"]
+                       if r.get("status") in ("skipped", "failed") or r.get("status", "").startswith("unquiet")]
             self.res["gas_limits"][str(G)]["final"] = {
                 "constants": final["constants"], "pass": ok, "skipped_or_failed": skipped,
                 "verdict": ("PASS" if ok and not skipped else "PASS (partial: " + ", ".join(skipped) + " not measured)"
