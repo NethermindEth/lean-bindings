@@ -3,6 +3,7 @@
 use nethermind_lean::{
     ANY_INPUT_PROGRAM, aggregated_vk, batch_hash, keccak, prove_stark, verification_key,
 };
+use rec_aggregation::Guest;
 use signatures::lean_sphincs::{key_gen_from_seed, sign};
 fn main() {
     let directory = std::env::args().nth(1).expect("fixture output directory");
@@ -76,10 +77,15 @@ fn main() {
         let (single, _) = prove_stark(ANY_INPUT_PROGRAM, &batch_hash(&[*claim])).unwrap();
         save(&format!("stark-batch-singleton-{index}.bin"), &single);
     }
-    let key = aggregated_vk();
-    save("aggregated-key.bin", &key);
-    println!(
-        "AGGREGATED_VK={}",
-        key.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    );
+    for (guest, file) in [
+        (Guest::Base, "aggregated-key.bin"),
+        (Guest::Batched, "aggregated-batched-key.bin"),
+    ] {
+        let key = aggregated_vk(guest);
+        save(file, &key);
+        println!(
+            "AGGREGATED_VK {guest:?}={}",
+            key.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        );
+    }
 }

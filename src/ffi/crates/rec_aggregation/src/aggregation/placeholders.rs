@@ -7,7 +7,8 @@ use super::child::{
 };
 use super::claim_pool::{ClaimSite, coord_difference, coord_kind, coord_scale, push_coord_terms, walk_claims};
 use super::deferred::RECURSION_AGG_LABEL;
-use super::generic::{BATCH_DOMAIN, LEANSTARK_DEPS_DOMAIN, MAX_CLAIMS_PER_BATCH_LEAF, MAX_GENERIC_BYTECODE_LOG};
+use super::generic::{BATCH_DOMAIN, LEANSTARK_DEPS_DOMAIN, MAX_GENERIC_BYTECODE_LOG, batched_scheme_word};
+use super::guest::Guest;
 use super::statement::{BIG_GROUPS, CLAIM_GROUP, STATEMENT_HEADER};
 use fiat_shamir::merkle::hash_to_scalars;
 use lean_compiler::f192_literal;
@@ -163,7 +164,7 @@ struct OpeningShape {
 
 /// The recursion program's placeholder map depends on table structure and bytecode
 /// size, so one compiled guest serves every proof layout.
-pub(super) fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
+pub(super) fn placeholder_map(kbc: usize, guest: Guest) -> BTreeMap<String, String> {
     // Only block and coordinate structure is used here; dummy instructions and
     // table sizes let us derive it before the guest's bytecode exists.
     let stand_in = vec![leanvm_core::cpu::Op::Xor { a: 0, b: 0, c: 0 }; 1 << kbc];
@@ -192,7 +193,7 @@ pub(super) fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     opening_placeholders(&mut ps);
     bytecode_placeholders(kbc, nbcv, &mut ps);
     da_placeholders(&mut ps);
-    signature_placeholders(&mut ps);
+    signature_placeholders(guest, &mut ps);
     rep
 }
 
@@ -892,11 +893,14 @@ fn da_placeholders(ps: &mut impl FnMut(&str, String)) {
     );
 }
 
-/// The signature scheme, the leanSTARK caps and domains, and the coverage caps.
-fn signature_placeholders(ps: &mut impl FnMut(&str, String)) {
+/// The signature scheme, `guest`'s leanSTARK caps and domains, and the coverage caps.
+fn signature_placeholders(guest: Guest, ps: &mut impl FnMut(&str, String)) {
     ps("MAX_GENERIC_BYTECODE_LOG", MAX_GENERIC_BYTECODE_LOG.to_string());
-    ps("MAX_CLAIMS_PER_BATCH_LEAF", MAX_CLAIMS_PER_BATCH_LEAF.to_string());
+    ps("MAX_CLAIMS_PER_BATCH_LEAF", guest.max_claims_per_leaf().to_string());
+    ps("BATCHED_DEPENDENCIES", u8::from(guest == Guest::Batched).to_string());
     ps("BATCH_DOMAIN", dsl_u128(pack_16_bytes(&BATCH_DOMAIN)).to_string());
+    ps("LEAF_CHUNK", (2 * primitives::hash::RATE / 16).to_string());
+    ps("BATCHED_SCHEME_CELL", dsl_u128(pack_16_bytes(&batched_scheme_word(0)[16..])).to_string());
     ps("DEPS_DOMAIN_0", dsl_u128(pack_16_bytes(&LEANSTARK_DEPS_DOMAIN[..16])).to_string());
     ps("DEPS_DOMAIN_1", dsl_u128(pack_16_bytes(&LEANSTARK_DEPS_DOMAIN[16..])).to_string());
     // The leanVM tag ahead of a program's table in its digest: its first 8 bytes as a lane, its 9th byte.

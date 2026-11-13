@@ -33,10 +33,13 @@ fails if the backend is unavailable. Verification fails closed; proving requires
 signatures and proofs and prints the pinned recursive verification key; `fixtures --sign-message <hex> <file>` signs
 one message, and `fixtures --prove-stark <hex> <file>` proves a leanSTARK dependency on it, the singleton batch leaf
 `[hex]`. `cargo run --release --locked --example batch_leaves [n]` proves an `n`-claim batch leaf with the
-`examples/batch_leaves/batch.py` template and aggregates it. **Build Lean** packages the vectors,
+`examples/batch_leaves/batch.py` template and aggregates it as `n` batched dependencies with `min_batch` `n`. **Build Lean** packages the vectors,
 this tool and the `lean_startup_stub` example as opt-in test assets of `Nethermind.Crypto.Lean`.
 
-The C ABI is version 13, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
+The C ABI is version 14, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
+`nlean_aggregated_vk`, `nlean_verify_recursive` and `nlean_prove_recursive` take a leading `u32` guest: 0 for
+EIP-8288's, 1 for the one with ethereum/EIPs#12664 batch pricing (see below); any other value fails, and the key
+passed must be that guest's.
 `nlean_limits` writes seven u32 values (proof bytes, dependencies, inner proofs per step,
 SPHINCS witness bytes, aggregation input bytes, claims per batch leaf, leanSTARK instructions); startup checks these against the managed protocol
 bounds before accepting work.
@@ -96,12 +99,20 @@ resolved dependency.
   discarded.
 * **aggregation input:** direct count then `(96-byte dependency, witness blob)` pairs;
   child count then `(dependency count/triples, proof blob)` pairs; discard count/triples; then, only when nonempty,
-  batch-leaf count then `(32-byte key, claim count, 32-byte claims, leanSTARK witness blob)` entries.
-* **batch leaf:** a leanSTARK witness whose public input is
-  `get_batch_hash(claims) = keccak256(b"EIP8288:batch:v1" || claims)` over 1 to `MAX_CLAIMS_PER_BATCH_LEAF` (16, a
-  guest constant bound to `AGGREGATED_VK`) claims, strictly increasing in byte-lexicographic order: the host and the
-  guest check the order, the leaf program need not. Each claim yields `(0x11, claim, key)`. Leaves are private
-  aggregation inputs; mode-0 wrappers carry singleton proofs.
+  leaf count then `(32-byte key, claim count, 32-byte claims, dependency count/triples, leanSTARK witness blob)`
+  entries, the triples being those the leaf establishes.
+* **leaf:** a leanSTARK witness whose public input is
+  `get_batch_hash(claims) = keccak256(b"EIP8288:batch:v1" || claims)`, EIP-8288's `get_claim_hash` for one claim, over
+  1 to `MAX_CLAIMS_PER_BATCH_LEAF` claims (1 for guest 0, 256 for guest 1, guest constants bound to their
+  `AGGREGATED_VK`), strictly increasing in byte-lexicographic order: the host and the guest check the order, the leaf
+  program need not. A leaf establishes `(0x11, claim, key)` and, under guest 1, `(0x12 with min_batch m, claim, key)`
+  for `1 <= m <= N`, its claim count. Leaves are private aggregation inputs; mode-0 wrappers carry singleton proofs.
+* **batched dependency (`0x12`, guest 1 only):** ethereum/EIPs#12664 scheme word
+  `zero[29] || uint16_be(min_batch) || 0x12`, `min_batch` from 1 to 256; the whole word is the scheme for parsing,
+  sorting and hashing. Its leanSTARK list entry is `data_hash || keccak256(scheme word || key)`, so the digest binds
+  `min_batch`; only a leaf derives that key, so recursion carries a dependency's exact `min_batch` and a union of
+  children qualifies nothing. A direct witness, a singleton leaf, proves only `min_batch` 1. Guest 0 rejects the
+  scheme as unknown.
 * **aggregate:** the EIP-8288 `stark_proof`, one mixed guest proof without dependencies
   or raw witnesses. It verifies against `deps_hash` and `AGGREGATED_VK`
   alone; a child's dependencies come from the aggregation input. Proving an empty list
@@ -135,7 +146,7 @@ EIP, with the pinned guest's generic leanVM CPU proof as its leanSTARK profile:
 * The guest checks every entry of the selected list and of each child list, discarded entries
   included, against its run. Both schemes share the 256-dependency list bound; there is no separate leanSTARK cap.
 
-Startup checks ABI 13, the pinned key and the seven bounds together. New devnets require fresh
+Startup checks ABI 14, the pinned keys and the seven bounds together. New devnets require fresh
 chain and database namespaces.
 
 The latest companion specification has no block dependency quota: blocks are bounded by gas, mode-0 wrappers by `MAX_LEANSIG_DEPS_PER_WRAPPER`, `MAX_LEANSTARK_DEPS_PER_WRAPPER` and `MAX_WRAPPER_BYTES`, and mode-1 wrappers by `MAX_WRAPPER_BYTES` and the dependency-list limit of the circuit behind `AGGREGATED_VK`, which EIP-8288 fixes from benchmarks before activation. This prototype guest's limit is 256 dependencies; a received mode-1 wrapper over it is invalid and discarded before verification, without penalizing its sender. Blocks have no such limit in the draft, so this key cannot prove every block the draft permits and this prototype is not full-capacity conformance. Raising the bound changes the guest and so `AGGREGATED_VK`. Local inability to prove or retain a set is not an inclusion-list omission excuse. Full activation requires a verifier and proof format supporting every set the fork's gas rules permit, with the complete construction, including recursive merges and discards, benchmarked against the slot deadline.

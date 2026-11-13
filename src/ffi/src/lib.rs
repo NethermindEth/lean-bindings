@@ -4,8 +4,9 @@
 //! Pinned LeanVM verification and recursive aggregation of complete dependency sets.
 
 use rec_aggregation::{
-    BatchLeaf, EthereumClaims, EthereumProof, MAX_CLAIMS_PER_BATCH_LEAF, MAX_GENERIC_BYTECODE_LOG,
-    MAX_INNER_PROOFS_PER_STEP, valid_batch_claims, verify_batch_leaf,
+    BATCHED_LEANSTARK_SCHEME, BatchLeaf, EthereumClaims, EthereumProof, Guest,
+    MAX_CLAIMS_PER_BATCH_LEAF, MAX_GENERIC_BYTECODE_LOG, MAX_INNER_PROOFS_PER_STEP,
+    valid_batch_claims, verify_batch_leaf,
 };
 use signatures::lean_sphincs::{self, LeanSphincsPublicKey, LeanSphincsSignature};
 use std::cell::{Cell, RefCell};
@@ -58,8 +59,17 @@ pub fn keccak(bytes: &[u8]) -> [u8; 32] {
     primitives::hash::hash(bytes)
 }
 
-pub fn aggregated_vk() -> [u8; 32] {
-    rec_aggregation::aggregated_vk()
+pub fn aggregated_vk(guest: Guest) -> [u8; 32] {
+    rec_aggregation::aggregated_vk(guest)
+}
+
+/// The aggregation program an ABI call names: 0 for EIP-8288's, 1 for the one with ethereum/EIPs#12664 batch pricing.
+fn guest_of(id: u32) -> Result<Guest, ()> {
+    match id {
+        0 => Ok(Guest::Base),
+        1 => Ok(Guest::Batched),
+        _ => Err(()),
+    }
 }
 
 /// EIP-8288 `get_batch_hash`: a batch leaf's public statement over its claims.
@@ -68,6 +78,7 @@ pub fn batch_hash(claims: &[[u8; 32]]) -> [u8; 32] {
 }
 
 struct Reader<'a> {
+    guest: Guest,
     bytes: &'a [u8],
 }
 impl<'a> Reader<'a> {
@@ -95,7 +106,7 @@ impl<'a> Reader<'a> {
     }
     fn dep(&mut self) -> Result<Dep, ()> {
         let d: Dep = self.take(96)?.try_into().map_err(|_| ())?;
-        if d[..31].iter().any(|b| *b != 0) || !matches!(d[31], LEAN_SPHINCS | LEAN_STARK) {
+        if !known_scheme(self.guest, &d) {
             return Err(());
         }
         Ok(d)
@@ -112,7 +123,24 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// A dependency triple's `(data_hash, public key)`; triples and claims sort alike.
+/// Whether `dep`'s whole scheme word is one `guest` accepts: leanSPHINCS or leanSTARK with 31 zero bytes, and under
+/// [`Guest::Batched`] ethereum/EIPs#12664 `zero[29] ‖ uint16_be(min_batch) ‖ 0x12` with `min_batch` from 1 to
+/// `MAX_CLAIMS_PER_BATCH_LEAF`.
+fn known_scheme(guest: Guest, dep: &Dep) -> bool {
+    match dep[31] {
+        LEAN_SPHINCS | LEAN_STARK => dep[..31].iter().all(|b| *b == 0),
+        BATCHED_LEANSTARK_SCHEME => {
+            guest == Guest::Batched
+                && dep[..29].iter().all(|b| *b == 0)
+                && (1..=MAX_CLAIMS_PER_BATCH_LEAF).contains(&usize::from(min_batch(dep)))
+        }
+        _ => false,
+    }
+}
+/// The `min_batch` of a batched dependency, the scheme word's bytes 29 and 30.
+fn min_batch(dep: &Dep) -> u16 {
+    u16::from_be_bytes([dep[29], dep[30]])
+}
 /// EIP-8288 leanSPHINCS `verification_key_hash`: the key itself, root then public parameter.
 pub fn verification_key(pk: &LeanSphincsPublicKey) -> [u8; 32] {
     let mut out = [0; 32];
@@ -132,28 +160,38 @@ fn data(dep: &Dep) -> [u8; 32] {
 fn key(dep: &Dep) -> [u8; 32] {
     dep[64..].try_into().unwrap()
 }
+/// A leanSTARK list entry's key: the dependency's own for `0x11`, and for `0x12` `rec_aggregation::batched_key`, which
+/// binds the whole scheme word.
+fn generic_key(dep: &Dep) -> [u8; 32] {
+    if dep[31] == BATCHED_LEANSTARK_SCHEME {
+        rec_aggregation::batched_key(min_batch(dep), &key(dep))
+    } else {
+        key(dep)
+    }
+}
 fn claims(deps: &[Dep]) -> EthereumClaims {
-    let of = |scheme| deps.iter().filter(move |dep| dep[31] == scheme);
+    let mut generic: Vec<_> = deps
+        .iter()
+        .filter(|dep| dep[31] != LEAN_SPHINCS)
+        .map(|dep| (data(dep), generic_key(dep)))
+        .collect();
+    generic.sort();
     EthereumClaims {
-        lean_sphincs: of(LEAN_SPHINCS)
+        lean_sphincs: deps
+            .iter()
+            .filter(|dep| dep[31] == LEAN_SPHINCS)
             .map(|dep| (data(dep), public_key(&key(dep))))
             .collect(),
-        generic: of(LEAN_STARK).map(|dep| (data(dep), key(dep))).collect(),
+        generic,
         ..Default::default()
     }
 }
 /// The dependency digest of a canonical list, as the recursive guest commits to it: EIP-8288 `get_deps_hash` for a
-/// leanSPHINCS-only list, and the split-domain digest of `rec_aggregation::deps_hash` once it holds a leanSTARK entry.
+/// leanSPHINCS-only list, and the split-domain digest of `rec_aggregation::deps_hash` once it holds a leanSTARK entry,
+/// either scheme's, keyed by [`generic_key`] and sorted.
 pub fn commitment(ds: &[Dep]) -> [u8; 32] {
     let claims = claims(ds);
     rec_aggregation::deps_hash(&claims.lean_sphincs, &claims.generic)
-}
-fn leanstark_dependency(claim: &[u8; 32], vk: &[u8; 32]) -> Dep {
-    let mut dep = [0; 96];
-    dep[31] = LEAN_STARK;
-    dep[32..64].copy_from_slice(claim);
-    dep[64..].copy_from_slice(vk);
-    dep
 }
 fn canonical(ds: Vec<Dep>) -> Vec<Dep> {
     ds.into_iter()
@@ -175,11 +213,13 @@ fn parse_sphincs(
 fn verify_sphincs(hash: &[u8; 32], vk: &[u8; 32], witness: &[u8]) -> bool {
     parse_sphincs(vk, witness).is_ok_and(|(pk, sig)| lean_sphincs::verify(&pk, hash, &sig).is_ok())
 }
+/// A direct witness of `dep`: a leanSTARK one is a one-claim leaf, so it proves a batched dependency only at
+/// `min_batch` 1.
 fn verify_witness(dep: &Dep, witness: &[u8]) -> bool {
-    if dep[31] == LEAN_STARK {
-        rec_aggregation::verify_generic(&data(dep), &key(dep), witness)
-    } else {
-        verify_sphincs(&data(dep), &key(dep), witness)
+    match dep[31] {
+        LEAN_SPHINCS => verify_sphincs(&data(dep), &key(dep), witness),
+        BATCHED_LEANSTARK_SCHEME if min_batch(dep) != 1 => false,
+        _ => rec_aggregation::verify_generic(&data(dep), &key(dep), witness),
     }
 }
 
@@ -208,24 +248,27 @@ pub fn prove_stark(source: &str, hash: &[u8; 32]) -> Result<(Vec<u8>, [u8; 32]),
 
 // EIP-8288 `stark_proof`: the guest proof alone, checked against `deps_hash` and the pinned key.
 // The empty proof of an empty list never reaches the guest: callers decide that case themselves.
-fn verify_aggregate(hash: &[u8; 32], proof: &[u8]) -> Result<(), ()> {
+fn verify_aggregate(guest: Guest, hash: &[u8; 32], proof: &[u8]) -> Result<(), ()> {
     if proof.is_empty() || proof.len() > MAX_BYTES {
         return Err(());
     }
-    rec_aggregation::verify_deps_hash(hash, proof).map_err(|_| ())
+    rec_aggregation::verify_deps_hash(guest, hash, proof).map_err(|_| ())
 }
 
 // A recursive child is proven against its declared dependencies, which the caller supplies.
-fn decode_child(deps: &[Dep], proof: &[u8]) -> Result<EthereumProof, ()> {
+fn decode_child(guest: Guest, deps: &[Dep], proof: &[u8]) -> Result<EthereumProof, ()> {
     if proof.is_empty() || proof.len() > MAX_BYTES {
         return Err(());
     }
-    let proof = EthereumProof::from_proof_bytes(proof, claims(deps)).map_err(|_| ())?;
+    let proof = EthereumProof::from_proof_bytes(guest, proof, claims(deps)).map_err(|_| ())?;
     proof.verify().map_err(|_| ())?;
     Ok(proof)
 }
 
-pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
+/// A leaf of the aggregation input with the dependencies it establishes.
+type InputLeaf = (BatchLeaf, Vec<Dep>);
+
+pub fn prove_aggregate(guest: Guest, hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
     if input.len() > MAX_INPUT_BYTES {
         return Err(());
     }
@@ -237,7 +280,10 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
         };
     }
     let _guard = begin_proof();
-    let mut r = Reader { bytes: input };
+    let mut r = Reader {
+        guest,
+        bytes: input,
+    };
     let mut all = Vec::new();
     let mut raw = Vec::new();
     // EIP-8288 MAX_INNER_PROOFS_PER_STEP: every supplied leanSTARK proof, a direct one as a singleton leaf, and every
@@ -245,7 +291,11 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
     let mut inner_proofs = 0;
     for _ in 0..r.count()? {
         let dep = r.dep()?;
-        inner_proofs += usize::from(dep[31] == LEAN_STARK);
+        // A singleton proof cannot satisfy an already-signed min_batch above 1 (ethereum/EIPs#12664).
+        if dep[31] == BATCHED_LEANSTARK_SCHEME && min_batch(&dep) != 1 {
+            return Err(());
+        }
+        inner_proofs += usize::from(dep[31] != LEAN_SPHINCS);
         raw.push((dep, r.blob()?));
         all.push(dep);
     }
@@ -264,12 +314,16 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
             }
             continue;
         }
-        children.push((decode_child(&declared, proof)?, proof, declared.clone()));
+        children.push((
+            decode_child(guest, &declared, proof)?,
+            proof,
+            declared.clone(),
+        ));
         all.extend(declared);
     }
     let discards: HashSet<_> = r.deps()?.into_iter().collect();
-    // An optional trailing section carries batch leaves; it is absent when there are none.
-    let mut leaves: Vec<BatchLeaf> = Vec::new();
+    // An optional trailing section carries leaves; it is absent when there are none.
+    let mut leaves: Vec<InputLeaf> = Vec::new();
     if !r.bytes.is_empty() {
         let leaf_count = r.number()?;
         inner_proofs += leaf_count;
@@ -277,19 +331,9 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
             return Err(());
         }
         for _ in 0..leaf_count {
-            let vk: [u8; 32] = r.take(32)?.try_into().map_err(|_| ())?;
-            let claim_count = r.number()?;
-            if !(1..=MAX_CLAIMS_PER_BATCH_LEAF).contains(&claim_count) {
-                return Err(());
-            }
-            let claims = (0..claim_count)
-                .map(|_| r.take(32)?.try_into().map_err(|_| ()))
-                .collect::<Result<Vec<[u8; 32]>, ()>>()?;
-            if !valid_batch_claims(&claims) {
-                return Err(());
-            }
-            all.extend(claims.iter().map(|claim| leanstark_dependency(claim, &vk)));
-            leaves.push((claims, vk, r.blob()?.to_vec()));
+            let leaf = leaf(&mut r)?;
+            all.extend(&leaf.1);
+            leaves.push(leaf);
         }
     }
     r.end()?;
@@ -323,17 +367,16 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
     {
         return Err(());
     }
-    // A leaf proves when one of its claims is kept and not yet covered; it publishes only the kept ones. Every other
-    // leaf is checked here, so every leaf meets the verifier's bounds even when all its claims are discarded.
-    let (leaves, unused): (Vec<_>, Vec<_>) = leaves.into_iter().partition(|(claims, vk, _)| {
-        claims.iter().any(|claim| {
-            let dep = leanstark_dependency(claim, vk);
-            kept.contains(&dep) && !covered.contains(&dep)
-        })
+    // A leaf proves when one of its dependencies is kept and not yet covered; it publishes only the kept ones. Every
+    // other leaf is checked here, so every leaf meets the verifier's bounds even when all its claims are discarded.
+    let (leaves, unused): (Vec<_>, Vec<_>) = leaves.into_iter().partition(|(_, established)| {
+        established
+            .iter()
+            .any(|dep| kept.contains(dep) && !covered.contains(dep))
     });
     if unused
         .iter()
-        .any(|(claims, vk, witness)| !verify_batch_leaf(claims, vk, witness))
+        .any(|((claims, vk, witness), _)| !verify_batch_leaf(guest, claims, vk, witness))
     {
         return Err(());
     }
@@ -344,17 +387,18 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
         return Ok(bytes.to_vec());
     }
     let mut signatures = Vec::new();
-    let mut generic = leaves;
+    let mut generic: Vec<BatchLeaf> = leaves.into_iter().map(|(leaf, _)| leaf).collect();
     for (dep, witness) in raw {
-        if dep[31] == LEAN_STARK {
-            generic.push((vec![data(&dep)], key(&dep), witness.to_vec()));
-        } else {
+        if dep[31] == LEAN_SPHINCS {
             let (pk, signature) = parse_sphincs(&key(&dep), witness)?;
             signatures.push((pk, data(&dep), signature));
+        } else {
+            generic.push((vec![data(&dep)], key(&dep), witness.to_vec()));
         }
     }
     let children: Vec<_> = children.into_iter().map(|(child, ..)| child).collect();
     let proof = rec_aggregation::aggregate(
+        guest,
         &children,
         generic,
         signatures,
@@ -368,6 +412,37 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
         return Err(());
     }
     Ok(proof)
+}
+
+/// One leaf of the input's trailing section: its key, claims, the dependencies it establishes, then its witness. Each
+/// dependency is a leanSTARK one on a claim of the leaf under its key, a batched one with `min_batch` at most the
+/// leaf's claim count.
+fn leaf(r: &mut Reader) -> Result<InputLeaf, ()> {
+    let vk: [u8; 32] = r.take(32)?.try_into().map_err(|_| ())?;
+    let claim_count = r.number()?;
+    if !(1..=r.guest.max_claims_per_leaf()).contains(&claim_count) {
+        return Err(());
+    }
+    let claims = (0..claim_count)
+        .map(|_| r.take(32)?.try_into().map_err(|_| ()))
+        .collect::<Result<Vec<[u8; 32]>, ()>>()?;
+    if !valid_batch_claims(r.guest, &claims) {
+        return Err(());
+    }
+    let established = r.deps()?;
+    let establishes = |dep: &Dep| {
+        key(dep) == vk
+            && claims.binary_search(&data(dep)).is_ok()
+            && match dep[31] {
+                LEAN_STARK => true,
+                BATCHED_LEANSTARK_SCHEME => usize::from(min_batch(dep)) <= claim_count,
+                _ => false,
+            }
+    };
+    if established.is_empty() || !established.iter().all(establishes) {
+        return Err(());
+    }
+    Ok(((claims, vk, r.blob()?.to_vec()), established))
 }
 
 unsafe fn bytes<'a>(ptr: *const u8, len: usize) -> Result<&'a [u8], ()> {
@@ -444,7 +519,7 @@ fn checked(f: impl FnOnce() -> Result<bool, ()>) -> i32 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn nlean_abi_version() -> u32 {
-    13
+    14
 }
 /// Copies up to `len` bytes of the calling thread's last contained panic message into `out` and returns its full
 /// length; empty unless that thread's latest `checked` call returned -1.
@@ -484,15 +559,17 @@ pub unsafe extern "C" fn nlean_limits(out: *mut u32, len: usize) -> i32 {
     }
     1
 }
+/// Writes the `AGGREGATED_VK` of `guest` ([`guest_of`]).
+///
 /// # Safety
 /// Input pointers must reference their declared lengths; output pointers must be writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nlean_aggregated_vk(out: *mut u8) -> i32 {
+pub unsafe extern "C" fn nlean_aggregated_vk(guest: u32, out: *mut u8) -> i32 {
     if out.is_null() {
         return 0;
     }
     checked(|| {
-        let key = aggregated_vk();
+        let key = aggregated_vk(guest_of(guest)?);
         unsafe {
             std::ptr::copy_nonoverlapping(key.as_ptr(), out, 32);
         }
@@ -533,10 +610,13 @@ pub unsafe extern "C" fn nlean_verify_leanstark(
         ))
     })
 }
+/// Verifies a proof of `guest` ([`guest_of`]), whose key must be `vk`.
+///
 /// # Safety
 /// Input pointers must reference their declared lengths; output pointers must be writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn nlean_verify_recursive(
+    guest: u32,
     hash: *const u8,
     vk: *const u8,
     vk_len: usize,
@@ -544,18 +624,22 @@ pub unsafe extern "C" fn nlean_verify_recursive(
     len: usize,
 ) -> i32 {
     checked(|| {
-        if unsafe { bytes(vk, vk_len)? } != aggregated_vk() {
+        let guest = guest_of(guest)?;
+        if unsafe { bytes(vk, vk_len)? } != aggregated_vk(guest) {
             return Ok(false);
         }
         let expected = unsafe { bytes(hash, 32)? }.try_into().map_err(|_| ())?;
-        verify_aggregate(expected, unsafe { bytes(proof, len)? })?;
+        verify_aggregate(guest, expected, unsafe { bytes(proof, len)? })?;
         Ok(true)
     })
 }
+/// Proves with `guest` ([`guest_of`]), whose key must be `vk`.
+///
 /// # Safety
 /// Input pointers must reference their declared lengths; output pointers must be writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn nlean_prove_recursive(
+    guest: u32,
     hash: *const u8,
     vk: *const u8,
     vk_len: usize,
@@ -565,10 +649,15 @@ pub unsafe extern "C" fn nlean_prove_recursive(
     out_len: *mut usize,
 ) -> i32 {
     checked(|| {
-        if out.is_null() || out_len.is_null() || unsafe { bytes(vk, vk_len)? } != aggregated_vk() {
+        let guest = guest_of(guest)?;
+        if out.is_null()
+            || out_len.is_null()
+            || unsafe { bytes(vk, vk_len)? } != aggregated_vk(guest)
+        {
             return Ok(false);
         }
         let proof = prove_aggregate(
+            guest,
             unsafe { bytes(hash, 32)? }.try_into().map_err(|_| ())?,
             unsafe { bytes_with_limit(input, input_len, MAX_INPUT_BYTES)? },
         )?;
@@ -597,6 +686,23 @@ pub unsafe extern "C" fn nlean_free(ptr: *mut u8, len: usize) {
 mod tests {
     use super::*;
 
+    const BASE: Guest = Guest::Base;
+    const BATCHED: Guest = Guest::Batched;
+
+    fn leanstark_dependency(claim: &[u8; 32], vk: &[u8; 32]) -> Dep {
+        let mut dep = [0; 96];
+        dep[31] = LEAN_STARK;
+        dep[32..64].copy_from_slice(claim);
+        dep[64..].copy_from_slice(vk);
+        dep
+    }
+    /// The ethereum/EIPs#12664 dependency on `claim` under `vk` with `min_batch`.
+    fn batched(claim: &[u8; 32], vk: &[u8; 32], min_batch: u16) -> Dep {
+        let mut dep = leanstark_dependency(claim, vk);
+        dep[..32].copy_from_slice(&rec_aggregation::batched_scheme_word(min_batch));
+        dep
+    }
+
     fn signed(index: u8) -> (Dep, Vec<u8>) {
         let (sk, pk) = lean_sphincs::key_gen_from_seed([index; 32]);
         let message = keccak(&[index]);
@@ -616,8 +722,20 @@ mod tests {
     fn input(raw: &[(Dep, Vec<u8>)], children: &[(&[Dep], &[u8])], discards: &[Dep]) -> Vec<u8> {
         input_with_leaves(raw, children, discards, &[])
     }
-    /// A batch leaf in the aggregation input: key, claims, witness.
-    type LeafEntry<'a> = ([u8; 32], &'a [[u8; 32]], &'a [u8]);
+    /// A leaf in the aggregation input: key, claims, the dependencies it establishes, witness.
+    type LeafEntry<'a> = ([u8; 32], &'a [[u8; 32]], Vec<Dep>, &'a [u8]);
+    /// A leaf establishing each of its claims' ordinary dependency.
+    fn ordinary<'a>(key: [u8; 32], claims: &'a [[u8; 32]], witness: &'a [u8]) -> LeafEntry<'a> {
+        (
+            key,
+            claims,
+            claims
+                .iter()
+                .map(|claim| leanstark_dependency(claim, &key))
+                .collect(),
+            witness,
+        )
+    }
     /// The aggregation input with its trailing batch-leaf section.
     fn input_with_leaves(
         raw: &[(Dep, Vec<u8>)],
@@ -643,10 +761,12 @@ mod tests {
         out.extend(discards.iter().flatten());
         if !leaves.is_empty() {
             put_number(&mut out, leaves.len());
-            for (key, claims, witness) in leaves {
+            for (key, claims, deps, witness) in leaves {
                 out.extend_from_slice(key);
                 put_number(&mut out, claims.len());
                 out.extend(claims.iter().flatten());
+                put_number(&mut out, deps.len());
+                out.extend(deps.iter().flatten());
                 put_number(&mut out, witness.len());
                 out.extend_from_slice(witness);
             }
@@ -668,9 +788,9 @@ mod tests {
     #[test]
     fn empty_list_has_the_empty_proof_and_never_reaches_the_guest() {
         let hash = commitment(&[]);
-        assert!(prove_aggregate(&hash, &[0; 12]).unwrap().is_empty());
-        assert!(prove_aggregate(&[1; 32], &[0; 12]).is_err());
-        assert!(verify_aggregate(&hash, &[]).is_err());
+        assert!(prove_aggregate(BASE, &hash, &[0; 12]).unwrap().is_empty());
+        assert!(prove_aggregate(BASE, &[1; 32], &[0; 12]).is_err());
+        assert!(verify_aggregate(BASE, &hash, &[]).is_err());
     }
 
     fn proven(index: u8) -> (Dep, Vec<u8>) {
@@ -686,17 +806,25 @@ mod tests {
 
     #[test]
     fn exported_abi_and_limits() {
-        assert_eq!(nlean_abi_version(), 13);
+        assert_eq!(nlean_abi_version(), 14);
         let mut limits = [0u32; 7];
         assert_eq!(unsafe { nlean_limits(limits.as_mut_ptr(), 7) }, 1);
         assert_eq!(limits[2], 16, "MAX_INNER_PROOFS_PER_STEP");
-        assert_eq!(limits[5], 16, "MAX_CLAIMS_PER_BATCH_LEAF");
+        assert_eq!(limits[5], 256, "MAX_CLAIMS_PER_BATCH_LEAF");
         assert_eq!(limits[6], 2048, "leanSTARK instructions");
         assert_eq!(unsafe { nlean_limits(limits.as_mut_ptr(), 6) }, 0);
+        // One key per guest, and no third guest.
+        let mut keys = [[0u8; 32]; 3];
+        let verdicts = [0, 1, 2]
+            .map(|guest| unsafe { nlean_aggregated_vk(guest, keys[guest as usize].as_mut_ptr()) });
+        assert_eq!(verdicts, [1, 1, 0]);
+        assert_eq!(keys[0], aggregated_vk(BASE));
+        assert_eq!(keys[1], aggregated_vk(BATCHED));
+        assert_ne!(keys[0], keys[1]);
     }
 
-    /// EIP-8288 Test Cases 2 and 12: a batch leaf and singleton proofs under one key cover the same dependencies; the
-    /// leaf's claim list is exact, and a discarded claim cannot come back.
+    /// EIP-8288 Test Cases 2 and 12, and ethereum/EIPs#12664: a batch leaf and singleton proofs under one key cover
+    /// the same dependencies; the leaf's claim list is exact, and a discarded claim cannot come back.
     #[test]
     fn batch_leaf_and_singletons_prove_the_same_dependencies() {
         let (a, b, c) = ([0xa0; 32], [0xb0; 32], [0xc0; 32]);
@@ -709,37 +837,67 @@ mod tests {
             leanstark_dependency(&b, &key),
         ];
         let hash = commitment(&deps);
-        assert!(verify_batch_leaf(&[a, b], &key, &leaf));
+        assert!(verify_batch_leaf(BATCHED, &[a, b], &key, &leaf));
         let leaves = |entries: &[LeafEntry]| input_with_leaves(&[], &[], &[], entries);
-        let batched = prove_aggregate(&hash, &leaves(&[(key, &[a, b], &leaf)])).unwrap();
+        let batched_proof =
+            prove_aggregate(BATCHED, &hash, &leaves(&[ordinary(key, &[a, b], &leaf)])).unwrap();
         let direct = [(deps[1], single_b.clone()), (deps[0], single_a)];
-        let singles = prove_aggregate(&hash, &input(&direct, &[], &[])).unwrap();
-        for proof in [&batched, &singles] {
-            verify_aggregate(&hash, proof).unwrap();
+        let singles = prove_aggregate(BATCHED, &hash, &input(&direct, &[], &[])).unwrap();
+        for proof in [&batched_proof, &singles] {
+            verify_aggregate(BATCHED, &hash, proof).unwrap();
+            assert!(
+                verify_aggregate(BASE, &hash, proof).is_err(),
+                "a proof of one guest is none of the other"
+            );
         }
+        // EIP-8288's guest takes no multi-claim leaf.
+        assert!(prove_aggregate(BASE, &hash, &leaves(&[ordinary(key, &[a, b], &leaf)])).is_err());
         // One singleton alone, or a leaf under another key, does not satisfy both claims.
-        assert!(prove_aggregate(&hash, &input(&direct[..1], &[], &[])).is_err());
-        assert!(prove_aggregate(&hash, &leaves(&[([7; 32], &[a, b], &leaf)])).is_err());
+        assert!(prove_aggregate(BATCHED, &hash, &input(&direct[..1], &[], &[])).is_err());
+        let other_key = (key, &[a, b][..], deps.to_vec(), &leaf[..]);
+        assert!(
+            prove_aggregate(
+                BATCHED,
+                &hash,
+                &leaves(&[([7; 32], other_key.1, other_key.2.clone(), other_key.3)])
+            )
+            .is_err()
+        );
         // The leaf statement binds the exact nonempty, strictly increasing claim list.
         for claims in [&[b, a][..], &[a, a], &[], &[a], &[a, b, c]] {
-            assert!(prove_aggregate(&hash, &leaves(&[(key, claims, &leaf)])).is_err());
+            assert!(
+                prove_aggregate(
+                    BATCHED,
+                    &hash,
+                    &leaves(&[(key, claims, deps.to_vec(), &leaf)])
+                )
+                .is_err()
+            );
         }
         // Union with an overlapping leaf, then discard a: {b, c} is kept; a's proof alone cannot restore b.
         let (bc, _) = batch(&[b, c]);
         let retained = [deps[1], leanstark_dependency(&c, &key)];
-        let pair = [(key, &[a, b][..], &leaf[..]), (key, &[b, c], &bc)];
+        let (ab_claims, bc_claims) = ([a, b], [b, c]);
+        let pair = [
+            ordinary(key, &ab_claims, &leaf),
+            ordinary(key, &bc_claims, &bc),
+        ];
         let pruned = prove_aggregate(
+            BATCHED,
             &commitment(&retained),
             &input_with_leaves(&[], &[], &deps[..1], &pair),
         )
         .unwrap();
-        verify_aggregate(&commitment(&retained), &pruned).unwrap();
+        verify_aggregate(BATCHED, &commitment(&retained), &pruned).unwrap();
         let only_a = prove_aggregate(
+            BATCHED,
             &commitment(&deps[..1]),
             &input_with_leaves(&[], &[], &deps[1..], &pair[..1]),
         )
         .unwrap();
-        assert!(prove_aggregate(&hash, &input(&[], &[(&deps[..1], &only_a)], &[])).is_err());
+        assert!(
+            prove_aggregate(BATCHED, &hash, &input(&[], &[(&deps[..1], &only_a)], &[])).is_err()
+        );
     }
 
     /// EIP-8288 `MAX_INNER_PROOFS_PER_STEP` counts direct leanSTARK proofs, batch leaves and children together,
@@ -748,6 +906,7 @@ mod tests {
     fn inner_proofs_per_step_count_every_proof_kind() {
         let (stark, witness) = proven(1);
         let parent = prove_aggregate(
+            BASE,
             &hash_of(&[stark]),
             &input(&[(stark, witness.clone())], &[], &[]),
         )
@@ -759,8 +918,9 @@ mod tests {
             let deps = [stark];
             let children = vec![(&deps[..], &parent[..]); children];
             let raw = [(stark, witness.clone()), sig.clone()];
-            let leaves = [(leaf_key, &[[2; 32]][..], &leaf[..])];
+            let leaves = [ordinary(leaf_key, &[[2; 32]], &leaf)];
             prove_aggregate(
+                BASE,
                 &hash_of(&[stark]),
                 &input_with_leaves(&raw, &children, &[discarded, sig.0], &leaves),
             )
@@ -801,9 +961,9 @@ mod tests {
         assert!(verify_witness(&dep, &witness));
         let empty = commitment(&[]);
         let discarded = |witness: &[u8]| {
-            let as_leaf = input_with_leaves(&[], &[], &[dep], &[(key, &[claim], witness)]);
+            let as_leaf = input_with_leaves(&[], &[], &[dep], &[ordinary(key, &[claim], witness)]);
             let as_direct = input(&[(dep, witness.to_vec())], &[], &[dep]);
-            [as_leaf, as_direct].map(|input| prove_aggregate(&empty, &input))
+            [as_leaf, as_direct].map(|input| prove_aggregate(BASE, &empty, &input))
         };
         assert_eq!(discarded(&witness), [Ok(vec![]), Ok(vec![])]);
         for (name, forged) in bounded_witnesses(&witness) {
@@ -819,7 +979,9 @@ mod tests {
         let mut forged = witness.clone();
         forged[100] ^= 1;
         assert!(!verify_witness(&dep, &forged));
-        assert!(prove_aggregate(&hash_of(&[dep]), &input(&[(dep, forged)], &[], &[])).is_err());
+        assert!(
+            prove_aggregate(BASE, &hash_of(&[dep]), &input(&[(dep, forged)], &[], &[])).is_err()
+        );
         // A signature is no leanSTARK witness, and the scheme is part of the dependency.
         let mut stark = dep;
         stark[31] = LEAN_STARK;
@@ -827,6 +989,7 @@ mod tests {
         assert_ne!(hash_of(&[stark]), hash_of(&[dep]));
         assert!(
             prove_aggregate(
+                BASE,
                 &hash_of(&[stark]),
                 &input(&[(stark, witness.clone())], &[], &[])
             )
@@ -835,7 +998,12 @@ mod tests {
         let mut unknown = dep;
         unknown[31] = 0x12;
         assert!(
-            prove_aggregate(&hash_of(&[dep]), &input(&[(unknown, witness)], &[], &[])).is_err()
+            prove_aggregate(
+                BASE,
+                &hash_of(&[dep]),
+                &input(&[(unknown, witness)], &[], &[])
+            )
+            .is_err()
         );
     }
 
@@ -874,29 +1042,38 @@ mod tests {
         let mut forged = stark_witness.clone();
         *forged.last_mut().unwrap() ^= 1;
         assert!(!verify_witness(&stark, &forged));
-        assert!(prove_aggregate(&hash_of(&[stark]), &input(&[(stark, forged)], &[], &[])).is_err());
+        assert!(
+            prove_aggregate(
+                BASE,
+                &hash_of(&[stark]),
+                &input(&[(stark, forged)], &[], &[])
+            )
+            .is_err()
+        );
 
         let mixed = [stark, sig];
         let leaf = prove_aggregate(
+            BASE,
             &hash_of(&mixed),
             &input(&[(stark, stark_witness), (sig, sig_witness)], &[], &[]),
         )
         .unwrap();
-        assert!(verify_aggregate(&hash_of(&mixed), &leaf).is_ok());
-        assert!(verify_aggregate(&hash_of(&[sig]), &leaf).is_err());
-        assert!(verify_aggregate(&hash_of(&[stark]), &leaf).is_err());
+        assert!(verify_aggregate(BASE, &hash_of(&mixed), &leaf).is_ok());
+        assert!(verify_aggregate(BASE, &hash_of(&[sig]), &leaf).is_err());
+        assert!(verify_aggregate(BASE, &hash_of(&[stark]), &leaf).is_err());
 
         // A mixed child plus a raw leanSTARK witness, with the child's signature discarded.
         let declared = canonical(mixed.to_vec());
         let children = [(&declared[..], &leaf[..])];
         let kept = [stark, other];
         let merged = prove_aggregate(
+            BASE,
             &hash_of(&kept),
             &input(&[(other, other_witness)], &children, &[sig]),
         )
         .unwrap();
-        assert!(verify_aggregate(&hash_of(&kept), &merged).is_ok());
-        assert!(verify_aggregate(&hash_of(&[stark, other, sig]), &merged).is_err());
+        assert!(verify_aggregate(BASE, &hash_of(&kept), &merged).is_ok());
+        assert!(verify_aggregate(BASE, &hash_of(&[stark, other, sig]), &merged).is_err());
     }
 
     #[test]
@@ -905,31 +1082,181 @@ mod tests {
         let deps: Vec<Dep> = raw.iter().map(|(dep, _)| *dep).collect();
 
         let left = canonical(deps[..2].to_vec());
-        let left_proof = prove_aggregate(&hash_of(&left), &input(&raw[..2], &[], &[])).unwrap();
-        assert!(verify_aggregate(&hash_of(&left), &left_proof).is_ok());
-        assert!(verify_aggregate(&hash_of(&deps[..3]), &left_proof).is_err());
+        let left_proof =
+            prove_aggregate(BASE, &hash_of(&left), &input(&raw[..2], &[], &[])).unwrap();
+        assert!(verify_aggregate(BASE, &hash_of(&left), &left_proof).is_ok());
+        assert!(verify_aggregate(BASE, &hash_of(&deps[..3]), &left_proof).is_err());
         let mut tampered = left_proof.clone();
         *tampered.last_mut().unwrap() ^= 1;
-        assert!(verify_aggregate(&hash_of(&left), &tampered).is_err());
+        assert!(verify_aggregate(BASE, &hash_of(&left), &tampered).is_err());
 
         let right = canonical(deps[2..4].to_vec());
-        let right_proof = prove_aggregate(&hash_of(&right), &input(&raw[2..4], &[], &[])).unwrap();
+        let right_proof =
+            prove_aggregate(BASE, &hash_of(&right), &input(&raw[2..4], &[], &[])).unwrap();
 
         // Two children and one raw signature, with one child dependency discarded.
         let children = [(&left[..], &left_proof[..]), (&right[..], &right_proof[..])];
         let kept = [deps[1], deps[2], deps[3], deps[4]];
-        let merged =
-            prove_aggregate(&hash_of(&kept), &input(&raw[4..], &children, &deps[..1])).unwrap();
-        assert!(verify_aggregate(&hash_of(&kept), &merged).is_ok());
-        assert!(verify_aggregate(&hash_of(&deps), &merged).is_err());
+        let merged = prove_aggregate(
+            BASE,
+            &hash_of(&kept),
+            &input(&raw[4..], &children, &deps[..1]),
+        )
+        .unwrap();
+        assert!(verify_aggregate(BASE, &hash_of(&kept), &merged).is_ok());
+        assert!(verify_aggregate(BASE, &hash_of(&deps), &merged).is_err());
 
         // A child declared with dependencies it does not prove is refused.
         let lying = [(&right[..], &left_proof[..])];
-        assert!(prove_aggregate(&hash_of(&right), &input(&[], &lying, &[])).is_err());
+        assert!(prove_aggregate(BASE, &hash_of(&right), &input(&[], &lying, &[])).is_err());
         // A child that already covers the request is returned as is.
         assert_eq!(
-            prove_aggregate(&hash_of(&left), &input(&[], &children[..1], &[])).unwrap(),
+            prove_aggregate(BASE, &hash_of(&left), &input(&[], &children[..1], &[])).unwrap(),
             left_proof
         );
+    }
+
+    /// ethereum/EIPs#12664 Test Cases: `min_batch` 0, 1, 256, 257 and a nonzero reserved bit parse as reject, accept,
+    /// accept, reject, reject, and only under the batched guest; the digest binds the whole scheme word.
+    #[test]
+    fn batched_scheme_words_are_whole_and_gated() {
+        let (claim, key) = ([0x61; 32], [0x62; 32]);
+        let mut reserved = batched(&claim, &key, 1);
+        reserved[3] = 1;
+        let mut ordinary_high = leanstark_dependency(&claim, &key);
+        ordinary_high[30] = 1;
+        let cases = [
+            batched(&claim, &key, 0),
+            batched(&claim, &key, 1),
+            batched(&claim, &key, 256),
+            batched(&claim, &key, 257),
+            reserved,
+            ordinary_high,
+        ];
+        assert_eq!(
+            cases.map(|dep| known_scheme(BATCHED, &dep)),
+            [false, true, true, false, false, false]
+        );
+        assert_eq!(cases.map(|dep| known_scheme(BASE, &dep)), [false; 6]);
+        let words = [
+            leanstark_dependency(&claim, &key),
+            batched(&claim, &key, 1),
+            batched(&claim, &key, 2),
+        ];
+        let hashes = words.map(|dep| commitment(&[dep]));
+        assert!(hashes[0] != hashes[1] && hashes[1] != hashes[2] && hashes[0] != hashes[2]);
+        // Under EIP-8288's guest a 0x12 dependency is an unknown scheme wherever it appears.
+        let (witness, vk) = batch(&[claim]);
+        let dep = batched(&claim, &vk, 1);
+        let hash = commitment(&[dep]);
+        assert!(prove_aggregate(BASE, &hash, &input(&[(dep, witness.clone())], &[], &[])).is_err());
+        assert!(
+            prove_aggregate(
+                BASE,
+                &hash,
+                &input_with_leaves(&[], &[], &[], &[(vk, &[claim], vec![dep], &witness)])
+            )
+            .is_err()
+        );
+        let proof = prove_aggregate(BATCHED, &hash, &input(&[(dep, witness)], &[], &[])).unwrap();
+        verify_aggregate(BATCHED, &hash, &proof).unwrap();
+    }
+
+    /// ethereum/EIPs#12664 Test Cases: a leaf of 64 claims establishes `min_batch` 64 and not 65, ordinary and batched
+    /// dependencies on one claim together, and a singleton or a union of singletons establishes only `min_batch` 1.
+    #[test]
+    fn min_batch_is_bounded_by_the_leaf() {
+        let claims: Vec<[u8; 32]> = (0..64u8)
+            .map(|i| {
+                let mut claim = [0x70; 32];
+                claim[31] = i;
+                claim
+            })
+            .collect();
+        let (leaf, key) = batch(&claims);
+        let prove = |deps: Vec<Dep>| {
+            let hash = commitment(&canonical(deps.clone()));
+            prove_aggregate(
+                BATCHED,
+                &hash,
+                &input_with_leaves(&[], &[], &[], &[(key, &claims, deps, &leaf)]),
+            )
+            .map(|proof| (hash, proof))
+        };
+        let both = vec![
+            batched(&claims[0], &key, 64),
+            leanstark_dependency(&claims[0], &key),
+            batched(&claims[1], &key, 3),
+        ];
+        let (hash, proof) = prove(both).unwrap();
+        verify_aggregate(BATCHED, &hash, &proof).unwrap();
+        assert!(prove(vec![batched(&claims[0], &key, 65)]).is_err());
+        assert!(
+            prove(vec![batched(&[0x71; 32], &key, 1)]).is_err(),
+            "not a claim of the leaf"
+        );
+
+        let (a, b) = (claims[0], claims[1]);
+        let singles = [a, b].map(|claim| batch(&[claim]).0);
+        let one = [batched(&a, &key, 1), batched(&b, &key, 1)];
+        let raw = |m: u16| {
+            [
+                (batched(&a, &key, m), singles[0].clone()),
+                (batched(&b, &key, m), singles[1].clone()),
+            ]
+        };
+        let union = prove_aggregate(BATCHED, &hash_of(&one), &input(&raw(1), &[], &[])).unwrap();
+        assert!(
+            prove_aggregate(
+                BATCHED,
+                &hash_of(&one.map(|dep| {
+                    let mut d = dep;
+                    d[30] = 2;
+                    d
+                })),
+                &input(&raw(2), &[], &[])
+            )
+            .is_err()
+        );
+        let two = [batched(&a, &key, 2), batched(&b, &key, 2)];
+        let children = [(&one[..], &union[..])];
+        assert!(
+            prove_aggregate(BATCHED, &hash_of(&two), &input(&[], &children, &one)).is_err(),
+            "a union qualifies nothing"
+        );
+    }
+
+    /// ethereum/EIPs#12664 Test Cases: a leaf pruned to one claim keeps its qualifier through recursion; a padded
+    /// leaf's discount stands; a discarded triple cannot come back, nor a qualifier rise.
+    #[test]
+    fn pruned_leaves_keep_exact_qualifiers() {
+        let claims = [[0x81; 32], [0x82; 32], [0x83; 32], [0x84; 32]];
+        let (leaf, key) = batch(&claims);
+        let kept = [batched(&claims[0], &key, 4)];
+        let pruned = prove_aggregate(
+            BATCHED,
+            &hash_of(&kept),
+            &input_with_leaves(&[], &[], &[], &[(key, &claims, kept.to_vec(), &leaf)]),
+        )
+        .unwrap();
+        verify_aggregate(BATCHED, &hash_of(&kept), &pruned).unwrap();
+        let children = [(&kept[..], &pruned[..])];
+        let (other, other_key) = batch(&[[0x90; 32]]);
+        let extra = leanstark_dependency(&[0x90; 32], &other_key);
+        let merged = prove_aggregate(
+            BATCHED,
+            &hash_of(&[kept[0], extra]),
+            &input(&[(extra, other)], &children, &[]),
+        )
+        .unwrap();
+        verify_aggregate(BATCHED, &hash_of(&[kept[0], extra]), &merged).unwrap();
+        for wanted in [
+            [batched(&claims[0], &key, 4), batched(&claims[1], &key, 4)],
+            [batched(&claims[0], &key, 5), extra],
+        ] {
+            assert!(
+                prove_aggregate(BATCHED, &hash_of(&wanted), &input(&[], &children, &[])).is_err()
+            );
+        }
     }
 }

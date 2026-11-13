@@ -13,11 +13,13 @@ namespace Nethermind.Crypto.Lean.Tests;
 public partial class NativeLibraryTests
 {
     private const string Library = "nethermind_lean";
-    private const uint ExpectedAbi = 13;
-    private const string ExpectedAggregatedVk = "1fd3e66e9f052c194d53c6a7137dec08a3707edf8296a4406a15b42f7980340e";
+    private const uint ExpectedAbi = 14;
+    // EIP-8288's guest (0), and the one with ethereum/EIPs#12664 batch pricing (1).
+    private const string ExpectedAggregatedVk = "17ff72828e57e4677c5b85df7341d8b801bae598bc53e16d539e06539e73c819";
+    private const string ExpectedBatchedAggregatedVk = "b2ea39dc6cba16031a4dbbcc2e7f15f15403a92ee1b24635abaef45c199f26a8";
     // Proof bytes, dependencies, inner proofs per step, NiceTry v2 witness bytes, aggregation input bytes, claims per
     // batch leaf, leanSTARK instructions.
-    private static readonly uint[] ExpectedLimits = [8 * 1024 * 1024, 256, 16, 32 + 6176, 18 * 1024 * 1024, 16, 2048];
+    private static readonly uint[] ExpectedLimits = [8 * 1024 * 1024, 256, 16, 32 + 6176, 18 * 1024 * 1024, 256, 2048];
 
     // A project reference leaves the library under runtimes/<rid>/native; a package consumer gets it beside the binary.
     static NativeLibraryTests() => NativeLibrary.SetDllImportResolver(typeof(NativeLibraryTests).Assembly, static (name, assembly, searchPath) =>
@@ -27,7 +29,7 @@ public partial class NativeLibraryTests
     private static partial uint nlean_abi_version();
 
     [LibraryImport(Library)]
-    private static unsafe partial int nlean_aggregated_vk(byte* output);
+    private static unsafe partial int nlean_aggregated_vk(uint guest, byte* output);
 
     [LibraryImport(Library)]
     private static unsafe partial int nlean_limits(uint* output, nuint length);
@@ -44,15 +46,20 @@ public partial class NativeLibraryTests
     public async Task Should_match_abi_version() => await Assert.That(nlean_abi_version()).IsEqualTo(ExpectedAbi);
 
     [Test]
-    public async Task Should_match_aggregated_verification_key()
+    [Arguments(0u, ExpectedAggregatedVk, "aggregated-key.bin")]
+    [Arguments(1u, ExpectedBatchedAggregatedVk, "aggregated-batched-key.bin")]
+    public async Task Should_match_aggregated_verification_key(uint guest, string expected, string vector)
     {
-        (int result, byte[] vk) = GetAggregatedVk();
+        (int result, byte[] vk) = GetAggregatedVk(guest);
 
         await Assert.That(result).IsEqualTo(1);
-        await Assert.That(Convert.ToHexStringLower(vk)).IsEqualTo(ExpectedAggregatedVk);
+        await Assert.That(Convert.ToHexStringLower(vk)).IsEqualTo(expected);
         // The packaged vectors come from the same build.
-        await Assert.That(Convert.ToHexStringLower(Vector("aggregated-key.bin"))).IsEqualTo(ExpectedAggregatedVk);
+        await Assert.That(Convert.ToHexStringLower(Vector(vector))).IsEqualTo(expected);
     }
+
+    [Test]
+    public async Task Should_reject_an_unknown_guest() => await Assert.That(GetAggregatedVk(2).Result).IsEqualTo(0);
 
     [Test]
     public async Task Should_match_limits()
@@ -119,11 +126,11 @@ public partial class NativeLibraryTests
             return nlean_limits(output, (nuint)limits.Length);
     }
 
-    private static unsafe (int Result, byte[] Vk) GetAggregatedVk()
+    private static unsafe (int Result, byte[] Vk) GetAggregatedVk(uint guest)
     {
         byte[] vk = new byte[32];
 
         fixed (byte* output = vk)
-            return (nlean_aggregated_vk(output), vk);
+            return (nlean_aggregated_vk(guest, output), vk);
     }
 }

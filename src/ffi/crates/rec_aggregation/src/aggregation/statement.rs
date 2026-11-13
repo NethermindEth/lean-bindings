@@ -2,7 +2,7 @@
 
 use super::cells::{cell_bytes, count, pack_16_bytes};
 use super::deferred::DeferredClaim;
-use super::guest::unified_guest;
+use super::guest::{Guest, unified_guest};
 use super::generic::{LEANSTARK_DEPS_DOMAIN, digest_cells};
 use super::{GenericClaim, LeanSphincsClaim};
 use fiat_shamir::merkle::hash_to_scalars;
@@ -93,12 +93,13 @@ fn lane_hash(lanes: impl Iterator<Item = u64>) -> [F192; 2] {
 /// list's digest binds its own length through the hash's padding, so the pair binds
 /// both lists whole.
 pub(super) fn statement_digest(
+    guest: Guest,
     generic: &[GenericClaim],
     lean_sphincs_signers: &[LeanSphincsClaim],
     da_digest: [u8; 32],
     defer: &DeferredClaim,
 ) -> [F192; 2] {
-    statement_digest_of(deps_digest_cells(lean_sphincs_signers, generic), da_digest, defer)
+    statement_digest_of(guest, deps_digest_cells(lean_sphincs_signers, generic), da_digest, defer)
 }
 
 /// The dependency digest of the two lists as two cells.
@@ -112,11 +113,12 @@ pub(super) fn deps_digest_cells(lean_sphincs: &[LeanSphincsClaim], generic: &[Ge
 
 /// [`statement_digest`] from the dependency digest: all a holder of `deps_hash` alone needs.
 pub(super) fn statement_digest_of(
+    guest: Guest,
     deps_digest: [F192; 2],
     da_digest: [u8; 32],
     defer: &DeferredClaim,
 ) -> [F192; 2] {
-    let seed = leanvm_core::cpu::fs_seed(unified_guest());
+    let seed = leanvm_core::cpu::fs_seed(unified_guest(guest));
     let da_digest = hash_to_scalars(&da_digest);
     let header: [F192; STATEMENT_HEADER] = [
         seed[0],

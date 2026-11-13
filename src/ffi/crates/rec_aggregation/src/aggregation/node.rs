@@ -5,10 +5,10 @@ use super::child::gen_verify;
 use super::coverage::plan_coverage;
 use super::deferred::{DeferredClaim, aggregate_deferred_claims, bytecode_sums, bytecode_value, scalar_bytecode};
 use super::error::{AggregateVerifyError, AggregationError, SnarkProveError, SnarkVerifyError};
-use super::guest::unified_guest;
+use super::guest::{Guest, unified_guest};
 #[cfg(test)]
 use super::hints::FORGE;
-use super::generic::{batch_hash, generic_hints, valid_batch_claims};
+use super::generic::{MAX_CLAIMS_PER_BATCH_LEAF, batch_hash, batched_key, digest_cells, generic_hints, valid_batch_claims};
 use super::hints::{Hints, lean_sphincs_hints};
 use super::proof::{EthereumClaims, EthereumProof, check_signer_set};
 use super::statement::{generic_claim_cells, lean_sphincs_claim_cells, list_split, statement_digest};
@@ -20,7 +20,7 @@ use primitives::field::{F64, F192};
 use signatures::lean_sphincs;
 use signatures::lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
 
-/// Test builds only: whether this thread skips the host's batch-leaf checks, so the guest's own are tested.
+/// Test builds only: whether this thread skips the host's leaf checks, so the guest's own are tested.
 fn skip_leaf_checks() -> bool {
     #[cfg(test)]
     return super::hints::SKIP_LEAF_CHECKS.with(std::cell::Cell::get);
@@ -28,13 +28,14 @@ fn skip_leaf_checks() -> bool {
     false
 }
 
-/// Prove existence of signatures and valid encoding of PQ-blobs, potentially using recursive children.
+/// Prove existence of signatures and valid encoding of PQ-blobs with `guest`, potentially using recursive children.
 ///
-/// - `children`: child proofs; at most [`MAX_RECURSIONS`].
-/// - `leaves`: EIP-8288 batch leaves `(claims, vk, witness)` ([`generic_witness`](super::generic_witness)),
-///   any order, each covering its claims' leanSTARK (`0x11`) dependencies; a direct dependency is a
-///   [`singleton_leaf`](super::singleton_leaf). Distinct leaves and children together are at most
-///   [`MAX_INNER_PROOFS_PER_STEP`].
+/// - `children`: child proofs of `guest`; at most [`MAX_RECURSIONS`].
+/// - `leaves`: leaves `(claims, vk, witness)` ([`generic_witness`](super::generic_witness)), any order, of at most
+///   [`Guest::max_claims_per_leaf`] claims; a direct dependency is a [`singleton_leaf`](super::singleton_leaf).
+///   Without `declare`, each claim establishes its leanSTARK (`0x11`) dependency; with it, a leaf establishes each
+///   declared claim it can, under [`Guest::Batched`] also a batched one ([`batched_key`]) with `min_batch` at most
+///   the leaf's claim count. Distinct leaves and children together are at most [`MAX_INNER_PROOFS_PER_STEP`].
 /// - `raw_lean_sphincs`: list of `(public_key, message, signature)`, any order.
 /// - `blobs`: concatenated blobs, each containing [`BLOB_SYMBOLS`] little-endian `u64` symbols;
 ///   at most [`lean_da::DA_MAX_ROWS`] blobs. A node with blobs publishes their matrix's root, and none
@@ -58,6 +59,7 @@ fn skip_leaf_checks() -> bool {
 ///   and any other invalid child fails the guest's run, [`AggregationError::ProofError`] (TODO
 ///   return the index of invalid proof).
 pub fn aggregate(
+    guest: Guest,
     children: &[EthereumProof],
     leaves: Vec<BatchLeaf>,
     raw_lean_sphincs: Vec<(LeanSphincsPublicKey, lean_sphincs::Message, LeanSphincsSignature)>,
@@ -65,11 +67,12 @@ pub fn aggregate(
     declare: Option<&EthereumClaims>,
     log_inv_rate: usize,
 ) -> Result<EthereumProof, AggregationError> {
-    aggregate_with_stats(children, leaves, raw_lean_sphincs, blobs, declare, log_inv_rate).map(|(sig, _)| sig)
+    aggregate_with_stats(guest, children, leaves, raw_lean_sphincs, blobs, declare, log_inv_rate).map(|(sig, _)| sig)
 }
 
 /// [`aggregate`], under the same contract, also returning the prover's statistics (what the CLI's benchmarks report).
 pub fn aggregate_with_stats(
+    guest: Guest,
     children: &[EthereumProof],
     leaves: Vec<BatchLeaf>,
     raw_lean_sphincs: Vec<(LeanSphincsPublicKey, lean_sphincs::Message, LeanSphincsSignature)>,
@@ -84,6 +87,9 @@ pub fn aggregate_with_stats(
     }
     if children.len() > MAX_RECURSIONS {
         return Err(AggregationError::TooLarge);
+    }
+    if children.iter().any(|child| child.guest != guest) {
+        return Err(AggregationError::InvalidChild(AggregateVerifyError::MalformedClaim));
     }
     let direct = if blobs.is_empty() {
         None
@@ -113,7 +119,7 @@ pub fn aggregate_with_stats(
         }
     };
 
-    let guest = unified_guest();
+    let aggregator = unified_guest(guest);
     // On the whole leaf: one statement needs one proof.
     let mut leaves = leaves;
     leaves.sort_by(|(a, ak, _), (b, bk, _)| (a, ak).cmp(&(b, bk)));
@@ -125,7 +131,7 @@ pub fn aggregate_with_stats(
         if leaves.len() + children.len() > MAX_INNER_PROOFS_PER_STEP {
             return Err(AggregationError::TooManyInnerProofs);
         }
-        if !leaves.iter().all(|(claims, ..)| valid_batch_claims(claims)) {
+        if !leaves.iter().all(|(claims, ..)| valid_batch_claims(guest, claims)) {
             return Err(AggregationError::InvalidGenericWitness);
         }
     }
@@ -154,7 +160,7 @@ pub fn aggregate_with_stats(
         public_inputs.push(child.vm_public_input());
     }
     // One single-threaded replay per worker: nothing inside dispatches.
-    let bytecode = scalar_bytecode();
+    let bytecode = scalar_bytecode(guest);
     let summaries = parallel::map_collect(children.len(), |i| {
         let public_input = public_input_bytes(&public_inputs[i]);
         verifier::replay_unchecked(bytecode, &public_input, &scalar_proof(&children[i].proof))
@@ -169,10 +175,9 @@ pub fn aggregate_with_stats(
     drop(_span);
 
     let _span = tracing::info_span!("Build witness").entered();
-    let raw_generic_claims: Vec<GenericClaim> = leaves
-        .iter()
-        .flat_map(|(claims, vk, _)| claims.iter().map(|claim| (*claim, *vk)))
-        .collect();
+    let established = establishments(guest, &leaves, declare);
+    let raw_generic_claims: Vec<GenericClaim> =
+        established.iter().flatten().map(|&(_, _, claim)| claim).collect();
     let raw_lean_sphincs_claims: Vec<LeanSphincsClaim> = raw_lean_sphincs
         .iter()
         .map(|(pk, message, _)| (*message, *pk))
@@ -209,7 +214,7 @@ pub fn aggregate_with_stats(
             count(usize::from(!blobs.is_empty())),
         ],
     );
-    let fs_seed = leanvm_core::cpu::fs_seed(guest);
+    let fs_seed = leanvm_core::cpu::fs_seed(aggregator);
     hints.push("fs_seed", vec![fs_seed[0], fs_seed[1]]);
     // Both lists in the guest's order, leanSTARK first: each one's split, its declared
     // claims, then its duplicates.
@@ -233,17 +238,30 @@ pub fn aggregate_with_stats(
         hints.push("dup_claims", claim.to_vec());
     }
     // Each slot is hinted as an offset into its scheme's region, which is how one
-    // range check keeps a scheme's writers off the other's claims. A leaf's claims take
-    // consecutive raw slots, each with its bytes in the exponent.
+    // range check keeps a scheme's writers off the other's claims. A leaf's claims ride
+    // with their bytes in the exponent, and its dependencies take consecutive raw slots.
     // A leanSTARK sub-proof pops the same streams as a child's, ahead of every child's.
     // Sequential: the native verification inside dispatches on the pool itself.
     let mut offsets = cover.generic.raw.iter();
-    for (claims, vk, witness) in &leaves {
+    for ((claims, vk, witness), established) in leaves.iter().zip(&established) {
         hints.push("leaf_claims", vec![count(claims.len() - 1)]);
-        for (claim, &offset) in claims.iter().zip(offsets.by_ref()) {
-            hints.push("raw_index", vec![count(offset)]);
+        hints.push("leaf_vk", digest_cells(vk).to_vec());
+        for claim in claims {
+            hints.push("leaf_claim", digest_cells(claim).to_vec());
             hints.push("batch_bytes", exponent_bytes(claim));
         }
+        hints.push("leaf_establishes", vec![count(established.len())]);
+        for (&(position, min_batch, _), &offset) in established.iter().zip(offsets.by_ref()) {
+            hints.push("raw_index", vec![count(offset)]);
+            hints.push("leaf_claim_index", vec![count(position)]);
+            hints.push("min_batch", vec![count(min_batch.into())]);
+            if min_batch != 0 {
+                let [high, low] = min_batch.to_be_bytes();
+                hints.push("min_batch_bytes", vec![count(high.into()), count(low.into())]);
+            }
+        }
+        let cells = 1 + 2 * claims.len();
+        hints.push("leaf_digest_split", vec![count(cells / LEAF_CHUNK), count(cells % LEAF_CHUNK)]);
         for (name, entry) in generic_hints(&batch_hash(claims), vk, witness)? {
             hints.push(name, entry);
         }
@@ -269,12 +287,12 @@ pub fn aggregate_with_stats(
             [fresh, child.defer.bytecode_point.clone()]
         })
         .collect();
-    let sums = bytecode_sums(&claim_points);
+    let sums = bytecode_sums(guest, &claim_points);
     // Each child's witness is its own, one child per worker: nothing inside dispatches.
     let verified = parallel::map_collect(children.len(), |i| {
         let (pi, summary) = &replayed[i];
         let value = bytecode_value(&sums[2 * i], &claim_points[2 * i]);
-        gen_verify(guest, *pi, &children[i].proof, summary, value)
+        gen_verify(aggregator, *pi, &children[i].proof, summary, value)
     });
     let mut subs = Vec::with_capacity(children.len());
     let mut carried = Vec::with_capacity(children.len());
@@ -316,13 +334,13 @@ pub fn aggregate_with_stats(
     drop(_span);
 
     let defer = if children.is_empty() {
-        let leaf = DeferredClaim::leaf();
+        let leaf = DeferredClaim::leaf(guest);
         hints.push("leaf_defer", vec![leaf.bytecode_value]);
         leaf
     } else {
         let _span = tracing::info_span!("Batch deferred claims").entered();
         let (agg_hints, reduced) =
-            aggregate_deferred_claims(&subs, &carried, sums).map_err(AggregationError::InvalidChild)?;
+            aggregate_deferred_claims(guest, &subs, &carried, sums).map_err(AggregationError::InvalidChild)?;
         for (name, entry) in agg_hints {
             hints.push(name, entry);
         }
@@ -361,8 +379,8 @@ pub fn aggregate_with_stats(
         return Err(AggregationError::Empty);
     }
 
-    let public_input = statement_digest(&cover.generic.signers, &cover.lean_sphincs.signers, da, &defer);
-    let mut program = guest.clone();
+    let public_input = statement_digest(guest, &cover.generic.signers, &cover.lean_sphincs.signers, da, &defer);
+    let mut program = aggregator.clone();
     #[cfg(test)]
     if let Some(forge) = FORGE.with(|forge| forge.borrow_mut().take()) {
         forge(&mut hints);
@@ -372,6 +390,7 @@ pub fn aggregate_with_stats(
         prove(&program, public_input, log_inv_rate).map_err(|e| AggregationError::ProofError(SnarkProveError(e)))?;
     Ok((
         EthereumProof {
+            guest,
             claims: EthereumClaims {
                 generic: cover.generic.signers,
                 lean_sphincs: cover.lean_sphincs.signers,
@@ -382,4 +401,37 @@ pub fn aggregate_with_stats(
         },
         stats,
     ))
+}
+
+/// A leaf's claims take a guest digest's cells a block pair (`leaf_digest`).
+const LEAF_CHUNK: usize = 2 * primitives::hash::RATE / 16;
+
+/// Per leaf, the dependencies it establishes as `(claim position, min_batch, claim list entry)`, `min_batch` 0 for an
+/// ordinary one: every claim under the leaf's key without `declare`, else each declared entry the leaf can establish.
+fn establishments(guest: Guest, leaves: &[BatchLeaf], declare: Option<&EthereumClaims>) -> Vec<Vec<(usize, u16, GenericClaim)>> {
+    leaves
+        .iter()
+        .map(|(claims, vk, _)| {
+            let Some(declare) = declare else {
+                return claims.iter().enumerate().map(|(position, claim)| (position, 0, (*claim, *vk))).collect();
+            };
+            // min_batch m's key at m - 1; a leaf of N claims qualifies m up to N, which tests lift to see the guest
+            // refuse more.
+            let qualified = if skip_leaf_checks() { MAX_CLAIMS_PER_BATCH_LEAF } else { claims.len() };
+            let batched: Vec<[u8; 32]> = if guest == Guest::Batched || skip_leaf_checks() {
+                (1..=qualified as u16).map(|m| batched_key(m, vk)).collect()
+            } else {
+                vec![]
+            };
+            declare
+                .generic
+                .iter()
+                .filter_map(|&(claim, key)| {
+                    let position = claims.binary_search(&claim).ok()?;
+                    let min_batch = if key == *vk { 0 } else { batched.iter().position(|k| *k == key)? as u16 + 1 };
+                    Some((position, min_batch, (claim, key)))
+                })
+                .collect()
+        })
+        .collect()
 }

@@ -1,12 +1,15 @@
 //! leanSTARK (scheme `0x11`) dependencies: "the leanVM program `vk` commits to accepts `data_hash`".
 //!
-//! # Batch leaves
+//! # Leaves
 //!
-//! A leanSTARK proof is an EIP-8288 batch leaf: its public input is
-//! `get_batch_hash(claims) = keccak256(b"EIP8288:batch:v1" ‖ claims)` ([`batch_hash`]) over 1 to
-//! [`MAX_CLAIMS_PER_BATCH_LEAF`] strictly increasing 32-byte claims, and each claim yields the dependency
-//! `(0x11, claim, vk)`. A direct dependency on `data_hash` is the singleton leaf `[data_hash]`. The aggregation
-//! guest checks the claims' order; the leaf program need not.
+//! A leanSTARK proof is a leaf: its public input is `get_batch_hash(claims) = keccak256(b"EIP8288:batch:v1" ‖ claims)`
+//! ([`batch_hash`]) over 1 to [`Guest::max_claims_per_leaf`] strictly increasing 32-byte claims, EIP-8288's
+//! `get_claim_hash` for one claim. A direct dependency on `data_hash` is the singleton leaf `[data_hash]`. The
+//! aggregation guest checks the claims' order; the leaf program need not.
+//!
+//! Each claim may establish the dependency `(0x11, claim, vk)` and, under [`Guest::Batched`] (ethereum/EIPs#12664),
+//! `(0x12 with min_batch m, claim, vk)` for `1 ≤ m ≤ N`, the leaf's claim count. A claim list entry is `claim ‖ key`:
+//! `vk` for the first, [`batched_key`]`(m, vk)` for the second, which binds the whole scheme word.
 //!
 //! # Verification key
 //!
@@ -29,15 +32,19 @@
 use super::cells::count;
 use super::cells::pack_16_bytes;
 use super::error::AggregationError;
+use super::guest::Guest;
 use super::hints::SubHints;
 use leanvm_core::cpu::{Proof, from_scalar, scalar_proof};
 use primitives::field::F192;
 
 /// The most instructions, as a log, of a leanSTARK dependency's program.
 pub const MAX_GENERIC_BYTECODE_LOG: usize = 11;
-/// EIP-8288 `MAX_CLAIMS_PER_BATCH_LEAF` (TBD in the EIP): the most claims one leanSTARK batch leaf proves. A guest
-/// constant, so changing it changes `AGGREGATED_VK`.
-pub const MAX_CLAIMS_PER_BATCH_LEAF: usize = 16;
+/// ethereum/EIPs#12664 `MAX_CLAIMS_PER_BATCH_LEAF` (provisional): the most claims one leaf of [`Guest::Batched`]
+/// proves. A guest constant, so changing it changes that guest's `AGGREGATED_VK`.
+pub const MAX_CLAIMS_PER_BATCH_LEAF: usize = 256;
+
+/// ethereum/EIPs#12664 `BATCHED_LEANSTARK_SCHEME`, the low byte of its scheme word.
+pub const BATCHED_LEANSTARK_SCHEME: u8 = 0x12;
 
 /// EIP-8288 `get_batch_hash`'s domain, one 16-byte cell.
 pub const BATCH_DOMAIN: [u8; 16] = *b"EIP8288:batch:v1";
@@ -121,10 +128,25 @@ pub fn batch_hash(claims: &[[u8; 32]]) -> [u8; 32] {
     hasher.finalize()
 }
 
-/// Whether `claims` is a batch leaf's claim list: 1 to [`MAX_CLAIMS_PER_BATCH_LEAF`] claims, strictly increasing in
-/// byte-lexicographic order.
-pub fn valid_batch_claims(claims: &[[u8; 32]]) -> bool {
-    (1..=MAX_CLAIMS_PER_BATCH_LEAF).contains(&claims.len()) && claims.is_sorted_by(|a, b| a < b)
+/// Whether `claims` is a leaf's claim list under `guest`: 1 to [`Guest::max_claims_per_leaf`] claims, strictly
+/// increasing in byte-lexicographic order.
+pub fn valid_batch_claims(guest: Guest, claims: &[[u8; 32]]) -> bool {
+    (1..=guest.max_claims_per_leaf()).contains(&claims.len()) && claims.is_sorted_by(|a, b| a < b)
+}
+
+/// ethereum/EIPs#12664 scheme word of a `BATCHED_LEANSTARK_SCHEME` dependency: `zero[29] ‖ uint16_be(min_batch) ‖ 0x12`.
+pub fn batched_scheme_word(min_batch: u16) -> [u8; 32] {
+    let mut word = [0; 32];
+    word[29..31].copy_from_slice(&min_batch.to_be_bytes());
+    word[31] = BATCHED_LEANSTARK_SCHEME;
+    word
+}
+
+/// The claim list key of a `BATCHED_LEANSTARK_SCHEME` dependency with `min_batch` under `vk`:
+/// `keccak256(scheme word ‖ vk)`. Its preimage starts with zero bytes and a program key's with `verifier::TAG`, so
+/// it is no program's key.
+pub fn batched_key(min_batch: u16, vk: &[u8; 32]) -> [u8; 32] {
+    primitives::hash::hash(&[&batched_scheme_word(min_batch)[..], vk].concat())
 }
 
 /// A digest as the two canonical cells the VM takes it in.
@@ -149,18 +171,18 @@ pub(super) fn check(
 /// Native check of a leanSTARK dependency on `data_hash`: the singleton batch leaf `[data_hash]`
 /// ([`verify_batch_leaf`]).
 pub fn verify_generic(data_hash: &[u8; 32], vk: &[u8; 32], witness: &[u8]) -> bool {
-    verify_batch_leaf(&[*data_hash], vk, witness)
+    verify_batch_leaf(Guest::Base, &[*data_hash], vk, witness)
 }
 
-/// Native check of a batch leaf: `claims` is a valid claim list ([`valid_batch_claims`]), `witness` parses, its
-/// table's program digest is `vk`, and its proof shows an execution of the table on `get_batch_hash(claims)`.
+/// Native check of a leaf under `guest`: `claims` is a valid claim list ([`valid_batch_claims`]), `witness` parses,
+/// its table's program digest is `vk`, and its proof shows an execution of the table on `get_batch_hash(claims)`.
 /// Accepts exactly what the aggregation guest accepts.
 ///
 /// Also builds the guest's hints, so a proof the native verifier accepts but the guest's fixed capacities
 /// (`gen_verify`'s fit check) cannot take is rejected here rather than when the block is proved.
-pub fn verify_batch_leaf(claims: &[[u8; 32]], vk: &[u8; 32], witness: &[u8]) -> bool {
+pub fn verify_batch_leaf(guest: Guest, claims: &[[u8; 32]], vk: &[u8; 32], witness: &[u8]) -> bool {
     let statement = batch_hash(claims);
-    valid_batch_claims(claims)
+    valid_batch_claims(guest, claims)
         && parse_witness(witness).is_some_and(|w| {
             check(&statement, vk, &w)
                 .is_some_and(|(bytecode, summary)| sub_hints(&w, &w, &statement, &bytecode, &summary).is_ok())

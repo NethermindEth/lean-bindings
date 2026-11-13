@@ -1,16 +1,42 @@
 //! Compiling the guest to a fixed point on its own size.
 
 use super::deferred::{scalar_bytecode, stacked_bytecode};
+use super::generic::MAX_CLAIMS_PER_BATCH_LEAF;
 use super::placeholders::placeholder_map;
 use lean_compiler::{compile, parse_with_replacements};
 use leanvm_core::cpu::Program;
 
-/// Build the guest bytecode and the stacked table its claims are about. Both are
+/// Which aggregation program a proof is of. Both compile from one source, so each has its own `AGGREGATED_VK`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Guest {
+    /// EIP-8288: each leanSTARK (`0x11`) dependency is proved by a one-claim leaf.
+    #[default]
+    Base,
+    /// ethereum/EIPs#12664 on top of EIP-8288: leaves of up to [`MAX_CLAIMS_PER_BATCH_LEAF`] claims, which also
+    /// establish `BATCHED_LEANSTARK_SCHEME` (`0x12`) dependencies.
+    Batched,
+}
+
+impl Guest {
+    pub(super) const fn index(self) -> usize {
+        self as usize
+    }
+
+    /// The most claims one leaf proves.
+    pub const fn max_claims_per_leaf(self) -> usize {
+        match self {
+            Self::Base => 1,
+            Self::Batched => MAX_CLAIMS_PER_BATCH_LEAF,
+        }
+    }
+}
+
+/// Build `guest`'s bytecode and the stacked table its claims are about. Both are
 /// cached, so this only moves the cost out of the first prove or verify.
-pub fn warm_up() {
-    unified_guest();
-    stacked_bytecode();
-    scalar_bytecode();
+pub fn warm_up(guest: Guest) {
+    unified_guest(guest);
+    stacked_bytecode(guest);
+    scalar_bytecode(guest);
 }
 
 /// The aggregation bytecode, compiled to a fixed point on its own size.
@@ -20,16 +46,16 @@ pub fn warm_up() {
 /// itself. Its *digest* needs no such loop: it rides the statement rather than
 /// the code. The guess converges in one or two rounds because the map's only
 /// size-dependent part is a handful of unrolled sumcheck rounds.
-pub fn unified_guest() -> &'static Program {
-    static GUEST: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
-    GUEST.get_or_init(|| {
+pub fn unified_guest(guest: Guest) -> &'static Program {
+    static GUESTS: [std::sync::OnceLock<Program>; 2] = [const { std::sync::OnceLock::new() }; 2];
+    GUESTS[guest.index()].get_or_init(|| {
         // A guess at the guest's own size: right, it compiles once; wrong, one more round.
         let mut guess = 19;
         for _ in 0..8 {
-            let guest = compile_guest(guess);
-            let actual = guest.prog().len().trailing_zeros() as usize;
+            let program = compile_guest(guess, guest);
+            let actual = program.prog().len().trailing_zeros() as usize;
             if actual == guess {
-                return guest;
+                return program;
             }
             guess = actual;
         }
@@ -37,8 +63,8 @@ pub fn unified_guest() -> &'static Program {
     })
 }
 
-pub(super) fn compile_guest(kbc: usize) -> Program {
-    let replacements = placeholder_map(kbc);
+pub(super) fn compile_guest(kbc: usize, guest: Guest) -> Program {
+    let replacements = placeholder_map(kbc, guest);
     // `DBG_PLACEHOLDERS=path`: dump the baked guest constants, to read alongside
     // a `DBG_PROF_DUMP` profile (the guest's shape is entirely in these).
     if let Ok(path) = std::env::var("DBG_PLACEHOLDERS") {

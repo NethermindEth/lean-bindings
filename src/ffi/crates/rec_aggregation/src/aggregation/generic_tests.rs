@@ -107,9 +107,15 @@ fn leaf(claims: &[[u8; 32]]) -> BatchLeaf {
     (claims.to_vec(), g.vk, any_input_witness(g, &batch_hash(claims)))
 }
 
-/// `n` distinct claims, strictly increasing.
+/// `n` distinct claims, strictly increasing: `first` repeated, then the index in the last two bytes.
 fn claims_from(first: u8, n: usize) -> Vec<[u8; 32]> {
-    (0..n).map(|i| [first + i as u8; 32]).collect()
+    (0..n as u16)
+        .map(|i| {
+            let mut claim = [first; 32];
+            claim[30..].copy_from_slice(&i.to_be_bytes());
+            claim
+        })
+        .collect()
 }
 
 type RawSphincs = (LeanSphincsPublicKey, lean_sphincs::Message, LeanSphincsSignature);
@@ -149,7 +155,7 @@ fn check(proof: &EthereumProof) {
     let hash = deps_hash(&claims.lean_sphincs, &claims.generic);
     assert_eq!(hash, independent_deps_hash(&claims.lean_sphincs, &claims.generic));
     if claims.da_commitment.is_none() {
-        verify_deps_hash(&hash, &proof.proof_bytes()).expect("verifies under its digest");
+        verify_deps_hash(proof.guest(), &hash, &proof.proof_bytes()).expect("verifies under its digest");
     }
 }
 
@@ -190,7 +196,7 @@ fn native_verifier_accepts_and_rejects() {
 fn generic_only_leaf() {
     leanvm_core::init_prover();
     let dep = preimage_dep(2);
-    let proof = aggregate(&[], singles([&dep]), vec![], &[], None, RATE).expect("proves");
+    let proof = aggregate(Guest::Base, &[], singles([&dep]), vec![], &[], None, RATE).expect("proves");
     assert_eq!(proof.claims().generic, vec![claim(&dep)]);
     check(&proof);
 }
@@ -199,7 +205,7 @@ fn generic_only_leaf() {
 fn mixed_leaf_with_a_near_cap_program() {
     leanvm_core::init_prover();
     let deps = [preimage_dep(3), wide_dep([9; 32])];
-    let proof = aggregate(&[], singles(&deps), sphincs(2), &[], None, RATE).expect("proves");
+    let proof = aggregate(Guest::Base, &[], singles(&deps), sphincs(2), &[], None, RATE).expect("proves");
     assert_eq!(
         (proof.claims().generic.len(), proof.claims().lean_sphincs.len()),
         (2, 2)
@@ -238,11 +244,10 @@ fn recursion_mixes_schemes_dedups_and_discards() {
     let (a, b) = (preimage_dep(4), preimage_dep(5));
     let signers = sphincs(2);
     // A child with both lists, and a generic-only child sharing one of its generic claims.
-    let mixed = aggregate(&[], singles([&a, &b]), signers.clone(), &[], None, RATE).expect("mixed leaf");
-    let generic_leaf = aggregate(&[], singles([&a]), vec![], &[], None, RATE).expect("generic leaf");
-    let sphincs_leaf = aggregate(&[], vec![], signers[..1].to_vec(), &[], None, RATE).expect("sphincs leaf");
-    let merged = aggregate(
-        &[mixed.clone(), generic_leaf.clone(), sphincs_leaf],
+    let mixed = aggregate(Guest::Base, &[], singles([&a, &b]), signers.clone(), &[], None, RATE).expect("mixed leaf");
+    let generic_leaf = aggregate(Guest::Base, &[], singles([&a]), vec![], &[], None, RATE).expect("generic leaf");
+    let sphincs_leaf = aggregate(Guest::Base, &[], vec![], signers[..1].to_vec(), &[], None, RATE).expect("sphincs leaf");
+    let merged = aggregate(Guest::Base, &[mixed.clone(), generic_leaf.clone(), sphincs_leaf],
         vec![],
         vec![],
         &[],
@@ -261,12 +266,12 @@ fn recursion_mixes_schemes_dedups_and_discards() {
         lean_sphincs: mixed.claims().lean_sphincs.clone(),
         da_commitment: None,
     };
-    let discarded = aggregate(&[mixed, generic_leaf], vec![], vec![], &[], Some(&declare), RATE).expect("discards");
+    let discarded = aggregate(Guest::Base, &[mixed, generic_leaf], vec![], vec![], &[], Some(&declare), RATE).expect("discards");
     assert_eq!(discarded.claims(), &declare);
     check(&discarded);
     // A generic leaf merged with a raw generic dependency at the same node.
     let c = preimage_dep(6);
-    let raw_and_child = aggregate(&[discarded], singles([&c]), vec![], &[], None, RATE).expect("raw and child");
+    let raw_and_child = aggregate(Guest::Base, &[discarded], singles([&c]), vec![], &[], None, RATE).expect("raw and child");
     assert!(raw_and_child.claims().generic.contains(&claim(&c)));
     check(&raw_and_child);
 }
@@ -279,13 +284,12 @@ fn inner_proofs_over_the_cap_are_refused() {
         .map(|i| leaf(&[[100 + i; 32]]))
         .collect();
     assert_eq!(
-        aggregate(&[], leaves.clone(), vec![], &[], None, RATE).err(),
+        aggregate(Guest::Base, &[], leaves.clone(), vec![], &[], None, RATE).err(),
         Some(AggregationError::TooManyInnerProofs)
     );
-    let child = aggregate(&[], leaves[..1].to_vec(), vec![], &[], None, RATE).expect("proves");
+    let child = aggregate(Guest::Base, &[], leaves[..1].to_vec(), vec![], &[], None, RATE).expect("proves");
     let with_child = || {
-        aggregate(
-            std::slice::from_ref(&child),
+        aggregate(Guest::Base, std::slice::from_ref(&child),
             leaves[1..].to_vec(),
             vec![],
             &[],
@@ -296,7 +300,7 @@ fn inner_proofs_over_the_cap_are_refused() {
     assert_eq!(with_child().err(), Some(AggregationError::TooManyInnerProofs));
     // The guest refuses them too.
     SKIP_LEAF_CHECKS.with(|skip| skip.set(true));
-    let results = [aggregate(&[], leaves.clone(), vec![], &[], None, RATE), with_child()];
+    let results = [aggregate(Guest::Base, &[], leaves.clone(), vec![], &[], None, RATE), with_child()];
     SKIP_LEAF_CHECKS.with(|skip| skip.set(false));
     for (name, result) in ["17 leaves", "16 leaves and a child"].into_iter().zip(results) {
         refused_by_the_guest(name, result);
@@ -308,27 +312,27 @@ fn inner_proofs_over_the_cap_are_refused() {
 fn a_full_leaf_proves_and_unions_past_the_leaf_bound() {
     leanvm_core::init_prover();
     let full = leaf(&claims_from(1, MAX_CLAIMS_PER_BATCH_LEAF));
-    assert!(verify_batch_leaf(&full.0, &full.1, &full.2));
+    assert!(verify_batch_leaf(Guest::Batched, &full.0, &full.1, &full.2));
     let extra = preimage_dep(200);
-    let proof = aggregate(&[], vec![full, singleton_leaf(extra.clone())], vec![], &[], None, RATE).expect("proves");
+    let proof = aggregate(Guest::Batched, &[], vec![full, singleton_leaf(extra.clone())], vec![], &[], None, RATE).expect("proves");
     assert_eq!(proof.claims().generic.len(), MAX_CLAIMS_PER_BATCH_LEAF + 1);
     assert!(proof.claims().generic.contains(&claim(&extra)));
     check(&proof);
     // The digest, not the length, bounds a received list.
     let claims = proof.claims().clone();
-    EthereumProof::from_proof_bytes(&proof.proof_bytes(), claims)
+    EthereumProof::from_proof_bytes(Guest::Batched, &proof.proof_bytes(), claims)
         .expect("decodes")
         .verify()
         .expect("verifies");
 
     let over = leaf(&claims_from(1, MAX_CLAIMS_PER_BATCH_LEAF + 1));
-    assert!(!verify_batch_leaf(&over.0, &over.1, &over.2));
+    assert!(!verify_batch_leaf(Guest::Batched, &over.0, &over.1, &over.2));
     assert_eq!(
-        aggregate(&[], vec![over.clone()], vec![], &[], None, RATE).err(),
+        aggregate(Guest::Batched, &[], vec![over.clone()], vec![], &[], None, RATE).err(),
         Some(AggregationError::InvalidGenericWitness)
     );
     SKIP_LEAF_CHECKS.with(|skip| skip.set(true));
-    let result = aggregate(&[], vec![over], vec![], &[], None, RATE);
+    let result = aggregate(Guest::Batched, &[], vec![over], vec![], &[], None, RATE);
     SKIP_LEAF_CHECKS.with(|skip| skip.set(false));
     refused_by_the_guest("one claim over", result);
 }
@@ -343,13 +347,13 @@ fn batch_leaf_statement() {
         primitives::hash::hash(&[&b"EIP8288:batch:v1"[..], &a, &b].concat())
     );
     let (claims, vk, witness) = leaf(&[a, b]);
-    assert!(verify_batch_leaf(&claims, &vk, &witness));
+    assert!(verify_batch_leaf(Guest::Batched, &claims, &vk, &witness));
     for other in [&[b, a][..], &[a], &[a, b, c], &[], &[a, a]] {
-        assert!(!verify_batch_leaf(other, &vk, &witness), "{other:?}");
+        assert!(!verify_batch_leaf(Guest::Batched, other, &vk, &witness), "{other:?}");
     }
     let mut wrong = vk;
     wrong[0] ^= 1;
-    assert!(!verify_batch_leaf(&claims, &wrong, &witness));
+    assert!(!verify_batch_leaf(Guest::Batched, &claims, &wrong, &witness));
     let g = any_input_program();
     assert!(verify_generic(&a, &g.vk, &any_input_witness(g, &batch_hash(&[a]))));
     assert!(
@@ -365,8 +369,8 @@ fn batch_leaf_and_singletons_prove_the_same_dependencies() {
     leanvm_core::init_prover();
     let (a, b, c) = ([0xa0; 32], [0xb0; 32], [0xc0; 32]);
     let vk = any_input_program().vk;
-    let batched = aggregate(&[], vec![leaf(&[a, b])], vec![], &[], None, RATE).expect("a batch leaf proves");
-    let singletons = aggregate(&[], vec![leaf(&[b]), leaf(&[a])], vec![], &[], None, RATE).expect("singletons prove");
+    let batched = aggregate(Guest::Batched, &[], vec![leaf(&[a, b])], vec![], &[], None, RATE).expect("a batch leaf proves");
+    let singletons = aggregate(Guest::Batched, &[], vec![leaf(&[b]), leaf(&[a])], vec![], &[], None, RATE).expect("singletons prove");
     assert_eq!(batched.claims().generic, vec![(a, vk), (b, vk)]);
     assert_eq!(batched.claims(), singletons.claims());
     check(&batched);
@@ -377,11 +381,11 @@ fn batch_leaf_and_singletons_prove_the_same_dependencies() {
         ..Default::default()
     };
     let leaves = vec![leaf(&[a, b]), leaf(&[b, c])];
-    let pruned = aggregate(&[], leaves, vec![], &[], Some(&declare), RATE).expect("prunes");
+    let pruned = aggregate(Guest::Batched, &[], leaves, vec![], &[], Some(&declare), RATE).expect("prunes");
     assert_eq!(pruned.claims(), &declare);
     check(&pruned);
     // A batch leaf beside a child.
-    let merged = aggregate(&[pruned], vec![leaf(&[a])], vec![], &[], None, RATE).expect("merges");
+    let merged = aggregate(Guest::Batched, &[pruned], vec![leaf(&[a])], vec![], &[], None, RATE).expect("merges");
     assert_eq!(merged.claims().generic, vec![(a, vk), (b, vk), (c, vk)]);
     check(&merged);
 }
@@ -397,19 +401,19 @@ fn the_guest_checks_claim_order() {
     high[17] = 0x02;
     high[31] = 0x00;
     let ordered = leaf(&[low, high]);
-    check(&aggregate(&[], vec![ordered], vec![], &[], None, RATE).expect("ordered at byte 17"));
+    check(&aggregate(Guest::Batched, &[], vec![ordered], vec![], &[], None, RATE).expect("ordered at byte 17"));
     let unordered = [leaf(&[b, a]), leaf(&[a, a]), leaf(&[high, low])];
     for bad in &unordered {
-        assert!(!verify_batch_leaf(&bad.0, &bad.1, &bad.2));
+        assert!(!verify_batch_leaf(Guest::Batched, &bad.0, &bad.1, &bad.2));
         assert_eq!(
-            aggregate(&[], vec![bad.clone()], vec![], &[], None, RATE).err(),
+            aggregate(Guest::Batched, &[], vec![bad.clone()], vec![], &[], None, RATE).err(),
             Some(AggregationError::InvalidGenericWitness)
         );
     }
     SKIP_LEAF_CHECKS.with(|skip| skip.set(true));
     let mut results: Vec<_> = unordered
         .iter()
-        .map(|bad| aggregate(&[], vec![bad.clone()], vec![], &[], None, RATE))
+        .map(|bad| aggregate(Guest::Batched, &[], vec![bad.clone()], vec![], &[], None, RATE))
         .collect();
     // The order is read off bytes that must be the slots' claims: sorted bytes do not hide unsorted claims.
     FORGE.with(|forge| {
@@ -419,7 +423,7 @@ fn the_guest_checks_claim_order() {
             *h.entry_mut("batch_bytes", 0) = second;
         }))
     });
-    results.push(aggregate(&[], vec![unordered[0].clone()], vec![], &[], None, RATE));
+    results.push(aggregate(Guest::Batched, &[], vec![unordered[0].clone()], vec![], &[], None, RATE));
     SKIP_LEAF_CHECKS.with(|skip| skip.set(false));
     let names = [
         "descending",
@@ -432,44 +436,25 @@ fn the_guest_checks_claim_order() {
     }
 }
 
-/// Every claim of a leaf is under the leaf's key: a leaf cannot cover another key's claim with the same bytes, even
-/// where a child covers it too.
+/// Every dependency of a leaf is on one of its claims under the leaf's key: a leaf cannot cover another key's claim with
+/// the same bytes, nor a dependency on another of its claims.
 #[test]
 fn a_leaf_covers_claims_under_its_own_key_only() {
     leanvm_core::init_prover();
     let a = [0x0a; 32];
     let other = preimage_dep(0xc0);
     let c = other.0;
-    let child = aggregate(&[], singles([&other]), vec![], &[], None, RATE).expect("the child proves");
     let pair = leaf(&[a, c]);
-    // Published: (a, K1) and (c, K2). Honestly the leaf's c takes the duplicate slot 2, as (c, K1), and the child's
-    // (c, K2) slot 1. The forgery hands the leaf slot 1 and the child a duplicate slot holding (c, K2).
     let declare = EthereumClaims {
         generic: vec![(a, pair.1), claim(&other)],
         ..Default::default()
     };
-    let run = |forge: bool| {
-        if forge {
-            let child_claim = super::statement::generic_claim_cells(&claim(&other)).to_vec();
-            FORGE.with(|f| {
-                *f.borrow_mut() = Some(Box::new(move |h: &mut Hints| {
-                    *h.entry_mut("raw_index", 1) = vec![count(1)];
-                    *h.entry_mut("child_claim_gap", 0) = vec![count(2)];
-                    *h.entry_mut("dup_claims", 0) = child_claim;
-                }))
-            });
-        }
-        aggregate(
-            std::slice::from_ref(&child),
-            vec![pair.clone()],
-            vec![],
-            &[],
-            Some(&declare),
-            RATE,
-        )
-    };
-    check(&run(false).expect("the honest node proves"));
-    refused_by_the_guest("a claim under another key", run(true));
+    let run = |children: &[EthereumProof]| aggregate(Guest::Batched, children, vec![pair.clone()], vec![], &[], Some(&declare), RATE);
+    assert_eq!(run(&[]).err(), Some(AggregationError::NotCovered), "(c, K2) under the leaf's key K1");
+    let child = aggregate(Guest::Batched, &[], singles([&other]), vec![], &[], None, RATE).expect("the child proves");
+    check(&run(std::slice::from_ref(&child)).expect("the honest node proves"));
+    FORGE.with(|f| *f.borrow_mut() = Some(Box::new(|h: &mut Hints| *h.entry_mut("leaf_claim_index", 0) = vec![count(1)])));
+    refused_by_the_guest("(a, K1) proved by claim c", run(std::slice::from_ref(&child)));
 }
 
 /// A batch leaf's hints edited after the host built them: every run must fail.
@@ -507,7 +492,7 @@ fn forged_leaf_hints_are_rejected() {
     ];
     for (name, forgery) in forgeries {
         FORGE.with(|forge| *forge.borrow_mut() = Some(Box::new(move |h: &mut Hints| forgery(h))));
-        refused_by_the_guest(name, aggregate(&[], vec![pair.clone()], vec![], &[], None, RATE));
+        refused_by_the_guest(name, aggregate(Guest::Batched, &[], vec![pair.clone()], vec![], &[], None, RATE));
     }
 }
 
@@ -523,7 +508,7 @@ fn an_invalid_witness_is_refused_natively() {
         (data_hash, vk, witness[..40].to_vec()),
     ] {
         assert_eq!(
-            aggregate(&[], singles([&dep]), vec![], &[], None, RATE).err(),
+            aggregate(Guest::Base, &[], singles([&dep]), vec![], &[], None, RATE).err(),
             Some(AggregationError::InvalidGenericWitness)
         );
     }
@@ -580,8 +565,7 @@ fn the_guest_refuses_false_generic_claims() {
     ];
     super::hints::HONEST_GENERIC.with(|h| *h.borrow_mut() = Some((batch_hash(&[data_hash]), witness.clone())));
     // The honest dependency itself proves under the switch: only the false ones below must fail.
-    aggregate(
-        &[],
+    aggregate(Guest::Base, &[],
         singles([&(data_hash, vk, witness.clone())]),
         vec![],
         &[],
@@ -590,7 +574,7 @@ fn the_guest_refuses_false_generic_claims() {
     )
     .expect("the honest claim proves");
     for (name, dep) in cases {
-        refused_by_the_guest(name, aggregate(&[], singles([&dep]), vec![], &[], None, RATE));
+        refused_by_the_guest(name, aggregate(Guest::Base, &[], singles([&dep]), vec![], &[], None, RATE));
     }
     super::hints::HONEST_GENERIC.with(|h| *h.borrow_mut() = None);
 }
@@ -606,7 +590,7 @@ fn a_generic_claim_is_no_lean_sphincs_claim() {
     };
     signer.1 = data_hash;
     assert_eq!(
-        aggregate(&[], vec![], vec![signer], &[], None, RATE).err(),
+        aggregate(Guest::Base, &[], vec![], vec![signer], &[], None, RATE).err(),
         Some(AggregationError::MalformedRawSignature)
     );
 }
@@ -643,6 +627,140 @@ fn forged_generic_hints_are_rejected() {
     ];
     for (name, forgery) in forgeries {
         FORGE.with(|forge| *forge.borrow_mut() = Some(Box::new(move |h: &mut Hints| forgery(h))));
-        refused_by_the_guest(name, aggregate(&[], singles([&dep]), vec![], &[], None, RATE));
+        refused_by_the_guest(name, aggregate(Guest::Base, &[], singles([&dep]), vec![], &[], None, RATE));
     }
+}
+
+/// `(claim, batched_key(m, vk))` entries for `claims`.
+fn batched_entries(claims: &[[u8; 32]], vk: &[u8; 32], m: u16) -> Vec<GenericClaim> {
+    claims.iter().map(|claim| (*claim, batched_key(m, vk))).collect()
+}
+
+fn declaring(mut generic: Vec<GenericClaim>) -> EthereumClaims {
+    generic.sort();
+    EthereumClaims { generic, ..Default::default() }
+}
+
+/// ethereum/EIPs#12664: the batched key binds the whole scheme word, which sorts and hashes as a big-endian integer,
+/// and a one-claim leaf's statement is EIP-8288's `get_claim_hash`.
+#[test]
+fn batched_keys_bind_the_scheme_word() {
+    let (a, vk) = ([0xa0; 32], [0x5a; 32]);
+    assert_eq!(batch_hash(&[a]), primitives::hash::hash(&[&b"EIP8288:batch:v1"[..], &a].concat()));
+    let mut word = [0; 32];
+    word[29..].copy_from_slice(&[0x01, 0x00, 0x12]);
+    assert_eq!(batched_scheme_word(256), word);
+    assert_eq!(batched_key(256, &vk), primitives::hash::hash(&[&word[..], &vk].concat()));
+    let keys: Vec<_> = [1, 2, 64, 256].map(|m| batched_key(m, &vk)).to_vec();
+    assert!(keys.iter().all(|key| *key != vk) && keys.windows(2).all(|w| w[0] != w[1]));
+    assert_ne!(deps_hash(&[], &[(a, keys[0])]), deps_hash(&[], &[(a, keys[1])]));
+    assert_ne!(deps_hash(&[], &[(a, keys[0])]), deps_hash(&[], &[(a, vk)]));
+    assert_ne!(verifier::TAG[0], 0, "a program key's preimage starts nonzero, a batched key's with zeros");
+}
+
+/// ethereum/EIPs#12664 Test Case: a leaf of 64 distinct claims establishes `min_batch = 64`, alongside ordinary
+/// dependencies, and not 65; the guest itself refuses 65.
+#[test]
+fn a_leaf_qualifies_min_batch_up_to_its_size() {
+    leanvm_core::init_prover();
+    let claims = claims_from(1, 64);
+    let full = leaf(&claims);
+    let vk = full.1;
+    let mut generic = batched_entries(&claims[..63], &vk, 64);
+    generic.push((claims[63], vk));
+    let declare = declaring(generic);
+    let proof = aggregate(Guest::Batched, &[], vec![full.clone()], vec![], &[], Some(&declare), RATE).expect("proves");
+    assert_eq!(proof.claims(), &declare);
+    check(&proof);
+    let over = declaring(batched_entries(&claims[..1], &vk, 65));
+    let run = || aggregate(Guest::Batched, &[], vec![full.clone()], vec![], &[], Some(&over), RATE);
+    assert_eq!(run().err(), Some(AggregationError::NotCovered));
+    SKIP_LEAF_CHECKS.with(|skip| skip.set(true));
+    let result = run();
+    SKIP_LEAF_CHECKS.with(|skip| skip.set(false));
+    refused_by_the_guest("min_batch 65 from a 64-claim leaf", result);
+}
+
+/// The key a leaf writes is the batched key of the `min_batch` the guest checks: a singleton cannot claim a higher
+/// qualifier's key.
+#[test]
+fn a_forged_batched_key_is_refused() {
+    leanvm_core::init_prover();
+    let a = [0xa1; 32];
+    let single = leaf(&[a]);
+    let run = |m: u16| {
+        let declare = declaring(batched_entries(&[a], &single.1, m));
+        aggregate(Guest::Batched, &[], vec![single.clone()], vec![], &[], Some(&declare), RATE)
+    };
+    check(&run(1).expect("min_batch 1 from a singleton"));
+    // min_batch 64's key in the slot, the guest told min_batch 1.
+    SKIP_LEAF_CHECKS.with(|skip| skip.set(true));
+    FORGE.with(|f| {
+        *f.borrow_mut() = Some(Box::new(|h: &mut Hints| {
+            *h.entry_mut("min_batch", 0) = vec![count(1)];
+            *h.entry_mut("min_batch_bytes", 0) = vec![count(0), count(1)];
+        }))
+    });
+    let result = run(64);
+    SKIP_LEAF_CHECKS.with(|skip| skip.set(false));
+    refused_by_the_guest("min_batch 64's key from a singleton", result);
+}
+
+/// EIP-8288's guest takes one-claim leaves and establishes no batched dependency, even one its leaf could qualify.
+#[test]
+fn the_base_guest_refuses_batching() {
+    leanvm_core::init_prover();
+    let (a, b) = ([0xa2; 32], [0xb2; 32]);
+    let pair = leaf(&[a, b]);
+    assert!(!verify_batch_leaf(Guest::Base, &pair.0, &pair.1, &pair.2));
+    assert_eq!(
+        aggregate(Guest::Base, &[], vec![pair.clone()], vec![], &[], None, RATE).err(),
+        Some(AggregationError::InvalidGenericWitness)
+    );
+    let single = leaf(&[a]);
+    let declare = declaring(batched_entries(&[a], &single.1, 1));
+    let run = || aggregate(Guest::Base, &[], vec![single.clone()], vec![], &[], Some(&declare), RATE);
+    assert_eq!(run().err(), Some(AggregationError::NotCovered));
+    SKIP_LEAF_CHECKS.with(|skip| skip.set(true));
+    let results = [aggregate(Guest::Base, &[], vec![pair], vec![], &[], None, RATE), run()];
+    SKIP_LEAF_CHECKS.with(|skip| skip.set(false));
+    for (name, result) in ["a two-claim leaf", "min_batch 1"].into_iter().zip(results) {
+        refused_by_the_guest(name, result);
+    }
+}
+
+/// ethereum/EIPs#12664 Test Cases: a subset retained from a leaf keeps its qualifier through recursion; a parent cannot
+/// raise it, qualify a union of singletons, or restore a discarded triple without verified coverage.
+#[test]
+fn recursion_keeps_exact_qualifiers() {
+    leanvm_core::init_prover();
+    let claims = claims_from(0x40, 4);
+    let four = leaf(&claims);
+    let vk = four.1;
+    let kept = declaring(batched_entries(&claims[..1], &vk, 4));
+    let pruned = aggregate(Guest::Batched, &[], vec![four.clone()], vec![], &[], Some(&kept), RATE).expect("prunes");
+    check(&pruned);
+    let parent = |declare: &EthereumClaims, leaves: Vec<BatchLeaf>| {
+        aggregate(Guest::Batched, std::slice::from_ref(&pruned), leaves, vec![], &[], Some(declare), RATE)
+    };
+    let extra = leaf(&claims[1..2]);
+    let with_extra = declaring(vec![batched_entries(&claims[..1], &vk, 4)[0], (claims[1], vk)]);
+    check(&parent(&with_extra, vec![extra.clone()]).expect("the qualifier survives a merge"));
+    for (name, generic) in [
+        ("raised", batched_entries(&claims[..1], &vk, 5)),
+        ("resurrected", batched_entries(&claims[..2], &vk, 4)),
+    ] {
+        assert_eq!(parent(&declaring(generic), vec![]).err(), Some(AggregationError::NotCovered), "{name}");
+    }
+    // Two singletons' union qualifies nothing.
+    let singles = aggregate(Guest::Batched, &[], vec![leaf(&claims[..1]), leaf(&claims[1..2])], vec![], &[], None, RATE)
+        .expect("singletons");
+    let union = declaring(batched_entries(&claims[..1], &vk, 2));
+    assert_eq!(
+        aggregate(Guest::Batched, &[singles], vec![], vec![], &[], Some(&union), RATE).err(),
+        Some(AggregationError::NotCovered)
+    );
+    // In the guest: the leaf that covers the second claim is made to cover nothing.
+    FORGE.with(|f| *f.borrow_mut() = Some(Box::new(|h: &mut Hints| *h.entry_mut("leaf_establishes", 0) = vec![count(0)])));
+    refused_by_the_guest("an uncovered claim", parent(&with_extra, vec![extra]));
 }

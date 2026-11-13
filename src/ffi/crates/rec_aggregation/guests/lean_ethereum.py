@@ -379,13 +379,17 @@ STMT_CELLS = STMT_DEFER_OFF + 3 * STMT_PAIRS
 # step (`claim_list_digest`).
 KECCAK_STATE = KECCAK_STATE_PLACEHOLDER
 # leanSTARK (0x11) dependencies: the most instructions (log) of a program and claims of a
-# batch leaf, get_batch_hash's 16-byte domain as a cell, the leanVM tag's first 8 bytes as a
-# lane and its 9th byte, and the mixed dependency digest's 32-byte domain as two cells.
+# leaf (1 in EIP-8288's guest), whether leaves may establish batched (0x12) dependencies, the
+# claim digest's 16-byte domain as a cell, a leaf digest's cells a block pair, the low cell of
+# the 0x12 scheme word with min_batch 0, the leanVM tag's first 8 bytes as a lane and its 9th
+# byte, and the mixed dependency digest's 32-byte domain as two cells.
 MAX_GENERIC_BYTECODE_LOG = MAX_GENERIC_BYTECODE_LOG_PLACEHOLDER
 GEN_KGEN_ARMS = MAX_GENERIC_BYTECODE_LOG + 1
 MAX_CLAIMS_PER_BATCH_LEAF = MAX_CLAIMS_PER_BATCH_LEAF_PLACEHOLDER
-BATCH_PRE_CELLS = 1 + 2 * MAX_CLAIMS_PER_BATCH_LEAF
+BATCHED_DEPENDENCIES = BATCHED_DEPENDENCIES_PLACEHOLDER
 BATCH_DOMAIN = BATCH_DOMAIN_PLACEHOLDER
+LEAF_CHUNK = LEAF_CHUNK_PLACEHOLDER
+BATCHED_SCHEME_CELL = BATCHED_SCHEME_CELL_PLACEHOLDER
 TAG_LANE0 = TAG_LANE0_PLACEHOLDER
 TAG_BYTE8 = TAG_BYTE8_PLACEHOLDER
 DEPS_DOMAIN_0 = DEPS_DOMAIN_0_PLACEHOLDER
@@ -3570,42 +3574,84 @@ def verify_generic(pi_0, pi_1, vk_0, vk_1, t8, g_squares):
 
 
 # ================================ EIP-8288 batch leaves ===============================
-# A leanSTARK proof is a batch leaf: its statement is get_batch_hash(claims) =
-# keccak256(BATCH_DOMAIN | claims) over 1 to MAX_CLAIMS_PER_BATCH_LEAF 32-byte claims, each
-# claim covering its own slot claim | vk under the leaf's one vk. A direct dependency is the
-# singleton leaf [data_hash]. The leaf program need not order its claims; this checks that
-# they strictly increase byte-lexicographically, from bytes hinted in the exponent and
-# range-checked, so a claim's bytes are the bytes of its slot's cells (see gen_table).
+# A leanSTARK proof is a leaf: its statement is keccak256(BATCH_DOMAIN | claims) over 1 to
+# MAX_CLAIMS_PER_BATCH_LEAF 32-byte claims under the leaf's one vk, EIP-8288's get_claim_hash
+# for one claim. The leaf program need not order its claims; this checks that they strictly
+# increase byte-lexicographically, from bytes hinted in the exponent and range-checked, so a
+# claim's bytes are the bytes of its two cells (see gen_table).
+#
+# A leaf establishes dependencies, each covering its own slot claim | key: an ordinary one
+# (0x11) under key vk, and, with BATCHED_DEPENDENCIES, a batched one (0x12, ethereum/EIPs#12664)
+# with min_batch m, 1 <= m <= N, under the key keccak256(scheme | vk) over its whole 32-byte
+# scheme word, zero[29] | uint16_be(m) | 0x12 (`establish_key`). Only a leaf derives that key, so recursion carries a batched dependency's
+# exact m and never raises it, and a child's union of claims qualifies nothing.
 
 
 def verify_leaf(table, cover, slots_g, mark, t8, g_squares):
-    # Covers one slot per claim with the marks from `mark` on, and returns the mark past them.
+    # Covers one slot per established dependency with the marks from `mark` on, and returns the
+    # mark past them. A claim the node does not publish establishes nothing.
     last_g = hint_witness("leaf_claims")  # g^(claims - 1)
     assert log(last_g) < MAX_CLAIMS_PER_BATCH_LEAF
     n_g = last_g * GEN
-    slots = HeapBuf(n_g)
+    vk = StackBuf(2)
+    hint_witness(vk, "leaf_vk")
+    # The digest's preimage: the domain cell, then each claim's two cells.
+    pre = HeapBuf(GEN * n_g ** 2)
+    pre[1] = BATCH_DOMAIN
+    claims = pre * GEN
     claim_bytes = HeapBuf(n_g ** 32)
     for c in mul_range(1, n_g):
+        claim = claims * c ** 2
+        hint_witness(claim[0:2], "leaf_claim")
+        batch_claim_bytes(claim, claim_bytes * c ** 32, t8)
+    for c in mul_range(GEN, n_g):
+        batch_increasing(claim_bytes * (c / GEN) ** 32, claim_bytes * c ** 32)
+    est_g = hint_witness("leaf_establishes")
+    assert log(est_g) < log(slots_g * GEN)
+    for e in mul_range(1, est_g):
         idx = hint_witness("raw_index")
         assert log(idx) < log(slots_g)
-        cover[idx] = mark * c
+        cover[idx] = mark * e
         slot = table * (idx ** 4)
-        slots[c] = slot
-        batch_claim_bytes(slot, claim_bytes * c ** 32, t8)
-    first = slots[1]
-    for c in mul_range(GEN, n_g):
-        slot = slots[c]
-        assert slot[GEN ** 2] == first[GEN ** 2]
-        assert slot[GEN ** 3] == first[GEN ** 3]
-        batch_increasing(claim_bytes * (c / GEN) ** 32, claim_bytes * c ** 32)
-    pi_0, pi_1 = match(log(last_g), range(0, MAX_CLAIMS_PER_BATCH_LEAF), lambda last: batch_digest(slots, last))
-    verify_generic(pi_0, pi_1, first[GEN ** 2], first[GEN ** 3], t8, g_squares)
-    return mark * n_g
+        p = hint_witness("leaf_claim_index")
+        assert log(p) < log(n_g)
+        claim = claims * p ** 2
+        assert slot[GEN ** 0] == claim[GEN ** 0]
+        assert slot[GEN ** 1] == claim[GEN ** 1]
+        establish_key(slot, n_g, vk[0], vk[1], t8)
+    pi_0, pi_1 = leaf_digest(pre, n_g)
+    verify_generic(pi_0, pi_1, vk[0], vk[1], t8, g_squares)
+    return mark * est_g
 
 
-def batch_claim_bytes(slot, claim_bytes, t8):
-    # A claim's 32 bytes, each a g-power below g^256, are its slot's two cells: a cell is two
-    # lanes of eight bytes at their own shifts, the second lane above Y_TOWER.
+def establish_key(slot, n_g, vk_0, vk_1, t8):
+    # The slot's key: vk for an ordinary dependency (q = g^0), else for min_batch m (q = g^m)
+    # the batched key, with m at most the leaf's N claims.
+    q = hint_witness("min_batch")
+    if q == 1:
+        assert slot[GEN ** 2] == vk_0
+        assert slot[GEN ** 3] == vk_1
+    else:
+        if const(BATCHED_DEPENDENCIES == 0):
+            assert q == 1
+        assert log(q) < log(n_g * GEN)
+        # m's big-endian bytes 29 and 30 of the scheme word, the last lane's bytes 5 and 6.
+        mb = StackBuf(2)
+        hint_witness(mb, "min_batch_bytes")
+        assert log(mb[0]) < 256
+        assert log(mb[1]) < 256
+        assert mb[0] ** 256 * mb[1] == q
+        scheme = BATCHED_SCHEME_CELL + Y_TOWER * ((2 ** 40) * t8[mb[0]] + (2 ** 48) * t8[mb[1]])
+        key = StackBuf(2)
+        keccak_cells([0, scheme, vk_0, vk_1], key)
+        assert slot[GEN ** 2] == key[0]
+        assert slot[GEN ** 3] == key[1]
+    return
+
+
+def batch_claim_bytes(claim, claim_bytes, t8):
+    # A claim's 32 bytes, each a g-power below g^256, are its two cells: a cell is two lanes of
+    # eight bytes at their own shifts, the second lane above Y_TOWER.
     hint_witness(claim_bytes[0:32], "batch_bytes")
     for h in unroll(0, 2):
         lo = 0
@@ -3617,7 +3663,7 @@ def batch_claim_bytes(slot, claim_bytes, t8):
             assert log(e) < 256
             lo += (2 ** (8 * b)) * t8[d]
             hi += (2 ** (8 * b)) * t8[e]
-        assert slot[GEN ** h] == lo + Y_TOWER * hi
+        assert claim[GEN ** h] == lo + Y_TOWER * hi
     return
 
 
@@ -3641,16 +3687,34 @@ def batch_increasing(prev, cur):
     return
 
 
-def batch_digest(slots, last: Const):
-    # get_batch_hash over claims 0..last: the domain cell, then each claim's two cells.
-    pre = StackBuf(BATCH_PRE_CELLS)
-    pre[0] = BATCH_DOMAIN
-    for i in unroll(0, last + 1):
-        slot = slots[GEN ** i]
-        pre[1 + 2 * i] = slot[GEN ** 0]
-        pre[2 + 2 * i] = slot[GEN ** 1]
+def leaf_digest(pre, n_g):
+    # keccak256 of the 1 + 2N cells at pre, LEAF_CHUNK cells (a block pair) a loop frame, the
+    # sponge state carried through a heap chain as in `claim_list_digest`, then the rest.
+    split = StackBuf(2)
+    hint_witness(split, "leaf_digest_split")
+    chunks = split[0]
+    rest = split[1]
+    assert log(rest) < LEAF_CHUNK
+    assert_gpow(chunks)
+    assert chunks ** LEAF_CHUNK * rest == GEN * n_g ** 2
+    chain = HeapBuf((chunks * GEN) ** KECCAK_STATE)
+    zero_state(chain)
+    for xq in mul_range(1, chunks):
+        st = chain * xq ** KECCAK_STATE
+        nxt = st * GEN ** KECCAK_STATE
+        blk = pre * xq ** LEAF_CHUNK
+        keccak_cells(blk[0:LEAF_CHUNK], nxt[0:KECCAK_STATE], state=st[0:KECCAK_STATE], final=0)
+    last = chain * chunks ** KECCAK_STATE
+    d0, d1 = match(log(rest), range(0, LEAF_CHUNK), lambda k: leaf_digest_last(last, pre * chunks ** LEAF_CHUNK, k))
+    return d0, d1
+
+
+def leaf_digest_last(state, blk, k: Const):
     digest = StackBuf(2)
-    keccak_cells(pre[0:3 + 2 * last], digest)
+    if const(k == 0):
+        keccak_cells([0], digest, state=state[0:KECCAK_STATE], len=0)
+    else:
+        keccak_cells(blk[0:k], digest, state=state[0:KECCAK_STATE])
     return digest[0], digest[1]
 
 
@@ -4356,7 +4420,7 @@ def main():
     # child. Each writer is confined to its own region.
     cover = HeapBuf(n_total_g)
     sp_cover = cover * lx_slots_g  # the leanSPHINCS region
-    # A leaf's claims take consecutive marks. Each claim's index is bounded by the leanSTARK
+    # A leaf's dependencies take consecutive marks. Each one's index is bounded by the leanSTARK
     # region (`verify_leaf`), small by `assert_gpow(n_total_g)` above (its log below the
     # memory size). Without it this degenerates to what DEREF alone gives and an index could
     # reach past `cover`, which is the whole bijection; with it a leaf covers no leanSPHINCS claim.

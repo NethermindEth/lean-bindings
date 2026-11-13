@@ -12,12 +12,13 @@ Changes against upstream, all EIP-8288 specific:
 - `rec_aggregation`: the aggregation guest (`guests/lean_ethereum.py`) commits to the EIP-8288 dependency digest with
   Keccak-256, verifies NiceTry v2 signatures (scheme `0x10`) and leanVM execution proofs of programs up to 2^11
   instructions as EIP-8288 batch leaves (scheme `0x11`, `src/aggregation/generic.rs`), and merges or discards child
-  aggregates.
+  aggregates. It compiles as two guests (`Guest`): EIP-8288's, with one-claim leaves, and one adding ethereum/EIPs#12664
+  batch pricing, with leaves of up to 256 claims that also establish batched (`0x12`) dependencies.
 
 `crates/upstream.sh diff` prints every change against upstream at the pinned revision; `crates/upstream.sh update <rev>`
 moves the crates and the pin to a newer upstream revision by three-way merge and lists what needs review. After an
 update, run the workspace tests and `fixtures`, and when `AGGREGATED_VK` changes, bump the package version and the
 consumers' pinned key together.
 
-Every change to a guest changes `AGGREGATED_VK`; `../examples/fixtures.rs` prints it and the native tests check it
-against `Eip8288Constants.AggregatedVk`.
+Every change to a guest changes its `AGGREGATED_VK`; `../examples/fixtures.rs` prints both and the native tests check
+them against `Eip8288Constants`.

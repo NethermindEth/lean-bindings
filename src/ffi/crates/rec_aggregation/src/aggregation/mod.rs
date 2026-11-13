@@ -1,5 +1,5 @@
 //! Recursive proofs of leanSTARK (`0x11`) and leanSPHINCS (`0x10`) dependency claims and LeanDA blob
-//! well-formedness. One bytecode (`guests/lean_ethereum.py`) serves every node of an aggregation tree.
+//! well-formedness. One bytecode (`guests/lean_ethereum.py`, compiled as either [`Guest`]) serves every node of an aggregation tree.
 //!
 //! A node verifies `n_raw_generic` leanVM execution proofs of other programs, each an EIP-8288 batch
 //! leaf ([`verify_batch_leaf`]), `n_raw_lean_sphincs` leanSPHINCS signatures and `n_children` sub-proofs
@@ -55,10 +55,11 @@ mod tests;
 
 pub use error::{AggregateVerifyError, AggregationError, SnarkProveError, SnarkVerifyError};
 pub use generic::{
-    BATCH_DOMAIN, LEANSTARK_DEPS_DOMAIN, MAX_CLAIMS_PER_BATCH_LEAF, MAX_GENERIC_BYTECODE_LOG, batch_hash,
-    generic_verification_key, generic_witness, valid_batch_claims, verify_batch_leaf, verify_generic,
+    BATCH_DOMAIN, BATCHED_LEANSTARK_SCHEME, LEANSTARK_DEPS_DOMAIN, MAX_CLAIMS_PER_BATCH_LEAF, MAX_GENERIC_BYTECODE_LOG,
+    batch_hash, batched_key, batched_scheme_word, generic_verification_key, generic_witness, valid_batch_claims,
+    verify_batch_leaf, verify_generic,
 };
-pub use guest::{unified_guest, warm_up};
+pub use guest::{Guest, unified_guest, warm_up};
 pub use node::{aggregate, aggregate_with_stats};
 pub use proof::{EthereumClaims, EthereumProof, aggregated_vk, deps_hash, deps_public_input_bytes, verify_deps_hash};
 use signatures::lean_sphincs;
@@ -71,8 +72,8 @@ pub type GenericClaim = ([u8; 32], [u8; 32]);
 /// One raw leanSTARK dependency: `data_hash`, the key, and the witness ([`generic_witness`]).
 pub type RawGeneric = ([u8; 32], [u8; 32], Vec<u8>);
 
-/// One EIP-8288 batch leaf: its claims, the key, and the witness ([`generic_witness`]) of a proof of
-/// [`batch_hash`]`(claims)`. Each claim is the leanSTARK claim `(claim, key)`.
+/// One leaf: its claims, the key, and the witness ([`generic_witness`]) of a proof of [`batch_hash`]`(claims)`.
+/// [`aggregate`] says which dependencies it establishes.
 pub type BatchLeaf = (Vec<[u8; 32]>, [u8; 32], Vec<u8>);
 
 /// A direct leanSTARK dependency as the singleton batch leaf `[data_hash]` (EIP-8288).

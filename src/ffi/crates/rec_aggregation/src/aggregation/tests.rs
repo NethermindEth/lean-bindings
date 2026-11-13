@@ -1,7 +1,7 @@
 use super::cells::count;
 use super::deferred::{DeferredClaim, bytecode_sums, bytecode_value, bytecode_vars, stacked_bytecode};
 use super::error::{AggregateVerifyError, AggregationError};
-use super::guest::{compile_guest, unified_guest};
+use super::guest::{Guest, compile_guest, unified_guest};
 use super::hints::{FORGE, Forgery, Hints};
 use super::node::aggregate;
 use super::placeholders::placeholder_map;
@@ -50,7 +50,7 @@ fn the_wire_layout_is_pinned() {
 /// the size being the fixed point.
 #[test]
 fn guest_compiles_reproducibly() {
-    let (one, two) = (compile_guest(20), compile_guest(20));
+    let (one, two) = (compile_guest(20, Guest::Base), compile_guest(20, Guest::Base));
     assert_eq!(
         format!("{:?}", one.prog()),
         format!("{:?}", two.prog()),
@@ -60,13 +60,13 @@ fn guest_compiles_reproducibly() {
 }
 
 fn prove_leaf(signers: &[RawSphincs]) -> EthereumProof {
-    aggregate(&[], vec![], signers.to_vec(), &[], None, LOG_INV_RATE).expect("leaf aggregates")
+    aggregate(Guest::Base, &[], vec![], signers.to_vec(), &[], None, LOG_INV_RATE).expect("leaf aggregates")
 }
 
 type RawSphincs = (LeanSphincsPublicKey, lean_sphincs::Message, LeanSphincsSignature);
 
 fn prove_lean_sphincs_leaf(signers: &[RawSphincs]) -> EthereumProof {
-    aggregate(&[], vec![], signers.to_vec(), &[], None, LOG_INV_RATE).expect("leaf aggregates")
+    aggregate(Guest::Base, &[], vec![], signers.to_vec(), &[], None, LOG_INV_RATE).expect("leaf aggregates")
 }
 
 #[test]
@@ -100,7 +100,7 @@ fn forged_lean_sphincs_hints_are_rejected() {
     ];
     for (name, forgery) in forgeries {
         FORGE.with(|forge| *forge.borrow_mut() = Some(forgery));
-        let result = aggregate(&[], vec![], signers.clone(), &[], None, LOG_INV_RATE);
+        let result = aggregate(Guest::Base, &[], vec![], signers.clone(), &[], None, LOG_INV_RATE);
         assert!(matches!(result, Err(AggregationError::ProofError(_))), "{name}: {:?}", result.map(|_| ()));
     }
 }
@@ -128,7 +128,7 @@ fn aggregate_one_key_two_messages() {
     assert!(first.0 < second.0, "ordered by the message, the entry's first 32 bytes");
     let declare = EthereumClaims { lean_sphincs: aggregate.claims.lean_sphincs.clone(), ..Default::default() };
     assert_eq!(
-        super::node::aggregate(&[], vec![], raw[..1].to_vec(), &[], Some(&declare), LOG_INV_RATE).err(),
+        super::node::aggregate(Guest::Base, &[], vec![], raw[..1].to_vec(), &[], Some(&declare), LOG_INV_RATE).err(),
         Some(AggregationError::NotCovered),
         "one signature covers one claim"
     );
@@ -163,7 +163,7 @@ def main():
 "#
     );
     let kbc = 18;
-    let guest = compile(&parse_with_replacements(&source, &placeholder_map(kbc)).unwrap());
+    let guest = compile(&parse_with_replacements(&source, &placeholder_map(kbc, Guest::Base)).unwrap());
     let run = |point: &[F192], offset: usize, kappa: usize, expected: F192| {
         let mut hints = Hints::default();
         hints.push("point", point.to_vec());
@@ -212,10 +212,10 @@ fn aggregate_two_to_one() {
     let left = prove_leaf(&signers[..SMALL_LEAF_SIZE]);
     let right = prove_leaf(&signers[SMALL_LEAF_SIZE..]);
     let children = [left, right];
-    let node = aggregate(&children, vec![], vec![], &[], None, LOG_INV_RATE).expect("node aggregates");
+    let node = aggregate(Guest::Base, &children, vec![], vec![], &[], None, LOG_INV_RATE).expect("node aggregates");
     node.verify().expect("node verifies");
     // `cpu::verify` accepts the same proof of the same statement.
-    verify(unified_guest(), &node.vm_public_input(), &node.proof).expect("node verifies natively");
+    verify(unified_guest(Guest::Base), &node.vm_public_input(), &node.proof).expect("node verifies natively");
     assert_eq!(node.claims.lean_sphincs.len(), SMALL_LEAF_SIZE + big);
 }
 
@@ -234,7 +234,7 @@ fn aggregate_with_a_da_payload() {
     leanvm_core::init_prover();
     let rows = da_rows(3, 97);
 
-    let node = aggregate(&[], vec![], vec![], &rows, None, LOG_INV_RATE).expect("node aggregates");
+    let node = aggregate(Guest::Base, &[], vec![], vec![], &rows, None, LOG_INV_RATE).expect("node aggregates");
     node.verify().expect("node verifies");
     assert_eq!(node.claims.num_signature_claims(), 0);
 
@@ -250,7 +250,7 @@ fn aggregate_with_a_da_payload() {
         da_commitment: Some(commitment),
         ..EthereumClaims::default()
     };
-    EthereumProof::from_proof_bytes(&bytes, expected.clone())
+    EthereumProof::from_proof_bytes(Guest::Base, &bytes, expected.clone())
         .unwrap()
         .verify()
         .unwrap();
@@ -258,16 +258,16 @@ fn aggregate_with_a_da_payload() {
         da_commitment: Some([0; 32]),
         ..EthereumClaims::default()
     };
-    let wrong = EthereumProof::from_proof_bytes(&bytes, other).unwrap();
+    let wrong = EthereumProof::from_proof_bytes(Guest::Base, &bytes, other).unwrap();
     assert!(matches!(wrong.verify(), Err(AggregateVerifyError::Snark(_))));
     let claim = ([0; 32], [0; 32]);
     let unsorted = EthereumClaims {
         generic: vec![claim, claim],
         ..expected.clone()
     };
-    let malformed = EthereumProof::from_proof_bytes(&bytes, unsorted);
+    let malformed = EthereumProof::from_proof_bytes(Guest::Base, &bytes, unsorted);
     assert!(matches!(malformed, Err(AggregateVerifyError::MalformedSignerSet)));
-    let trailing = EthereumProof::from_proof_bytes(&[&bytes[..], &[0]].concat(), expected);
+    let trailing = EthereumProof::from_proof_bytes(Guest::Base, &[&bytes[..], &[0]].concat(), expected);
     assert!(matches!(trailing, Err(AggregateVerifyError::MalformedEncoding)));
 }
 
@@ -279,16 +279,16 @@ fn invalid_da_selections_are_rejected_before_building_the_proof() {
         ..EthereumClaims::default()
     };
     assert_eq!(
-        aggregate(&[], vec![], vec![], &[], Some(&select), LOG_INV_RATE).unwrap_err(),
+        aggregate(Guest::Base, &[], vec![], vec![], &[], Some(&select), LOG_INV_RATE).unwrap_err(),
         AggregationError::BlobNotCovered
     );
     assert_eq!(
-        aggregate(&[], vec![], vec![], &da_rows(1, 3), Some(&select), LOG_INV_RATE).unwrap_err(),
+        aggregate(Guest::Base, &[], vec![], vec![], &da_rows(1, 3), Some(&select), LOG_INV_RATE).unwrap_err(),
         AggregationError::BlobsUnpublished
     );
     let unpublished = EthereumClaims::default();
     assert_eq!(
-        aggregate(&[], vec![], vec![], &da_rows(1, 3), Some(&unpublished), LOG_INV_RATE).unwrap_err(),
+        aggregate(Guest::Base, &[], vec![], vec![], &da_rows(1, 3), Some(&unpublished), LOG_INV_RATE).unwrap_err(),
         AggregationError::BlobsUnpublished
     );
 }
@@ -303,7 +303,7 @@ fn a_node_passes_on_one_childs_da_root() {
     let mut children = vec![prove_leaf(&signers)];
     for (n_rows, seed) in [(1, 509), (2, 510)] {
         let rows = da_rows(n_rows, seed);
-        children.push(aggregate(&[], vec![], signers.clone(), &rows, None, LOG_INV_RATE).unwrap());
+        children.push(aggregate(Guest::Base, &[], vec![], signers.clone(), &rows, None, LOG_INV_RATE).unwrap());
     }
     let (first, second) = (
         children[1].claims.da_commitment.unwrap(),
@@ -316,7 +316,7 @@ fn a_node_passes_on_one_childs_da_root() {
             lean_sphincs: children[0].claims.lean_sphincs.clone(),
             da_commitment,
         });
-        let node = aggregate(&children, vec![], vec![], blobs, declare.as_ref(), LOG_INV_RATE).unwrap();
+        let node = aggregate(Guest::Base, &children, vec![], vec![], blobs, declare.as_ref(), LOG_INV_RATE).unwrap();
         node.verify().unwrap();
         node.claims.da_commitment
     };
@@ -327,8 +327,8 @@ fn a_node_passes_on_one_childs_da_root() {
     assert_eq!(pass_on(None, &rows), Some(lean_da::commit(&rows).unwrap().0));
 
     // Passed on again, one level up.
-    let middle = aggregate(&children[1..], vec![], vec![], &[], None, LOG_INV_RATE).unwrap();
-    let top = aggregate(&[children[0].clone(), middle], vec![], vec![], &[], None, LOG_INV_RATE).unwrap();
+    let middle = aggregate(Guest::Base, &children[1..], vec![], vec![], &[], None, LOG_INV_RATE).unwrap();
+    let top = aggregate(Guest::Base, &[children[0].clone(), middle], vec![], vec![], &[], None, LOG_INV_RATE).unwrap();
     top.verify().unwrap();
     assert_eq!(top.claims.da_commitment, Some(first));
 }
@@ -341,7 +341,7 @@ fn a_node_passes_on_one_childs_da_root() {
 fn forged_da_hints_are_rejected() {
     leanvm_core::init_prover();
     let signers = get_lean_sphincs_signers(SMALL_LEAF_SIZE);
-    let child = aggregate(&[], vec![], signers.clone(), &da_rows(1, 7), None, LOG_INV_RATE).unwrap();
+    let child = aggregate(Guest::Base, &[], vec![], signers.clone(), &da_rows(1, 7), None, LOG_INV_RATE).unwrap();
     let forgeries: [(Forgery, bool); 4] = [
         (
             Box::new(|hints: &mut Hints| hints.entry_mut("child_da", 0)[0] += F192::ONE),
@@ -363,7 +363,7 @@ fn forged_da_hints_are_rejected() {
     for (forgery, with_blobs) in forgeries {
         FORGE.with(|forge| *forge.borrow_mut() = Some(forgery));
         let blobs = if with_blobs { da_rows(1, 8) } else { vec![] };
-        let result = aggregate(std::slice::from_ref(&child), vec![], vec![], &blobs, None, LOG_INV_RATE);
+        let result = aggregate(Guest::Base, std::slice::from_ref(&child), vec![], vec![], &blobs, None, LOG_INV_RATE);
         assert!(
             matches!(result, Err(AggregationError::ProofError(_))),
             "a forged DA hint is rejected"
@@ -391,7 +391,7 @@ def main():
     return
 "#
     );
-    let guest = compile(&parse_with_replacements(&source, &placeholder_map(20)).unwrap());
+    let guest = compile(&parse_with_replacements(&source, &placeholder_map(20, Guest::Base)).unwrap());
     let run = |body: F192, rest: F192| {
         let mut hints = Hints::default();
         hints.push("n", vec![count(6)]);
@@ -421,7 +421,7 @@ fn da_guest_checks_codeword_membership() {
     let source = format!(
         "{helpers}\ndef main():\n    squares = exponent_tables()\n    a, b, v0, v1 = da_verify(squares)\n    digest = StackBuf(2)\n    keccak([a, b], [v0, v1], digest)\n    public = GEN ** 0\n    assert public[1] == digest[0]\n    assert public[GEN] == digest[1]\n    return\n"
     );
-    let guest = compile(&parse_with_replacements(&source, &placeholder_map(20)).unwrap());
+    let guest = compile(&parse_with_replacements(&source, &placeholder_map(20, Guest::Base)).unwrap());
     let n_rows = 3usize;
     let codewords = lean_da::encode_rows(&da_rows(3, 101));
     let run = |words: &[u64]| {
@@ -464,7 +464,7 @@ fn invalid_blob_sizes_are_rejected() {
     for symbols in [1, BLOB_SYMBOLS - 1, BLOB_SYMBOLS + 1, (DA_MAX_ROWS + 1) * BLOB_SYMBOLS] {
         let rows = vec![0; symbols];
         assert!(matches!(
-            aggregate(&[], vec![], vec![], &rows, None, LOG_INV_RATE),
+            aggregate(Guest::Base, &[], vec![], vec![], &rows, None, LOG_INV_RATE),
             Err(AggregationError::InvalidBlobSize { symbols: n }) if n == symbols
         ));
     }
@@ -480,7 +480,7 @@ fn da_row_count_is_a_run_time_parameter() {
     let signers = get_lean_sphincs_signers(SMALL_LEAF_SIZE);
     for n_rows in [1usize, 3, 4, 5] {
         let rows = da_rows(n_rows, 200 + n_rows as u64);
-        let node = aggregate(&[], vec![], signers.clone(), &rows, None, LOG_INV_RATE).expect("node aggregates");
+        let node = aggregate(Guest::Base, &[], vec![], signers.clone(), &rows, None, LOG_INV_RATE).expect("node aggregates");
         node.verify().expect("node verifies");
         let (commitment, _) = lean_da::commit(&rows).unwrap();
         assert_eq!(node.claims.da_commitment, Some(commitment), "{n_rows} rows");
@@ -502,7 +502,7 @@ fn aggregate_overlapping_signers() {
     let signers = get_lean_sphincs_signers(40);
     let left = prove_leaf(&signers[..25]);
     let right = prove_leaf(&signers[15..]);
-    let node = aggregate(&[left, right], vec![], vec![], &[], None, LOG_INV_RATE).expect("node aggregates");
+    let node = aggregate(Guest::Base, &[left, right], vec![], vec![], &[], None, LOG_INV_RATE).expect("node aggregates");
     node.verify().expect("node verifies");
     assert_eq!(node.claims.lean_sphincs.len(), 40);
     assert!(node.claims.lean_sphincs.windows(2).all(|w| w[0] < w[1]));
@@ -531,7 +531,7 @@ def main():
     return
 "#
     );
-    let guest = compile(&parse_with_replacements(&source, &placeholder_map(20)).unwrap());
+    let guest = compile(&parse_with_replacements(&source, &placeholder_map(20, Guest::Base)).unwrap());
     let claim = |i: u64| [1, 2, 3, 4].map(|k| F192::new(i * 7919 + k, k, 0));
     let table: Vec<F192> = [claim(0), claim(1)].concat();
     let run = |child: &[[F192; 4]], gaps: &[F192]| {
@@ -563,8 +563,7 @@ fn aggregate_round_trips_through_the_wire() {
     let left = prove_leaf(&signers[..SMALL_LEAF_SIZE]);
     let right = prove_leaf(&signers[SMALL_LEAF_SIZE..]);
     // Mixed, so both published lists are non-empty.
-    let node = aggregate(
-        &[left, right],
+    let node = aggregate(Guest::Base, &[left, right],
         vec![],
         get_lean_sphincs_signers(3),
         &[],
@@ -574,7 +573,7 @@ fn aggregate_round_trips_through_the_wire() {
     .expect("node");
     node.verify().expect("the honest node verifies");
 
-    let received = EthereumProof::from_proof_bytes(&node.proof_bytes(), node.claims.clone()).expect("round trip");
+    let received = EthereumProof::from_proof_bytes(Guest::Base, &node.proof_bytes(), node.claims.clone()).expect("round trip");
     assert_eq!(
         received.proof_bytes(),
         node.proof_bytes(),
@@ -588,10 +587,10 @@ fn aggregate_round_trips_through_the_wire() {
 /// statement.
 #[test]
 fn leaf_claim_matches_the_general_path() {
-    let leaf = DeferredClaim::leaf();
+    let leaf = DeferredClaim::leaf(Guest::Base);
     assert_eq!(
         leaf.bytecode_value,
-        mle_eval_par(stacked_bytecode(), &leaf.bytecode_point)
+        mle_eval_par(stacked_bytecode(Guest::Base), &leaf.bytecode_point)
     );
 }
 
@@ -603,10 +602,10 @@ fn scalar_deferred_claim_matches_the_prover() {
         let limbs = (0..len).map(|_| rand::Rng::random::<(u64, u64, u64)>(&mut rng));
         limbs.map(|(c0, c1, c2)| F192::new(c0, c1, c2)).collect()
     };
-    let bytecode_point = point(bytecode_vars());
+    let bytecode_point = point(bytecode_vars(Guest::Base));
     assert_eq!(
-        DeferredClaim::recompute_scalar(bytecode_point.clone()),
-        DeferredClaim::recompute(bytecode_point)
+        DeferredClaim::recompute_scalar(Guest::Base, bytecode_point.clone()),
+        DeferredClaim::recompute(Guest::Base, bytecode_point)
     );
 }
 
@@ -614,13 +613,13 @@ fn scalar_deferred_claim_matches_the_prover() {
 #[test]
 fn bytecode_sums_give_the_bytecode_value() {
     let mut rng = StdRng::seed_from_u64(11);
-    let limbs = (0..bytecode_vars()).map(|_| rand::Rng::random::<(u64, u64, u64)>(&mut rng));
+    let limbs = (0..bytecode_vars(Guest::Base)).map(|_| rand::Rng::random::<(u64, u64, u64)>(&mut rng));
     let points = [
         limbs.map(|(c0, c1, c2)| F192::new(c0, c1, c2)).collect(),
-        vec![F192::ZERO; bytecode_vars()],
+        vec![F192::ZERO; bytecode_vars(Guest::Base)],
     ];
-    for (sums, point) in bytecode_sums(&points).iter().zip(&points) {
-        assert_eq!(bytecode_value(sums, point), mle_eval_par(stacked_bytecode(), point));
+    for (sums, point) in bytecode_sums(Guest::Base, &points).iter().zip(&points) {
+        assert_eq!(bytecode_value(sums, point), mle_eval_par(stacked_bytecode(Guest::Base), point));
     }
 }
 
@@ -637,7 +636,7 @@ fn malformed_raw_lean_sphincs_signature_is_an_error() {
     assert!(lean_sphincs::verify(&public_key, &signed, &signature).is_err());
     let raw = vec![(public_key, signed, signature)];
     assert_eq!(
-        aggregate(&[], vec![], raw, &[], None, LOG_INV_RATE).err(),
+        aggregate(Guest::Base, &[], vec![], raw, &[], None, LOG_INV_RATE).err(),
         Some(AggregationError::MalformedRawSignature)
     );
 }
@@ -649,7 +648,7 @@ fn malformed_raw_lean_sphincs_signature_is_an_error() {
 fn verification_constants_do_not_depend_on_the_inner_bytecode_size() {
     let own = ["BYTECODE_LOG", "BYTECODE_VARS", "DEFER_SIZE", "STMT_PAIRS", "AGG_CHILD_PAD", "COORD_CONST"]
         .map(|k| format!("{k}_PLACEHOLDER"));
-    let (a, b) = (placeholder_map(11), placeholder_map(19));
+    let (a, b) = (placeholder_map(11, Guest::Base), placeholder_map(19, Guest::Base));
     for (key, value) in &a {
         if !own.contains(key) {
             assert_eq!(Some(value), b.get(key), "{key}");

@@ -7,8 +7,9 @@ mod hash_chain;
 pub mod signers_cache;
 
 pub use aggregation::{
-    AggregateVerifyError, AggregationError, BatchLeaf, EthereumClaims, EthereumProof, LeanSphincsClaim, GenericClaim,
-    RawGeneric, BATCH_DOMAIN, LEANSTARK_DEPS_DOMAIN, MAX_CLAIMS_PER_BATCH_LEAF, MAX_GENERIC_BYTECODE_LOG, batch_hash,
-    generic_verification_key, generic_witness, singleton_leaf, valid_batch_claims, verify_batch_leaf, verify_generic,
+    AggregateVerifyError, AggregationError, BatchLeaf, EthereumClaims, EthereumProof, Guest, LeanSphincsClaim,
+    GenericClaim, RawGeneric, BATCH_DOMAIN, BATCHED_LEANSTARK_SCHEME, LEANSTARK_DEPS_DOMAIN, MAX_CLAIMS_PER_BATCH_LEAF,
+    MAX_GENERIC_BYTECODE_LOG, batch_hash, batched_key, batched_scheme_word, generic_verification_key, generic_witness,
+    singleton_leaf, valid_batch_claims, verify_batch_leaf, verify_generic,
     MAX_INNER_PROOFS_PER_STEP, MAX_RECURSIONS, SnarkProveError, SnarkVerifyError, aggregate, aggregated_vk, deps_hash, deps_public_input_bytes, verify_deps_hash, aggregate_with_stats, warm_up,
 };

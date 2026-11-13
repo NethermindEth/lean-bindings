@@ -2,7 +2,7 @@
 
 use super::cells::count;
 use super::error::AggregateVerifyError;
-use super::guest::unified_guest;
+use super::guest::{Guest, unified_guest};
 use super::hints::SubHints;
 use leanvm_core::cpu::{from_scalar, to_scalar};
 use leanvm_core::transcript::{FiatShamirState, RATE_SCALARS};
@@ -34,25 +34,25 @@ pub(crate) struct DeferredClaim {
 impl DeferredClaim {
     /// What a leaf defers: the all-zeros point, where the value is just the
     /// table's first entry.
-    pub(super) fn leaf() -> Self {
-        Self::recompute(vec![F192::ZERO; bytecode_vars()]).expect("the all-zeros point has the right shape")
+    pub(super) fn leaf(guest: Guest) -> Self {
+        Self::recompute(guest, vec![F192::ZERO; bytecode_vars(guest)]).expect("the all-zeros point has the right shape")
     }
 
     /// Evaluate the stacked bytecode at `bytecode_point`, on the prover's field kernels and thread pool.
-    pub(super) fn recompute(bytecode_point: Vec<F192>) -> Result<Self, AggregateVerifyError> {
-        Self::evaluate(bytecode_point, |point| {
+    pub(super) fn recompute(guest: Guest, bytecode_point: Vec<F192>) -> Result<Self, AggregateVerifyError> {
+        Self::evaluate(guest, bytecode_point, |point| {
             let _span = tracing::info_span!("bytecode mle").entered();
-            mle_eval_par(stacked_bytecode(), point)
+            mle_eval_par(stacked_bytecode(guest), point)
         })
     }
 
     /// [`Self::recompute`] in the `verifier` crate: scalar and single threaded, what a received aggregate is checked with.
-    pub(super) fn recompute_scalar(bytecode_point: Vec<F192>) -> Result<Self, AggregateVerifyError> {
-        Self::evaluate(bytecode_point, |point| {
+    pub(super) fn recompute_scalar(guest: Guest, bytecode_point: Vec<F192>) -> Result<Self, AggregateVerifyError> {
+        Self::evaluate(guest, bytecode_point, |point| {
             let _span = tracing::info_span!("bytecode mle").entered();
             let scalars: Vec<_> = point.iter().map(to_scalar).collect();
             from_scalar(
-                scalar_bytecode()
+                scalar_bytecode(guest)
                     .evaluate(&scalars)
                     .expect("the point's length was checked"),
             )
@@ -60,17 +60,18 @@ impl DeferredClaim {
     }
 
     fn evaluate(
+        guest: Guest,
         bytecode_point: Vec<F192>,
         bytecode_at: impl FnOnce(&[F192]) -> F192,
     ) -> Result<Self, AggregateVerifyError> {
-        if bytecode_point.len() != bytecode_vars() {
+        if bytecode_point.len() != bytecode_vars(guest) {
             return Err(AggregateVerifyError::MalformedClaim);
         }
         // Every leaf defers the all-zeros point, where the bytecode polynomial is
         // just its table's first entry. Worth special-casing: the general path is
         // a pass over 2^23 entries, and a leaf is the aggregate people verify most.
         let bytecode_value = if bytecode_point.iter().all(|x| *x == F192::ZERO) {
-            F192::from(stacked_bytecode()[0])
+            F192::from(stacked_bytecode(guest)[0])
         } else {
             bytecode_at(&bytecode_point)
         };
@@ -98,10 +99,10 @@ pub(super) struct DeferredSubproof {
 }
 
 /// [`stacked_bytecode`] as the `verifier` crate takes it, hashed once: what [`EthereumProof::verify`](super::EthereumProof::verify) checks proofs against, and [`aggregate`](super::aggregate) reads its children with.
-pub(super) fn scalar_bytecode() -> &'static verifier::Bytecode {
-    static BYTECODE: std::sync::OnceLock<verifier::Bytecode> = std::sync::OnceLock::new();
-    BYTECODE.get_or_init(|| {
-        let words: Vec<u64> = stacked_bytecode().iter().map(|word| word.0).collect();
+pub(super) fn scalar_bytecode(guest: Guest) -> &'static verifier::Bytecode {
+    static BYTECODE: [std::sync::OnceLock<verifier::Bytecode>; 2] = [const { std::sync::OnceLock::new() }; 2];
+    BYTECODE[guest.index()].get_or_init(|| {
+        let words: Vec<u64> = stacked_bytecode(guest).iter().map(|word| word.0).collect();
         verifier::Bytecode::new(&words)
     })
 }
@@ -109,17 +110,17 @@ pub(super) fn scalar_bytecode() -> &'static verifier::Bytecode {
 /// The stacked bytecode polynomial of the aggregation guest: the one fixed
 /// table every node's bytecode claims are about. Cached, because verification
 /// evaluates it and building it walks the whole program.
-pub(super) fn stacked_bytecode() -> &'static [F64] {
-    static TABLE: std::sync::OnceLock<Vec<F64>> = std::sync::OnceLock::new();
-    TABLE.get_or_init(|| leanvm_core::cpu::layout::bytecode_table(unified_guest().prog()))
+pub(super) fn stacked_bytecode(guest: Guest) -> &'static [F64] {
+    static TABLE: [std::sync::OnceLock<Vec<F64>>; 2] = [const { std::sync::OnceLock::new() }; 2];
+    TABLE[guest.index()].get_or_init(|| leanvm_core::cpu::layout::bytecode_table(unified_guest(guest).prog()))
 }
 
 /// The rows of [`BLOCK`] entries of the stacked bytecode that hold its populated slots: every other row is
 /// structurally zero.
-fn bytecode_rows() -> Range<usize> {
-    static ROWS: std::sync::OnceLock<Range<usize>> = std::sync::OnceLock::new();
-    ROWS.get_or_init(|| {
-        let rows = stacked_bytecode().as_chunks::<BLOCK>().0;
+fn bytecode_rows(guest: Guest) -> Range<usize> {
+    static ROWS: [std::sync::OnceLock<Range<usize>>; 2] = [const { std::sync::OnceLock::new() }; 2];
+    ROWS[guest.index()].get_or_init(|| {
+        let rows = stacked_bytecode(guest).as_chunks::<BLOCK>().0;
         let per_slot = rows.len() >> leanvm_core::leaf::N_BYTECODE_SELECTORS;
         assert!(per_slot >= GROUP, "a slot is whole groups of rows");
         let live = |s: &usize| {
@@ -146,9 +147,9 @@ const GROUP: usize = 8;
 /// out: `G(low) = Σ_r eq(point[BLOCK_VARS..], r) · row_r[low]`, over rows `r` of `BLOCK` entries. The weight
 /// `eq(point, ·)` is a product of a factor on the low variables and one on the rest, so the batch's low rounds run
 /// on these, and a point's value is read off its own ([`bytecode_value`]).
-pub(super) fn bytecode_sums(points: &[Vec<F192>]) -> Vec<Vec<F192>> {
+pub(super) fn bytecode_sums(guest: Guest, points: &[Vec<F192>]) -> Vec<Vec<F192>> {
     let _span = tracing::info_span!("Bytecode sums").entered();
-    let (rows, live) = (stacked_bytecode().as_chunks::<BLOCK>().0, bytecode_rows());
+    let (rows, live) = (stacked_bytecode(guest).as_chunks::<BLOCK>().0, bytecode_rows(guest));
     points
         .iter()
         .map(|point| {
@@ -193,8 +194,8 @@ pub(super) fn bytecode_value(sums: &[F192], point: &[F192]) -> F192 {
 
 /// Variables of a bytecode claim's point: the log row count plus the stacking
 /// selectors.
-pub(super) fn bytecode_vars() -> usize {
-    stacked_bytecode().len().trailing_zeros() as usize
+pub(super) fn bytecode_vars(guest: Guest) -> usize {
+    stacked_bytecode(guest).len().trailing_zeros() as usize
 }
 
 fn fold_lsb(table: &mut Vec<F192>, challenge: F192) {
@@ -244,13 +245,14 @@ fn absorb_round(
 /// [`bytecode_sums`] in that order. Returns the guest hints and the single claim they reduce to, or
 /// [`AggregateVerifyError::MalformedClaim`] when a child carried a value that is not the bytecode's evaluation.
 pub(super) fn aggregate_deferred_claims(
+    guest: Guest,
     subproofs: &[DeferredSubproof],
     carried_claims: &[&DeferredClaim],
     mut sums: Vec<Vec<F192>>,
 ) -> Result<(SubHints, DeferredClaim), AggregateVerifyError> {
     let child_count = subproofs.len();
     assert_eq!(child_count, carried_claims.len(), "one carried claim per child");
-    let kbcv = bytecode_vars();
+    let kbcv = bytecode_vars(guest);
 
     // The count and each child's words are padded with zeros to whole rates, so the
     // guest's loop over the children finds every child starting the same way.
@@ -319,7 +321,7 @@ pub(super) fn aggregate_deferred_claims(
     }
     // The rest: every row against the low challenges, zero outside the populated ones, and each claim's `eq` on
     // the rows, scaled by what its low rows left.
-    let (rows, live) = (stacked_bytecode().as_chunks::<BLOCK>().0, bytecode_rows());
+    let (rows, live) = (stacked_bytecode(guest).as_chunks::<BLOCK>().0, bytecode_rows(guest));
     let low_eq = packed_eq(&r_bc);
     let mut bt = vec![F192::ZERO; rows.len()];
     parallel::fill(&mut bt[live.clone()], |i| {
