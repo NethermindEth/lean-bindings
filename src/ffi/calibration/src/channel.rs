@@ -76,7 +76,17 @@ fn challenge() -> io::Result<[u8; 32]> {
 pub struct Admission {
     allow: Vec<IpAddr>,
     per_ip: usize,
+    total: usize,
     handshaking: Mutex<HashMap<IpAddr, usize>>,
+}
+
+/// Every loopback address counts as one peer, so 127.0.0.0/8 cannot multiply the per-IP limit.
+fn bucket(ip: IpAddr) -> IpAddr {
+    if ip.is_loopback() {
+        IpAddr::from([127, 0, 0, 1])
+    } else {
+        ip
+    }
 }
 
 /// Holds one handshake slot of its peer IP until dropped.
@@ -98,11 +108,12 @@ impl Drop for Slot<'_> {
 }
 
 impl Admission {
-    /// `allow` empty admits loopback only.
-    pub fn new(allow: Vec<IpAddr>, per_ip: usize) -> Self {
+    /// `allow` empty admits loopback only; at most `per_ip` handshakes a peer and `total` in all.
+    pub fn new(allow: Vec<IpAddr>, per_ip: usize, total: usize) -> Self {
         Self {
             allow,
             per_ip,
+            total,
             handshaking: Mutex::new(HashMap::new()),
         }
     }
@@ -115,12 +126,17 @@ impl Admission {
         }
     }
 
-    /// A handshake slot for a peer, or `None` if the peer is not allowlisted or already has `per_ip` handshakes open.
+    /// A handshake slot for a peer, or `None` if the peer is not allowlisted, already has `per_ip` handshakes open, or
+    /// `total` are open.
     pub fn admit(&self, ip: IpAddr) -> Option<Slot<'_>> {
         if !self.permitted(ip) {
             return None;
         }
+        let ip = bucket(ip);
         let mut h = self.handshaking.lock().unwrap();
+        if h.values().sum::<usize>() >= self.total {
+            return None;
+        }
         let n = h.entry(ip).or_insert(0);
         if *n >= self.per_ip {
             return None;
@@ -374,7 +390,7 @@ mod tests {
 
     #[test]
     fn peers_off_the_allowlist_are_refused_without_a_slot() {
-        let local = Admission::new(vec![], 2);
+        let local = Admission::new(vec![], 2, 3);
         let lo: IpAddr = "127.0.0.1".parse().unwrap();
         let other: IpAddr = "192.0.2.7".parse().unwrap();
         assert!(local.admit(other).is_none());
@@ -384,11 +400,23 @@ mod tests {
         assert!(local.admit(lo).is_none(), "per-IP limit");
         drop(a);
         assert!(local.admit(lo).is_some());
-        let remote = Admission::new(vec![other], 2);
+        // Other loopback addresses share the one bucket.
+        assert!(local.admit("127.0.0.2".parse().unwrap()).is_none());
+        let remote = Admission::new(vec![other], 2, 3);
         assert!(remote.admit(lo).is_none());
         assert!(remote.admit("192.0.2.8".parse().unwrap()).is_none());
         assert_eq!(remote.handshaking(), 0);
         assert!(remote.admit(other).is_some());
+        // The global ceiling holds across allowlisted peers.
+        let ips: Vec<IpAddr> = (1..=4).map(|i| IpAddr::from([192, 0, 2, i])).collect();
+        let several = Admission::new(ips.clone(), 2, 3);
+        let held: Vec<_> = ips[..3]
+            .iter()
+            .map(|&ip| several.admit(ip).unwrap())
+            .collect();
+        assert!(several.admit(ips[3]).is_none());
+        drop(held);
+        assert!(several.admit(ips[3]).is_some());
     }
 
     #[test]

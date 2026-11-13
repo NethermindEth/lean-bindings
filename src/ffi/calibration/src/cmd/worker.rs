@@ -27,8 +27,9 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 /// Authenticated connections served at once: the coordinator's and one per peer fetching, with room to spare.
 const MAX_AUTHENTICATED: usize = 64;
-/// Handshakes one allowlisted IP may have open at once.
+/// Handshakes one allowlisted IP (all of loopback counting as one) may have open at once, and all of them together.
 const HANDSHAKES_PER_IP: usize = 4;
+const HANDSHAKES_TOTAL: usize = 16;
 /// The whole handshake, not each read, must finish within this.
 const HANDSHAKE_LIMIT: Duration = Duration::from_secs(5);
 
@@ -280,8 +281,11 @@ fn main() {
         prover: Mutex::new(()),
         authenticated: AtomicUsize::new(0),
     });
-    let admission: &'static Admission =
-        Box::leak(Box::new(Admission::new(allow, HANDSHAKES_PER_IP)));
+    let admission: &'static Admission = Box::leak(Box::new(Admission::new(
+        allow,
+        HANDSHAKES_PER_IP,
+        HANDSHAKES_TOTAL,
+    )));
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         // Refused before any slot is taken: peers off the allowlist, and an allowlisted IP's surplus handshakes.

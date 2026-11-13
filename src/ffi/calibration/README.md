@@ -73,7 +73,7 @@ proofs from each other directly over TCP, so their addresses must be mutually re
 **Remote mode is for trusted networks or ssh tunnels.** Traffic is authenticated, not encrypted:
 
 - A worker listens on loopback and accepts loopback peers only, unless started with `--remote --allow IP,...`; other
-  peers are dropped at accept, before they take any handshake slot, and each allowed IP may have 4 handshakes open.
+  peers are dropped at accept, before they take any handshake slot, and each allowed IP (all of loopback counting as one) may have 4 handshakes open, 16 in all.
 - Every connection proves knowledge of the per-run key within 5 s in total (challenge-response), then every frame
   carries a Keccak MAC over the key, the challenge, its direction and a sequence number.
 - Frames are bounded (64 KiB before authentication, 256 MiB after) and buffered only as they arrive; at most 64
