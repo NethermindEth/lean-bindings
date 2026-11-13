@@ -8,8 +8,9 @@
 //! aggregation guest checks the claims' order; the leaf program need not.
 //!
 //! Each claim may establish the dependency `(0x11, claim, vk)` and, under [`Guest::Batched`] (ethereum/EIPs#12664),
-//! `(0x12 with min_batch m, claim, vk)` for `1 ≤ m ≤ N`, the leaf's claim count. A claim list entry is `claim ‖ key`:
-//! `vk` for the first, [`batched_key`]`(m, vk)` for the second, which binds the whole scheme word.
+//! `(0x12, claim, vk)`, bound to the leaf's payment `(0x13, get_batch_hash(claims), vk)`, which the leaf establishes
+//! too. A claim list entry is `data ‖ key`: `vk` for `0x11`, [`batch_claim_key`] for `0x12` in an intermediate
+//! statement and [`finalized_claim_key`] in a finalized one, and [`payment_key`] for `0x13`.
 //!
 //! # Verification key
 //!
@@ -43,14 +44,21 @@ pub const MAX_GENERIC_BYTECODE_LOG: usize = 11;
 /// proves. A guest constant, so changing it changes that guest's `AGGREGATED_VK`.
 pub const MAX_CLAIMS_PER_BATCH_LEAF: usize = 256;
 
-/// ethereum/EIPs#12664 `BATCHED_LEANSTARK_SCHEME`, the low byte of its scheme word.
+/// ethereum/EIPs#12664 `BATCHED_LEANSTARK_SCHEME`: a claim of a sponsored leaf.
 pub const BATCHED_LEANSTARK_SCHEME: u8 = 0x12;
+
+/// ethereum/EIPs#12664 `LEANSTARK_LEAF_PAYMENT_SCHEME`: a leaf's payment, its data the leaf's digest.
+pub const LEANSTARK_LEAF_PAYMENT_SCHEME: u8 = 0x13;
 
 /// EIP-8288 `get_batch_hash`'s domain, one 16-byte cell.
 pub const BATCH_DOMAIN: [u8; 16] = *b"EIP8288:batch:v1";
 
 /// The domain closing the dependency digest of a list with leanSTARK claims: `"eip8288/leanstark-deps"`, zero-padded.
 pub const LEANSTARK_DEPS_DOMAIN: [u8; 32] = *b"eip8288/leanstark-deps\0\0\0\0\0\0\0\0\0\0";
+
+/// The domain closing a finalized dependency digest (ethereum/EIPs#12664): `"eip8288/batched-deps"`, zero-padded. No child
+/// statement is rebuilt with it, so a finalized proof's batch claims never re-enter recursion without their sources.
+pub const FINAL_DEPS_DOMAIN: [u8; 32] = *b"eip8288/batched-deps\0\0\0\0\0\0\0\0\0\0\0\0";
 
 /// Stacked table words a row of the bytecode: the table is `16 · 2^kgen` words.
 const ROW_WORDS: usize = 16;
@@ -134,19 +142,29 @@ pub fn valid_batch_claims(guest: Guest, claims: &[[u8; 32]]) -> bool {
     (1..=guest.max_claims_per_leaf()).contains(&claims.len()) && claims.is_sorted_by(|a, b| a < b)
 }
 
-/// ethereum/EIPs#12664 scheme word of a `BATCHED_LEANSTARK_SCHEME` dependency: `zero[29] ‖ uint16_be(min_batch) ‖ 0x12`.
-pub fn batched_scheme_word(min_batch: u16) -> [u8; 32] {
+/// A scheme's 32-byte word: 31 zero bytes, then the scheme.
+pub fn scheme_word(scheme: u8) -> [u8; 32] {
     let mut word = [0; 32];
-    word[29..31].copy_from_slice(&min_batch.to_be_bytes());
-    word[31] = BATCHED_LEANSTARK_SCHEME;
+    word[31] = scheme;
     word
 }
 
-/// The claim list key of a `BATCHED_LEANSTARK_SCHEME` dependency with `min_batch` under `vk`:
-/// `keccak256(scheme word ‖ vk)`. Its preimage starts with zero bytes and a program key's with `verifier::TAG`, so
-/// it is no program's key.
-pub fn batched_key(min_batch: u16, vk: &[u8; 32]) -> [u8; 32] {
-    primitives::hash::hash(&[&batched_scheme_word(min_batch)[..], vk].concat())
+/// The claim list key of a `BATCHED_LEANSTARK_SCHEME` claim under `vk` established by the leaf of digest `source`, in an
+/// intermediate statement: `keccak256(scheme word ‖ vk ‖ source)`, binding the claim to its leaf payment.
+pub fn batch_claim_key(vk: &[u8; 32], source: &[u8; 32]) -> [u8; 32] {
+    primitives::hash::hash(&[&scheme_word(BATCHED_LEANSTARK_SCHEME)[..], vk, source].concat())
+}
+
+/// The claim list key of a `BATCHED_LEANSTARK_SCHEME` claim under `vk` in a finalized statement: `keccak256(scheme word ‖
+/// vk)`, as block validation derives it from the dependency alone.
+pub fn finalized_claim_key(vk: &[u8; 32]) -> [u8; 32] {
+    primitives::hash::hash(&[&scheme_word(BATCHED_LEANSTARK_SCHEME)[..], vk].concat())
+}
+
+/// The claim list key of a `LEANSTARK_LEAF_PAYMENT_SCHEME` dependency on a leaf under `vk`: `keccak256(scheme word ‖ vk)`;
+/// its data is the leaf's digest.
+pub fn payment_key(vk: &[u8; 32]) -> [u8; 32] {
+    primitives::hash::hash(&[&scheme_word(LEANSTARK_LEAF_PAYMENT_SCHEME)[..], vk].concat())
 }
 
 /// A digest as the two canonical cells the VM takes it in.

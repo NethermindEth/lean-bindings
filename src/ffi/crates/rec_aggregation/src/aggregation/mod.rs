@@ -55,13 +55,16 @@ mod tests;
 
 pub use error::{AggregateVerifyError, AggregationError, SnarkProveError, SnarkVerifyError};
 pub use generic::{
-    BATCH_DOMAIN, BATCHED_LEANSTARK_SCHEME, LEANSTARK_DEPS_DOMAIN, MAX_CLAIMS_PER_BATCH_LEAF, MAX_GENERIC_BYTECODE_LOG,
-    batch_hash, batched_key, batched_scheme_word, generic_verification_key, generic_witness, valid_batch_claims,
-    verify_batch_leaf, verify_generic,
+    BATCH_DOMAIN, BATCHED_LEANSTARK_SCHEME, FINAL_DEPS_DOMAIN, LEANSTARK_DEPS_DOMAIN, LEANSTARK_LEAF_PAYMENT_SCHEME,
+    MAX_CLAIMS_PER_BATCH_LEAF, MAX_GENERIC_BYTECODE_LOG, batch_claim_key, batch_hash, finalized_claim_key,
+    generic_verification_key, generic_witness, payment_key, scheme_word, valid_batch_claims, verify_batch_leaf,
+    verify_generic,
 };
 pub use guest::{Guest, unified_guest, warm_up};
-pub use node::{aggregate, aggregate_with_stats};
-pub use proof::{EthereumClaims, EthereumProof, aggregated_vk, deps_hash, deps_public_input_bytes, verify_deps_hash};
+pub use node::{aggregate, aggregate_finalized, aggregate_finalized_with_stats, aggregate_with_stats};
+pub use proof::{
+    EthereumClaims, EthereumProof, aggregated_vk, deps_hash, deps_public_input_bytes, final_deps_hash, verify_deps_hash,
+};
 use signatures::lean_sphincs;
 use signatures::lean_sphincs::LeanSphincsPublicKey;
 

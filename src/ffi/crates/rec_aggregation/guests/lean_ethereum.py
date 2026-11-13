@@ -379,10 +379,11 @@ STMT_CELLS = STMT_DEFER_OFF + 3 * STMT_PAIRS
 # step (`claim_list_digest`).
 KECCAK_STATE = KECCAK_STATE_PLACEHOLDER
 # leanSTARK (0x11) dependencies: the most instructions (log) of a program and claims of a
-# leaf (1 in EIP-8288's guest), whether leaves may establish batched (0x12) dependencies, the
-# claim digest's 16-byte domain as a cell, a leaf digest's cells a block pair, the low cell of
-# the 0x12 scheme word with min_batch 0, the leanVM tag's first 8 bytes as a lane and its 9th
-# byte, and the mixed dependency digest's 32-byte domain as two cells.
+# leaf (1 in EIP-8288's guest), whether leaves may establish batch (0x12) and leaf-payment
+# (0x13) dependencies, the claim digest's 16-byte domain as a cell, a leaf digest's cells a
+# block pair, the low cells of the 0x12 and 0x13 scheme words, the leanVM tag's first 8 bytes
+# as a lane and its 9th byte, and the mixed dependency digest's 32-byte domains as two cells,
+# the second closing a finalized list with batch claims.
 MAX_GENERIC_BYTECODE_LOG = MAX_GENERIC_BYTECODE_LOG_PLACEHOLDER
 GEN_KGEN_ARMS = MAX_GENERIC_BYTECODE_LOG + 1
 MAX_CLAIMS_PER_BATCH_LEAF = MAX_CLAIMS_PER_BATCH_LEAF_PLACEHOLDER
@@ -390,10 +391,13 @@ BATCHED_DEPENDENCIES = BATCHED_DEPENDENCIES_PLACEHOLDER
 BATCH_DOMAIN = BATCH_DOMAIN_PLACEHOLDER
 LEAF_CHUNK = LEAF_CHUNK_PLACEHOLDER
 BATCHED_SCHEME_CELL = BATCHED_SCHEME_CELL_PLACEHOLDER
+PAYMENT_SCHEME_CELL = PAYMENT_SCHEME_CELL_PLACEHOLDER
 TAG_LANE0 = TAG_LANE0_PLACEHOLDER
 TAG_BYTE8 = TAG_BYTE8_PLACEHOLDER
 DEPS_DOMAIN_0 = DEPS_DOMAIN_0_PLACEHOLDER
 DEPS_DOMAIN_1 = DEPS_DOMAIN_1_PLACEHOLDER
+FINAL_DOMAIN_0 = FINAL_DOMAIN_0_PLACEHOLDER
+FINAL_DOMAIN_1 = FINAL_DOMAIN_1_PLACEHOLDER
 # Claims a declared claim list absorbs a loop frame: 68 cells, four block pairs. The
 # list's bulk goes CLAIM_BIG claims a frame, BIG_GROUPS of those groups, so that the
 # sponge state's trip through the heap is paid once per CLAIM_BIG claims; the rest
@@ -3580,11 +3584,13 @@ def verify_generic(pi_0, pi_1, vk_0, vk_1, t8, g_squares):
 # increase byte-lexicographically, from bytes hinted in the exponent and range-checked, so a
 # claim's bytes are the bytes of its two cells (see gen_table).
 #
-# A leaf establishes dependencies, each covering its own slot claim | key: an ordinary one
-# (0x11) under key vk, and, with BATCHED_DEPENDENCIES, a batched one (0x12, ethereum/EIPs#12664)
-# with min_batch m, 1 <= m <= N, under the key keccak256(scheme | vk) over its whole 32-byte
-# scheme word, zero[29] | uint16_be(m) | 0x12 (`establish_key`). Only a leaf derives that key, so recursion carries a batched dependency's
-# exact m and never raises it, and a child's union of claims qualifies nothing.
+# A leaf establishes dependencies, each covering its own slot data | key. With
+# BATCHED_DEPENDENCIES (ethereum/EIPs#12664) the key binds the scheme word W:
+#   0x11 claim | vk
+#   0x12 claim | keccak256(W12 | vk | d)   a batch claim bound to its source, the leaf's payment
+#   0x13 d | keccak256(W13 | vk)           the leaf's payment, d its digest
+# Only a leaf derives a 0x12 key, so recursion carries a claim's exact source: a union cannot
+# create one and pruning cannot change one. `finalize` checks each source is paid.
 
 
 def verify_leaf(table, cover, slots_g, mark, t8, g_squares):
@@ -3606,47 +3612,90 @@ def verify_leaf(table, cover, slots_g, mark, t8, g_squares):
         batch_claim_bytes(claim, claim_bytes * c ** 32, t8)
     for c in mul_range(GEN, n_g):
         batch_increasing(claim_bytes * (c / GEN) ** 32, claim_bytes * c ** 32)
+    d_0, d_1 = leaf_digest(pre, n_g)
     est_g = hint_witness("leaf_establishes")
     assert log(est_g) < log(slots_g * GEN)
     for e in mul_range(1, est_g):
         idx = hint_witness("raw_index")
         assert log(idx) < log(slots_g)
         cover[idx] = mark * e
-        slot = table * (idx ** 4)
+        establish(table * (idx ** 4), claims, n_g, vk[0], vk[1], d_0, d_1)
+    verify_generic(d_0, d_1, vk[0], vk[1], t8, g_squares)
+    return mark * est_g
+
+
+def establish(slot, claims, n_g, vk_0, vk_1, d_0, d_1):
+    # One dependency of a leaf of digest d under vk: kind g^0, g^1 or g^2 for 0x11, 0x12, 0x13.
+    kind = hint_witness("dependency_kind")
+    if const(BATCHED_DEPENDENCIES == 0):
+        assert kind == 1
+    if kind == GEN ** 2:
+        assert slot[GEN ** 0] == d_0
+        assert slot[GEN ** 1] == d_1
+        key = StackBuf(2)
+        keccak_cells([0, PAYMENT_SCHEME_CELL, vk_0, vk_1], key)
+        assert slot[GEN ** 2] == key[0]
+        assert slot[GEN ** 3] == key[1]
+    else:
         p = hint_witness("leaf_claim_index")
         assert log(p) < log(n_g)
         claim = claims * p ** 2
         assert slot[GEN ** 0] == claim[GEN ** 0]
         assert slot[GEN ** 1] == claim[GEN ** 1]
-        establish_key(slot, n_g, vk[0], vk[1], t8)
-    pi_0, pi_1 = leaf_digest(pre, n_g)
-    verify_generic(pi_0, pi_1, vk[0], vk[1], t8, g_squares)
-    return mark * est_g
-
-
-def establish_key(slot, n_g, vk_0, vk_1, t8):
-    # The slot's key: vk for an ordinary dependency (q = g^0), else for min_batch m (q = g^m)
-    # the batched key, with m at most the leaf's N claims.
-    q = hint_witness("min_batch")
-    if q == 1:
-        assert slot[GEN ** 2] == vk_0
-        assert slot[GEN ** 3] == vk_1
-    else:
-        if const(BATCHED_DEPENDENCIES == 0):
-            assert q == 1
-        assert log(q) < log(n_g * GEN)
-        # m's big-endian bytes 29 and 30 of the scheme word, the last lane's bytes 5 and 6.
-        mb = StackBuf(2)
-        hint_witness(mb, "min_batch_bytes")
-        assert log(mb[0]) < 256
-        assert log(mb[1]) < 256
-        assert mb[0] ** 256 * mb[1] == q
-        scheme = BATCHED_SCHEME_CELL + Y_TOWER * ((2 ** 40) * t8[mb[0]] + (2 ** 48) * t8[mb[1]])
-        key = StackBuf(2)
-        keccak_cells([0, scheme, vk_0, vk_1], key)
-        assert slot[GEN ** 2] == key[0]
-        assert slot[GEN ** 3] == key[1]
+        if kind == 1:
+            assert slot[GEN ** 2] == vk_0
+            assert slot[GEN ** 3] == vk_1
+        else:
+            assert kind == GEN
+            key = StackBuf(2)
+            keccak_cells([0, BATCHED_SCHEME_CELL, vk_0, vk_1, d_0, d_1], key)
+            assert slot[GEN ** 2] == key[0]
+            assert slot[GEN ** 3] == key[1]
     return
+
+
+def finalize(table, n_g):
+    # ethereum/EIPs#12664 finalization: the n published leanSTARK entries, a bijection of the
+    # node's own: each 0x12 entry claim | keccak256(W12 | vk | d) as claim | keccak256(W12 | vk)
+    # once its source d | keccak256(W13 | vk) is in the node's list, every other entry as is.
+    # Returns the digest of the finalized list, which only a statement under FINAL_DOMAIN carries.
+    finalized = HeapBuf(n_g ** 4)
+    fd_0, fd_1 = claim_list_digest(finalized, n_g)
+    marks = HeapBuf(n_g)
+    for i in mul_range(1, n_g):
+        entry = table * (i ** 4)
+        j = hint_witness("final_index")
+        assert log(j) < log(n_g)
+        marks[j] = i
+        out = finalized * (j ** 4)
+        assert out[GEN ** 0] == entry[GEN ** 0]
+        assert out[GEN ** 1] == entry[GEN ** 1]
+        kind = hint_witness("final_kind")  # g^0 as is, g^1 a batch claim
+        if kind == 1:
+            assert out[GEN ** 2] == entry[GEN ** 2]
+            assert out[GEN ** 3] == entry[GEN ** 3]
+        else:
+            assert kind == GEN
+            src = StackBuf(4)
+            hint_witness(src, "final_source")  # vk, d
+            bound = StackBuf(2)
+            keccak_cells([0, BATCHED_SCHEME_CELL, src[0], src[1], src[2], src[3]], bound)
+            assert entry[GEN ** 2] == bound[0]
+            assert entry[GEN ** 3] == bound[1]
+            key = StackBuf(2)
+            keccak_cells([0, BATCHED_SCHEME_CELL, src[0], src[1]], key)
+            assert out[GEN ** 2] == key[0]
+            assert out[GEN ** 3] == key[1]
+            payment_key = StackBuf(2)
+            keccak_cells([0, PAYMENT_SCHEME_CELL, src[0], src[1]], payment_key)
+            k = hint_witness("final_payment_index")
+            assert log(k) < log(n_g)
+            payment = table * (k ** 4)
+            assert payment[GEN ** 0] == src[2]
+            assert payment[GEN ** 1] == src[3]
+            assert payment[GEN ** 2] == payment_key[0]
+            assert payment[GEN ** 3] == payment_key[1]
+    return fd_0, fd_1
 
 
 def batch_claim_bytes(claim, claim_bytes, t8):
@@ -4511,7 +4560,23 @@ def main():
     else:
         aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_stmt)
 
-    dd_0, dd_1 = deps_digest(xd_0, xd_1, sd_0, sd_1, n_lx_g)
+    # A finalized statement publishes the finalized leanSTARK list under FINAL_DOMAIN, which no
+    # child statement is rebuilt with, so its batch claims never re-enter recursion unbound.
+    final_g = hint_witness("final")
+    assert log(final_g) < 2
+    dd = StackBuf(2)
+    if final_g == 1:
+        d0, d1 = deps_digest(xd_0, xd_1, sd_0, sd_1, n_lx_g)
+        dd[0] = d0
+        dd[1] = d1
+    else:
+        if const(BATCHED_DEPENDENCIES == 0):
+            assert final_g == 1
+        assert n_lx_g != 1
+        fd_0, fd_1 = finalize(lx_table, n_lx_g)
+        keccak([sd_0, sd_1], [fd_0, fd_1], dd, tail=[FINAL_DOMAIN_0, FINAL_DOMAIN_1, 0, 0], len=96)
+    dd_0 = dd[0]
+    dd_1 = dd[1]
     own_0, own_1 = statement_digest(seed_0, seed_1, dd_0, dd_1, da[1], da[GEN], defer_stmt)
     pub_ptr = GEN ** 0
     assert pub_ptr[1] == own_0

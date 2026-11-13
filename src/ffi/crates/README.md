@@ -13,7 +13,8 @@ Changes against upstream, all EIP-8288 specific:
   Keccak-256, verifies NiceTry v2 signatures (scheme `0x10`) and leanVM execution proofs of programs up to 2^11
   instructions as EIP-8288 batch leaves (scheme `0x11`, `src/aggregation/generic.rs`), and merges or discards child
   aggregates. It compiles as two guests (`Guest`): EIP-8288's, with one-claim leaves, and one adding ethereum/EIPs#12664
-  batch pricing, with leaves of up to 256 claims that also establish batched (`0x12`) dependencies.
+  batch pricing, with leaves of up to 256 claims that also establish sponsored batch claims (`0x12`) bound to their leaf
+  payment (`0x13`), and finalization.
 
 `crates/upstream.sh diff` prints every change against upstream at the pinned revision; `crates/upstream.sh update <rev>`
 moves the crates and the pin to a newer upstream revision by three-way merge and lists what needs review. After an

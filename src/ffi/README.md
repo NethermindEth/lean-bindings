@@ -33,7 +33,7 @@ fails if the backend is unavailable. Verification fails closed; proving requires
 signatures and proofs and prints the pinned recursive verification key; `fixtures --sign-message <hex> <file>` signs
 one message, and `fixtures --prove-stark <hex> <file>` proves a leanSTARK dependency on it, the singleton batch leaf
 `[hex]`. `cargo run --release --locked --example batch_leaves [n]` proves an `n`-claim batch leaf with the
-`examples/batch_leaves/batch.py` template and aggregates it as `n` batched dependencies with `min_batch` `n`. **Build Lean** packages the vectors,
+`examples/batch_leaves/batch.py` template and aggregates it as `n` batch claims and the leaf's payment. **Build Lean** packages the vectors,
 this tool and the `lean_startup_stub` example as opt-in test assets of `Nethermind.Crypto.Lean`.
 
 The C ABI is version 14, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
@@ -98,21 +98,25 @@ resolved dependency.
   table. These bounds apply to every leaf, at direct admission and in aggregation, even when all its claims are
   discarded.
 * **aggregation input:** direct count then `(96-byte dependency, witness blob)` pairs;
-  child count then `(dependency count/triples, proof blob)` pairs; discard count/triples; then, only when nonempty,
+  child count then `(record count/records, proof blob)` pairs; discard count/records; then, only when nonempty,
   leaf count then `(32-byte key, claim count, 32-byte claims, dependency count/triples, leanSTARK witness blob)`
-  entries, the triples being those the leaf establishes.
+  entries, the triples being those the leaf establishes. A record is 192 bytes: a dependency, then its source for a
+  batch claim and 96 zero bytes otherwise. The proof is of `hash`: the selected records' intermediate statement, or,
+  when they hold a batch claim, their dependencies' finalized digest.
 * **leaf:** a leanSTARK witness whose public input is
   `get_batch_hash(claims) = keccak256(b"EIP8288:batch:v1" || claims)`, EIP-8288's `get_claim_hash` for one claim, over
   1 to `MAX_CLAIMS_PER_BATCH_LEAF` claims (1 for guest 0, 256 for guest 1, guest constants bound to their
   `AGGREGATED_VK`), strictly increasing in byte-lexicographic order: the host and the guest check the order, the leaf
-  program need not. A leaf establishes `(0x11, claim, key)` and, under guest 1, `(0x12 with min_batch m, claim, key)`
-  for `1 <= m <= N`, its claim count. Leaves are private aggregation inputs; mode-0 wrappers carry singleton proofs.
-* **batched dependency (`0x12`, guest 1 only):** ethereum/EIPs#12664 scheme word
-  `zero[29] || uint16_be(min_batch) || 0x12`, `min_batch` from 1 to 256; the whole word is the scheme for parsing,
-  sorting and hashing. Its leanSTARK list entry is `data_hash || keccak256(scheme word || key)`, so the digest binds
-  `min_batch`; only a leaf derives that key, so recursion carries a dependency's exact `min_batch` and a union of
-  children qualifies nothing. A direct witness, a singleton leaf, proves only `min_batch` 1. Guest 0 rejects the
-  scheme as unknown.
+  program need not. A leaf establishes `(0x11, claim, key)` and, under guest 1, `(0x12, claim, key)` and its payment
+  `(0x13, get_batch_hash(claims), key)`. Leaves are private aggregation inputs; mode-0 wrappers carry singleton proofs.
+* **batch claims and leaf payments (`0x12`, `0x13`, guest 1 only, ethereum/EIPs#12664):** 31 zero bytes then the
+  scheme, a payment's digest nonzero; guest 0 rejects both as unknown. A leanSTARK list entry is `data || key` with
+  the key `keccak256(scheme word || vk)` for a payment. A batch claim's key in an intermediate statement is
+  `keccak256(scheme word || vk || source digest)`, binding it to the payment of the leaf that established it; only a
+  leaf derives it, so a union cannot create a source and pruning cannot change one. A finalizing node publishes its
+  list with each batch claim keyed `keccak256(scheme word || vk)` once its source payment is in the list, under the
+  domain `eip8288/batched-deps`, which no child statement is rebuilt with: a finalized proof is no child. Block
+  validation computes that finalized digest from the dependencies alone.
 * **aggregate:** the EIP-8288 `stark_proof`, one mixed guest proof without dependencies
   or raw witnesses. It verifies against `deps_hash` and `AGGREGATED_VK`
   alone; a child's dependencies come from the aggregation input. Proving an empty list

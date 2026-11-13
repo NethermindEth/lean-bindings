@@ -7,7 +7,10 @@ use super::child::{
 };
 use super::claim_pool::{ClaimSite, coord_difference, coord_kind, coord_scale, push_coord_terms, walk_claims};
 use super::deferred::RECURSION_AGG_LABEL;
-use super::generic::{BATCH_DOMAIN, LEANSTARK_DEPS_DOMAIN, MAX_GENERIC_BYTECODE_LOG, batched_scheme_word};
+use super::generic::{
+    BATCH_DOMAIN, BATCHED_LEANSTARK_SCHEME, FINAL_DEPS_DOMAIN, LEANSTARK_DEPS_DOMAIN, LEANSTARK_LEAF_PAYMENT_SCHEME,
+    MAX_GENERIC_BYTECODE_LOG, scheme_word,
+};
 use super::guest::Guest;
 use super::statement::{BIG_GROUPS, CLAIM_GROUP, STATEMENT_HEADER};
 use fiat_shamir::merkle::hash_to_scalars;
@@ -900,9 +903,12 @@ fn signature_placeholders(guest: Guest, ps: &mut impl FnMut(&str, String)) {
     ps("BATCHED_DEPENDENCIES", u8::from(guest == Guest::Batched).to_string());
     ps("BATCH_DOMAIN", dsl_u128(pack_16_bytes(&BATCH_DOMAIN)).to_string());
     ps("LEAF_CHUNK", (2 * primitives::hash::RATE / 16).to_string());
-    ps("BATCHED_SCHEME_CELL", dsl_u128(pack_16_bytes(&batched_scheme_word(0)[16..])).to_string());
+    ps("BATCHED_SCHEME_CELL", dsl_u128(pack_16_bytes(&scheme_word(BATCHED_LEANSTARK_SCHEME)[16..])).to_string());
+    ps("PAYMENT_SCHEME_CELL", dsl_u128(pack_16_bytes(&scheme_word(LEANSTARK_LEAF_PAYMENT_SCHEME)[16..])).to_string());
     ps("DEPS_DOMAIN_0", dsl_u128(pack_16_bytes(&LEANSTARK_DEPS_DOMAIN[..16])).to_string());
     ps("DEPS_DOMAIN_1", dsl_u128(pack_16_bytes(&LEANSTARK_DEPS_DOMAIN[16..])).to_string());
+    ps("FINAL_DOMAIN_0", dsl_u128(pack_16_bytes(&FINAL_DEPS_DOMAIN[..16])).to_string());
+    ps("FINAL_DOMAIN_1", dsl_u128(pack_16_bytes(&FINAL_DEPS_DOMAIN[16..])).to_string());
     // The leanVM tag ahead of a program's table in its digest: its first 8 bytes as a lane, its 9th byte.
     let tag: &[u8; 9] = verifier::TAG.try_into().expect("a 9-byte tag");
     ps("TAG_LANE0", u64::from_le_bytes(tag[..8].try_into().unwrap()).to_string());

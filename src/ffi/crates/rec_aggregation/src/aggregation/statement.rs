@@ -3,7 +3,7 @@
 use super::cells::{cell_bytes, count, pack_16_bytes};
 use super::deferred::DeferredClaim;
 use super::guest::{Guest, unified_guest};
-use super::generic::{LEANSTARK_DEPS_DOMAIN, digest_cells};
+use super::generic::{FINAL_DEPS_DOMAIN, LEANSTARK_DEPS_DOMAIN, digest_cells};
 use super::{GenericClaim, LeanSphincsClaim};
 use fiat_shamir::merkle::hash_to_scalars;
 use primitives::field::F192;
@@ -45,13 +45,19 @@ pub(super) fn generic_claim_cells((data_hash, vk): &GenericClaim) -> [F192; 4] {
 }
 
 /// The EIP-8288 dependency digest of the two lists' digests: the leanSPHINCS one alone when there
-/// is no leanSTARK claim, else `keccak256(S ‖ G ‖ LEANSTARK_DEPS_DOMAIN)` (the guest's `deps_digest`).
-pub(super) fn deps_digest_of(lean_sphincs_digest: [F192; 2], generic_digest: [F192; 2], has_generic: bool) -> [F192; 2] {
-    if !has_generic {
+/// is no leanSTARK claim, else `keccak256(S ‖ G ‖ LEANSTARK_DEPS_DOMAIN)` (the guest's `deps_digest`), and
+/// `keccak256(S ‖ G ‖ FINAL_DEPS_DOMAIN)` for a `finalized` one (ethereum/EIPs#12664).
+pub(super) fn deps_digest_of(
+    lean_sphincs_digest: [F192; 2],
+    generic_digest: [F192; 2],
+    has_generic: bool,
+    finalized: bool,
+) -> [F192; 2] {
+    if !has_generic && !finalized {
         return lean_sphincs_digest;
     }
     let mut preimage = cell_bytes(lean_sphincs_digest.into_iter().chain(generic_digest));
-    preimage.extend(LEANSTARK_DEPS_DOMAIN);
+    preimage.extend(if finalized { FINAL_DEPS_DOMAIN } else { LEANSTARK_DEPS_DOMAIN });
     hash_to_scalars(&primitives::hash::hash(&preimage))
 }
 
@@ -96,18 +102,20 @@ pub(super) fn statement_digest(
     guest: Guest,
     generic: &[GenericClaim],
     lean_sphincs_signers: &[LeanSphincsClaim],
+    finalized: bool,
     da_digest: [u8; 32],
     defer: &DeferredClaim,
 ) -> [F192; 2] {
-    statement_digest_of(guest, deps_digest_cells(lean_sphincs_signers, generic), da_digest, defer)
+    statement_digest_of(guest, deps_digest_cells(lean_sphincs_signers, generic, finalized), da_digest, defer)
 }
 
 /// The dependency digest of the two lists as two cells.
-pub(super) fn deps_digest_cells(lean_sphincs: &[LeanSphincsClaim], generic: &[GenericClaim]) -> [F192; 2] {
+pub(super) fn deps_digest_cells(lean_sphincs: &[LeanSphincsClaim], generic: &[GenericClaim], finalized: bool) -> [F192; 2] {
     deps_digest_of(
         claim_list_digest(lean_sphincs.iter().map(lean_sphincs_claim_cells)),
         claim_list_digest(generic.iter().map(generic_claim_cells)),
         !generic.is_empty(),
+        finalized,
     )
 }
 

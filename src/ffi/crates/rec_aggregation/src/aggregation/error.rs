@@ -49,6 +49,9 @@ pub enum AggregationError {
     /// A declared claim is not one the contributions cover. A claim is a pubkey and a
     /// message, so another message is another claim.
     NotCovered,
+    /// A finalized batch claim's leaf payment is not in the list (ethereum/EIPs#12664), or two of its batch claims are one
+    /// dependency from different leaves, or there is no leanSTARK claim to finalize.
+    UnpaidClaim,
     /// A raw signature's randomness does not decode to a target-sum encoding,
     /// so there is no witness to build for it.
     MalformedRawSignature,
@@ -100,6 +103,7 @@ impl std::fmt::Display for AggregationError {
             Self::InvalidChild(_) => write!(f, "invalid child aggregate"),
             Self::Empty => write!(f, "no signature claims or DA root to publish"),
             Self::NotCovered => write!(f, "a declared claim is not covered by the children and raw signatures"),
+            Self::UnpaidClaim => write!(f, "a batch claim cannot be finalized"),
             Self::MalformedRawSignature => write!(f, "a raw signature does not decode to a target-sum encoding"),
             Self::InvalidGenericWitness => write!(f, "a raw leanSTARK dependency's witness does not verify"),
             Self::TooManyInnerProofs => write!(f, "too many batch leaves and children"),
