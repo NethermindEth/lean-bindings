@@ -1,0 +1,29 @@
+name: Download the build
+description: Replaces the committed libraries, test assets and notices with the ones built in this run.
+
+runs:
+  using: composite
+  steps:
+    # Only the built outputs, never the committed ones, may be committed or published.
+    - name: Remove the committed outputs
+      shell: bash
+      run: rm -rf src/bindings/Nethermind.Crypto.Lean/runtimes src/bindings/Nethermind.Crypto.Lean/testing THIRD-PARTY-NOTICES
+
+    - name: Download the libraries
+      uses: actions/download-artifact@v8
+      with:
+        pattern: linux-*
+        merge-multiple: true
+        path: src/bindings/Nethermind.Crypto.Lean/runtimes
+
+    - name: Download the test assets
+      uses: actions/download-artifact@v8
+      with:
+        pattern: testing-linux-*
+        merge-multiple: true
+        path: src/bindings/Nethermind.Crypto.Lean/testing
+
+    - name: Download the notices
+      uses: actions/download-artifact@v8
+      with:
+        name: notices

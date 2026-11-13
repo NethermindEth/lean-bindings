@@ -28,8 +28,8 @@ The library, `libnethermind_lean.so`, is built from the Rust crate in [`src/ffi`
 
 ## Workflows
 
-- **Build Lean** (manual): builds `src/ffi` for each RID, twice, and fails unless both builds are byte-identical; generates `THIRD-PARTY-NOTICES`; runs the smoke test on the built libraries on x64 and arm64 hardware; optionally opens a pull request with them into the branch it runs on. That pull request is opened with `GITHUB_TOKEN`, which starts no workflows, so run **Test / Publish** on its branch manually.
-- **Test / Publish**: on pull requests and `main`, checks formatting, runs the Rust tests of the whole `src/ffi` workspace and the .NET tests against the committed library on x64 and arm64 hardware, and verifies a consumer gets the right library per RID. On a release or a manual run, publishes to NuGet (staging or production) through trusted publishing, only after all of these pass.
+- **Build Lean** (manual): builds `src/ffi` for each RID, twice, and fails unless both builds are byte-identical; generates `THIRD-PARTY-NOTICES`; runs the smoke test on the built libraries on x64 and arm64 hardware; optionally opens a pull request with them into the branch it runs on. That pull request is opened with `GITHUB_TOKEN`, which starts no workflows, so run **Test / Publish** on its branch manually. With `publish=Staging` on a branch other than `main`, it also publishes the built package to NuGet staging as `<crate version>-<branch>.<run number>`, without committing the binaries, for trying out experimental branches.
+- **Test / Publish**: on pull requests and `main`, checks formatting, runs the Rust tests of the whole `src/ffi` workspace and the .NET tests against the committed library on x64 and arm64 hardware, and verifies a consumer gets the right library per RID. On a release or a manual run, publishes to NuGet (staging or production) through trusted publishing, only after all of these pass. Packages for NuGet.org come only from here, after the binaries are merged into `main`.
 
 ## License
 

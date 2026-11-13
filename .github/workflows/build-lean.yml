@@ -7,6 +7,13 @@ on:
         description: Create a pull request
         default: false
         type: boolean
+      publish:
+        description: Publish the built package to NuGet staging (not from main)
+        default: 'No'
+        type: choice
+        options:
+          - 'No'
+          - Staging
 
 permissions:
   contents: read
@@ -174,28 +181,8 @@ jobs:
         with:
           lfs: true
 
-      # Only the built outputs, never the committed ones, may be committed.
-      - name: Remove the committed outputs
-        run: rm -rf src/bindings/Nethermind.Crypto.Lean/runtimes src/bindings/Nethermind.Crypto.Lean/testing THIRD-PARTY-NOTICES
-
-      - name: Download the libraries
-        uses: actions/download-artifact@v8
-        with:
-          pattern: linux-*
-          merge-multiple: true
-          path: src/bindings/Nethermind.Crypto.Lean/runtimes
-
-      - name: Download the test assets
-        uses: actions/download-artifact@v8
-        with:
-          pattern: testing-linux-*
-          merge-multiple: true
-          path: src/bindings/Nethermind.Crypto.Lean/testing
-
-      - name: Download the notices
-        uses: actions/download-artifact@v8
-        with:
-          name: notices
+      - name: Download the build
+        uses: ./.github/actions/download-build
 
       # The package version is the crate version; Test / Publish appends the run number. A pre-release such as
       # 0.2.0-beta.1 goes to VersionSuffix.
@@ -230,3 +217,59 @@ jobs:
           \`\`\`
           $hashes
           \`\`\`"
+
+  # An experimental package from a branch, without committing its binaries. NuGet.org takes only Test / Publish on main.
+  publish:
+    name: Publish to staging
+    needs: [test, notices]
+    if: inputs.publish == 'Staging' && github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NUGET_URL: https://int.nugettest.org
+      NUGET_SOURCE: https://apiint.nugettest.org/v3/index.json
+    steps:
+      - name: Require a branch other than main
+        run: |
+          [[ $GITHUB_REF == refs/heads/* && $GITHUB_REF != refs/heads/main ]] \
+            || { echo "::error::Staging publishes run only from a branch other than main, not $GITHUB_REF"; exit 1; }
+
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Download the build
+        uses: ./.github/actions/download-build
+
+      # The crate version with the branch as a pre-release, e.g. 0.12.0-my-branch.42 or 0.12.0-beta.1.my-branch.42.
+      - name: Detect version
+        id: version
+        run: |
+          crate=$(sed -n 's/^version = "\(.*\)"$/\1/p' src/ffi/Cargo.toml | head -1)
+          [[ $crate =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::Unexpected crate version '$crate'"; exit 1; }
+          branch=$(tr '[:upper:]' '[:lower:]' <<< "$GITHUB_REF_NAME" | sed -e 's/[^0-9a-z-]/-/g' -e 's/--*/-/g' | cut -c1-40 | sed 's/^-*//; s/-*$//')
+          # A numeric pre-release identifier must not have leading zeros; a prefix makes any slug alphanumeric.
+          [[ $branch =~ ^[0-9]*$ ]] && branch=branch${branch:+-$branch}
+          version=${crate%%-*}-$([[ $crate == *-* ]] && echo "${crate#*-}." || true)$branch.$GITHUB_RUN_NUMBER
+          [[ ${#version} -le 64 ]] || { echo "::error::Version '$version' is longer than NuGet's 64 characters"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Publishing \`Nethermind.Crypto.Lean\` \`$version\` from \`$GITHUB_REF_NAME\` to $NUGET_URL" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+
+      - name: NuGet login
+        uses: nuget/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+          audience: ${{ env.NUGET_URL }}
+          token-service-url: ${{ env.NUGET_URL }}/api/v2/token
+
+      - name: Publish
+        working-directory: src/bindings
+        run: |
+          dotnet pack ./Nethermind.Crypto.Lean -c release -p:Version=${{ steps.version.outputs.version }}
+          dotnet nuget push ./artifacts/package/release/*.nupkg \
+            -k "${{ steps.login.outputs.NUGET_API_KEY }}" -s ${{ env.NUGET_SOURCE }}
