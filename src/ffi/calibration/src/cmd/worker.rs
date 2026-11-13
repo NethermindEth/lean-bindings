@@ -1,39 +1,54 @@
-//! A proving worker: `calib-worker LISTEN [ADVERTISE]`.
+//! A proving worker: `calib-worker [--remote] LISTEN [ADVERTISE]`.
 //!
 //! Proves one task at a time for the coordinator, fetching each child proof from the worker that holds it, and serves
 //! its own finished proofs to peers. `LEANVM_NUM_THREADS` sets its prover threads. `ADVERTISE` is the `host:port`
 //! peers reach it at (default `LISTEN`).
+//!
+//! Every connection authenticates under the run key (`CALIB_TOKEN` or `CALIB_TOKEN_FILE`, see the `channel` module).
+//! `LISTEN` must be a loopback address unless `--remote` is given. Children are fetched only from this worker or the
+//! workers the coordinator listed in HELLO.
 
 use gas_calibration::api;
+use gas_calibration::channel::{self, Channel, Key};
 use gas_calibration::proto::{self, Done, Task};
-use gas_calibration::wire::{Reader, Writer, get_claims, put_claims, read_frame, write_frame};
+use gas_calibration::wire::{Reader, Writer, get_claims, put_claims};
 use gas_calibration::{capabilities, sys};
 use rec_aggregation::EthereumClaims;
 use std::collections::HashMap;
 use std::io;
-use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+/// Connections served at once: the coordinator's and one per peer fetching, with room to spare.
+const MAX_CONNECTIONS: usize = 64;
+/// An unauthenticated connection gets this long to answer the challenge.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Finished proofs by node id: the proof's wire bytes and its encoded claims.
 type Store = Arc<Mutex<HashMap<u64, Arc<(Vec<u8>, Vec<u8>)>>>>;
 
 struct Worker {
     advertise: String,
+    key: Key,
+    peers: RwLock<Vec<String>>,
     store: Store,
     prover: Mutex<()>,
+    connections: AtomicUsize,
 }
 
-fn fetch(addr: &str, id: u64) -> io::Result<(Vec<u8>, Vec<u8>)> {
-    let mut s = TcpStream::connect(addr)?;
+fn fetch(key: Key, addr: &str, id: u64) -> io::Result<(Vec<u8>, Vec<u8>)> {
+    let s = TcpStream::connect(addr)?;
     s.set_nodelay(true)?;
+    let mut c = Channel::client(s, key)?;
     let mut w = Writer::default();
     w.u8(proto::FETCH).u64(id);
-    write_frame(&mut s, &w.buf)?;
-    let frame = read_frame(&mut s)?;
+    c.send(&w.buf)?;
+    let frame = c.recv()?;
     let mut r = Reader::new(&frame);
     if r.u8()? != proto::PROOF || r.u8()? != 1 {
         return Err(io::Error::other(format!(
@@ -64,32 +79,25 @@ impl Worker {
             id: task.id,
             ..Default::default()
         };
+        let fail = |done: Done, error: String| Done { error, ..done };
         let start = Instant::now();
         let mut raw = Vec::with_capacity(task.children.len());
         for c in &task.children {
+            if !proto::child_allowed(&c.addr, &self.advertise, &self.peers.read().unwrap()) {
+                return fail(done, format!("{} is not a listed worker", c.addr));
+            }
             if c.addr == self.advertise {
-                let held = self.store.lock().unwrap().get(&c.id).cloned();
-                match held {
+                match self.store.lock().unwrap().get(&c.id).cloned() {
                     Some(p) => raw.push((p.0.clone(), p.1.clone())),
-                    None => {
-                        return Done {
-                            error: format!("node {} is not here", c.id),
-                            ..done
-                        };
-                    }
+                    None => return fail(done, format!("node {} is not here", c.id)),
                 }
             } else {
-                match fetch(&c.addr, c.id) {
+                match fetch(self.key, &c.addr, c.id) {
                     Ok(p) => {
                         done.fetched_bytes += (p.0.len() + p.1.len()) as u64;
                         raw.push(p);
                     }
-                    Err(e) => {
-                        return Done {
-                            error: e.to_string(),
-                            ..done
-                        };
-                    }
+                    Err(e) => return fail(done, e.to_string()),
                 }
             }
         }
@@ -99,16 +107,11 @@ impl Worker {
         for (bytes, claims) in &raw {
             let claims = match get_claims(&mut Reader::new(claims)) {
                 Ok(c) => c,
-                Err(e) => {
-                    return Done {
-                        error: e.to_string(),
-                        ..done
-                    };
-                }
+                Err(e) => return fail(done, e.to_string()),
             };
             match api::proof_from_bytes(task.guest, bytes, claims) {
                 Ok(p) => children.push(p),
-                Err(e) => return Done { error: e, ..done },
+                Err(e) => return fail(done, e),
             }
         }
         drop(raw);
@@ -147,10 +150,13 @@ impl Worker {
         done
     }
 
-    fn serve(self: Arc<Self>, mut s: TcpStream) -> io::Result<()> {
+    fn serve(self: Arc<Self>, s: TcpStream) -> io::Result<()> {
         s.set_nodelay(true)?;
+        s.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+        let mut c = Channel::server(s, self.key)?;
+        c.get_ref().set_read_timeout(None)?;
         loop {
-            let frame = match read_frame(&mut s) {
+            let frame = match c.recv() {
                 Ok(f) => f,
                 Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
                 Err(e) => return Err(e),
@@ -158,6 +164,7 @@ impl Worker {
             let mut r = Reader::new(&frame);
             match r.u8()? {
                 proto::HELLO => {
+                    *self.peers.write().unwrap() = proto::decode_hello(&mut r)?;
                     let mut w = Writer::default();
                     let (total, avail) = sys::memory_bytes();
                     w.u8(proto::INFO)
@@ -165,11 +172,11 @@ impl Worker {
                         .str(&capabilities())
                         .u64(total)
                         .u64(avail);
-                    write_frame(&mut s, &w.buf)?;
+                    c.send(&w.buf)?;
                 }
                 proto::RESET => {
                     self.store.lock().unwrap().clear();
-                    write_frame(&mut s, &[proto::RESET])?;
+                    c.send(&[proto::RESET])?;
                 }
                 proto::TASK => {
                     let done = match proto::decode_task(&mut r) {
@@ -179,7 +186,7 @@ impl Worker {
                             ..Default::default()
                         },
                     };
-                    write_frame(&mut s, &proto::encode_done(&done))?;
+                    c.send(&proto::encode_done(&done))?;
                 }
                 proto::FETCH => {
                     let id = r.u64()?;
@@ -190,9 +197,8 @@ impl Worker {
                         Some(p) => w.u8(1).bytes(&p.0).bytes(&p.1),
                         None => w.u8(0),
                     };
-                    write_frame(&mut s, &w.buf)?;
+                    c.send(&w.buf)?;
                 }
-                proto::SHUTDOWN => std::process::exit(0),
                 t => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -205,30 +211,55 @@ impl Worker {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let Some(listen) = args.first() else {
-        eprintln!("usage: calib-worker LISTEN [ADVERTISE]");
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let remote = args.first().is_some_and(|a| a == "--remote");
+    if remote {
+        args.remove(0);
+    }
+    let Some(listen) = args.first().cloned() else {
+        eprintln!("usage: calib-worker [--remote] LISTEN [ADVERTISE]");
         std::process::exit(2)
     };
-    let advertise = args.get(1).unwrap_or(listen).clone();
+    let loopback = listen
+        .parse::<SocketAddr>()
+        .is_ok_and(|a| a.ip().is_loopback());
+    if !loopback && !remote {
+        eprintln!(
+            "calib-worker: {listen} is not a loopback address; pass --remote to listen on a network"
+        );
+        std::process::exit(2);
+    }
+    let key = channel::key_from_env().unwrap_or_else(|e| {
+        eprintln!("calib-worker: {e}");
+        std::process::exit(2)
+    });
+    let advertise = args.get(1).unwrap_or(&listen).clone();
     api::warm_up();
-    let listener = TcpListener::bind(listen).expect("binds the listen address");
+    let listener = TcpListener::bind(&listen).expect("binds the listen address");
     eprintln!(
         "calib-worker ready on {listen} as {advertise}: {}",
         capabilities()
     );
     let worker = Arc::new(Worker {
         advertise,
+        key,
+        peers: RwLock::new(vec![]),
         store: Store::default(),
         prover: Mutex::new(()),
+        connections: AtomicUsize::new(0),
     });
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
+        if worker.connections.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+            worker.connections.fetch_sub(1, Ordering::SeqCst);
+            continue;
+        }
         let w = worker.clone();
         std::thread::spawn(move || {
-            if let Err(e) = w.serve(stream) {
+            if let Err(e) = w.clone().serve(stream) {
                 eprintln!("connection closed: {e}");
             }
+            w.connections.fetch_sub(1, Ordering::SeqCst);
         });
     }
 }

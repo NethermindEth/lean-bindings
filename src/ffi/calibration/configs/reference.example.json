@@ -10,7 +10,7 @@
   "workers": {
     "mode": "remote",
     "hosts": ["10.0.0.11:47100", "10.0.0.12:47100"],
-    "launch": "ssh {host} 'cd calibration && LEANVM_NUM_THREADS={threads} ./calib-worker 0.0.0.0:{port} {host}:{port}'"
+    "launch": "sh -c \"scp -q {token_file} {host}:calibration/token && ssh {host} 'cd calibration && chmod 600 token && LEANVM_NUM_THREADS={threads} CALIB_TOKEN_FILE=token ./calib-worker --remote 0.0.0.0:{port} {host}:{port}'\""
   },
   "threads_per_worker": 11,
   "memory_per_worker_gb": 32,

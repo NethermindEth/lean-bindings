@@ -1,6 +1,7 @@
 //! Proves one block across workers and measures it: `calib-coord PLAN WORKERS OUT`.
 //!
-//! `WORKERS` is a comma-separated list of `host:port`. `PLAN` has one directive a line:
+//! `WORKERS` is a comma-separated list of `host:port`, each worker's advertised address; workers may fetch children only
+//! from these. The run key comes from `CALIB_TOKEN` or `CALIB_TOKEN_FILE` (see the `channel` module). `PLAN` has one directive a line:
 //!
 //! ```text
 //! label NAME
@@ -18,10 +19,11 @@
 //! the measured node times without transfers, labelled as modelled.
 
 use gas_calibration::api::{self, GuestKind, Leaf, RawSig};
+use gas_calibration::channel::{self, Channel, Key};
 use gas_calibration::json::{Obj, array};
 use gas_calibration::proto::{self, Child, Done, Task};
 use gas_calibration::sched::{self, Input, PlanSpec, Scheduler};
-use gas_calibration::wire::{Reader, Writer, get_claims, read_frame, write_frame};
+use gas_calibration::wire::{Reader, Writer, get_claims};
 use gas_calibration::{capabilities, inputs, sys};
 use rec_aggregation::EthereumClaims;
 use std::net::TcpStream;
@@ -123,30 +125,41 @@ struct WorkerConn {
     addr: String,
     info: String,
     mem_total: u64,
-    stream: TcpStream,
+    channel: Option<Channel<TcpStream>>,
 }
 
-fn connect(addr: &str) -> Result<WorkerConn, String> {
-    let mut stream = TcpStream::connect(addr).map_err(|e| format!("{addr}: {e}"))?;
+fn open(addr: &str, key: Key) -> Result<Channel<TcpStream>, String> {
+    let stream = TcpStream::connect(addr).map_err(|e| format!("{addr}: {e}"))?;
     stream.set_nodelay(true).ok();
-    write_frame(&mut stream, &[proto::HELLO]).map_err(|e| e.to_string())?;
-    let frame = read_frame(&mut stream).map_err(|e| e.to_string())?;
+    Channel::client(stream, key).map_err(|e| format!("{addr}: {e}"))
+}
+
+/// Connects to a worker, gives it the worker list it may fetch children from, and clears its store.
+fn connect(addr: &str, peers: &[String], key: Key) -> Result<WorkerConn, String> {
+    let mut c = open(addr, key)?;
+    let err = |e: std::io::Error| format!("{addr}: {e}");
+    c.send(&proto::encode_hello(peers)).map_err(err)?;
+    let frame = c.recv().map_err(err)?;
     let mut r = Reader::new(&frame);
     let parse = |r: &mut Reader| -> std::io::Result<(String, String, u64)> {
         if r.u8()? != proto::INFO {
             return Err(std::io::Error::other("not a worker"));
         }
-        let (advertise, info, total) = (r.str()?, r.str()?, r.u64()?);
-        Ok((advertise, info, total))
+        Ok((r.str()?, r.str()?, r.u64()?))
     };
-    let (advertise, info, mem_total) = parse(&mut r).map_err(|e| format!("{addr}: {e}"))?;
-    write_frame(&mut stream, &[proto::RESET]).map_err(|e| e.to_string())?;
-    read_frame(&mut stream).map_err(|e| e.to_string())?;
+    let (advertise, info, mem_total) = parse(&mut r).map_err(err)?;
+    if !peers.contains(&advertise) {
+        return Err(format!(
+            "{addr} advertises {advertise}, which is not in the worker list"
+        ));
+    }
+    c.send(&[proto::RESET]).map_err(err)?;
+    c.recv().map_err(err)?;
     Ok(WorkerConn {
         addr: advertise,
         info,
         mem_total,
-        stream,
+        channel: Some(c),
     })
 }
 
@@ -246,9 +259,11 @@ fn main() {
         return;
     }
     let nodes = sched::plan(&plan.spec).unwrap_or_else(|e| fail(e));
-    let mut conns: Vec<WorkerConn> = args[1]
-        .split(',')
-        .map(|a| connect(a).unwrap_or_else(|e| fail(e)))
+    let key = channel::key_from_env().unwrap_or_else(|e| fail(e.to_string()));
+    let listed: Vec<String> = args[1].split(',').map(str::to_string).collect();
+    let mut conns: Vec<WorkerConn> = listed
+        .iter()
+        .map(|a| connect(a, &listed, key).unwrap_or_else(|e| fail(e)))
         .collect();
     let addrs: Vec<String> = conns.iter().map(|c| c.addr.clone()).collect();
     let workers = conns.len();
@@ -260,12 +275,13 @@ fn main() {
     for (w, conn) in conns.iter_mut().enumerate() {
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         task_txs.push(tx);
-        let mut stream = conn.stream.try_clone().expect("clones the socket");
+        let mut channel = conn.channel.take().expect("a connected worker");
         let results = result_tx.clone();
         std::thread::spawn(move || {
             for frame in rx {
-                let reply = write_frame(&mut stream, &frame)
-                    .and_then(|_| read_frame(&mut stream))
+                let reply = channel
+                    .send(&frame)
+                    .and_then(|_| channel.recv())
                     .map_err(|e| e.to_string());
                 let done = reply.and_then(|f| {
                     let mut r = Reader::new(&f);
@@ -328,12 +344,11 @@ fn main() {
     // The block producer receives the root and a validator verifies it.
     let root = s.root();
     let root_worker = s.location(root).expect("the root finished");
-    let mut fetch_stream =
-        TcpStream::connect(&addrs[root_worker]).unwrap_or_else(|e| fail(e.to_string()));
+    let mut fetch = open(&addrs[root_worker], key).unwrap_or_else(|e| fail(e));
     let mut w = Writer::default();
     w.u8(proto::FETCH).u64(root as u64);
-    write_frame(&mut fetch_stream, &w.buf).unwrap_or_else(|e| fail(e.to_string()));
-    let frame = read_frame(&mut fetch_stream).unwrap_or_else(|e| fail(e.to_string()));
+    fetch.send(&w.buf).unwrap_or_else(|e| fail(e.to_string()));
+    let frame = fetch.recv().unwrap_or_else(|e| fail(e.to_string()));
     let mut r = Reader::new(&frame);
     let (proof, claims) = match (r.u8(), r.u8()) {
         (Ok(proto::PROOF), Ok(1)) => (r.bytes().unwrap().to_vec(), r.bytes().unwrap().to_vec()),

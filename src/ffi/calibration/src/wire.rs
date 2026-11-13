@@ -1,7 +1,7 @@
 //! Length-prefixed binary encoding for corpus files and the coordinator/worker protocol.
 //!
 //! Integers are little-endian; byte strings are a u32 length then the bytes. A frame on a socket is a u32 length then
-//! that many bytes.
+//! that many bytes, read against a caller-chosen bound and buffered only as the bytes arrive.
 
 use crate::api::{Leaf, RawSig};
 use rec_aggregation::EthereumClaims;
@@ -10,8 +10,15 @@ use signatures::lean_sphincs::{
 };
 use std::io::{self, Read, Write};
 
-/// The largest frame either side accepts: a step's inputs at the most permitted leaves stay far below it.
-pub const MAX_FRAME: usize = 1 << 31;
+/// The largest frame accepted before a peer has authenticated (handshake and control messages).
+pub const MAX_CONTROL_FRAME: usize = 64 << 10;
+
+/// The largest authenticated frame: a task of `MAX_INNER_PROOFS_PER_STEP` leaves at the library's 8 MiB witness bound,
+/// with its signatures, or one proof and its claims, stays below it.
+pub const MAX_DATA_FRAME: usize = 256 << 20;
+
+/// Bytes read at a time, so a claimed length never allocates more than has arrived.
+const CHUNK: usize = 1 << 20;
 
 #[derive(Default)]
 pub struct Writer {
@@ -118,18 +125,25 @@ pub fn write_frame(w: &mut impl Write, payload: &[u8]) -> io::Result<()> {
     w.flush()
 }
 
-pub fn read_frame(r: &mut impl Read) -> io::Result<Vec<u8>> {
+/// Reads one frame of at most `max` bytes. A larger claimed length fails before any payload is read, and the buffer
+/// grows a chunk at a time, so a peer that claims more than it sends costs at most one chunk.
+pub fn read_frame(r: &mut impl Read, max: usize) -> io::Result<Vec<u8>> {
     let mut len = [0; 4];
     r.read_exact(&mut len)?;
     let len = u32::from_le_bytes(len) as usize;
-    if len > MAX_FRAME {
+    if len > max {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "frame too large",
         ));
     }
-    let mut buf = vec![0; len];
-    r.read_exact(&mut buf)?;
+    let mut buf = Vec::with_capacity(len.min(CHUNK));
+    while buf.len() < len {
+        let start = buf.len();
+        let step = (len - start).min(CHUNK);
+        buf.resize(start + step, 0);
+        r.read_exact(&mut buf[start..])?;
+    }
     Ok(buf)
 }
 
@@ -233,7 +247,8 @@ mod tests {
         put_claims(&mut w, &claims);
         let mut socket = Vec::new();
         write_frame(&mut socket, &w.buf).unwrap();
-        let frame = read_frame(&mut socket.as_slice()).unwrap();
+        assert!(read_frame(&mut socket.as_slice(), w.buf.len() - 1).is_err());
+        let frame = read_frame(&mut socket.as_slice(), MAX_DATA_FRAME).unwrap();
         let mut r = Reader::new(&frame);
         assert_eq!(
             (r.u64().unwrap(), r.f64().unwrap(), r.str().unwrap()),
@@ -249,6 +264,13 @@ mod tests {
         let mut w = Writer::default();
         w.u32(u32::MAX);
         assert!(get_leaf(&mut Reader::new(&w.buf)).is_err());
-        assert!(read_frame(&mut [0xff, 0xff, 0xff, 0xff].as_slice()).is_err());
+        // A length over the bound fails at once; one under it that the peer never sends fails after one chunk.
+        assert!(read_frame(&mut [0xff, 0xff, 0xff, 0xff].as_slice(), MAX_DATA_FRAME).is_err());
+        let mut claimed = ((MAX_DATA_FRAME - 1) as u32).to_le_bytes().to_vec();
+        claimed.extend([7; 10]);
+        let err = read_frame(&mut claimed.as_slice(), MAX_DATA_FRAME).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        let control = (MAX_CONTROL_FRAME as u32 + 1).to_le_bytes();
+        assert!(read_frame(&mut control.as_slice(), MAX_CONTROL_FRAME).is_err());
     }
 }

@@ -14,7 +14,6 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
-git config --global --add safe.directory "*" 2>/dev/null || true
 scenarios=smoke out= timeout_min=170 workers= threads= mem= docker=
 while [ $# -gt 0 ]; do
   case $1 in
@@ -53,7 +52,7 @@ fi
   echo "== memory"; (free -g 2>/dev/null || sysctl -n hw.memsize)
   echo "== load"; (cat /proc/loadavg 2>/dev/null || sysctl -n vm.loadavg)
   echo "== rustc"; rustc -vV
-  echo "== suite"; git -C "$here" rev-parse HEAD 2>/dev/null || true
+  echo "== suite"; git -c safe.directory="$(cd "$here/../../.." && pwd)" -C "$here" rev-parse HEAD 2>/dev/null || true
 } > "$out/host.txt" 2>&1
 cat "$out/host.txt"
 

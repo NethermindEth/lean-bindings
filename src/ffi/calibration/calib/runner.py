@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shlex
 import socket
 import statistics
@@ -26,11 +27,28 @@ class Runner:
         self.quiet = cfg.get("quiet", {"max_load1": 5, "timeout_s": 1800})
         os.makedirs(os.path.join(out, "logs"), exist_ok=True)
         self.jsonl = open(os.path.join(out, "runs.jsonl"), "a")
+        # The run key authenticates every coordinator/worker frame. It lives only in this process's memory and the
+        # children's environment, and in a private temporary file for remote launches; never in logs or results.
+        self.token = secrets.token_hex(32)
+        self.token_file = None
 
     def env(self, threads: int | None = None) -> dict:
         e = dict(os.environ)
         e["LEANVM_NUM_THREADS"] = str(threads or self.cfg["threads_per_worker"])
+        e["CALIB_TOKEN"] = self.token
         return e
+
+    def token_path(self) -> str:
+        if self.token_file is None:
+            import atexit
+            import tempfile
+            fd, path = tempfile.mkstemp(prefix="calib-token-")
+            os.fchmod(fd, 0o600)
+            os.write(fd, self.token.encode())
+            os.close(fd)
+            atexit.register(lambda: os.path.exists(path) and os.unlink(path))
+            self.token_file = path
+        return self.token_file
 
     def gate(self) -> dict:
         return host.wait_quiet(self.quiet.get("max_load1", 5), self.quiet.get("timeout_s", 1800))
@@ -95,7 +113,8 @@ class Runner:
             for i, addr in enumerate(w["hosts"]):
                 if w.get("launch"):
                     hostname, port = addr.rsplit(":", 1)
-                    cmd = w["launch"].format(host=hostname, port=port, threads=self.cfg["threads_per_worker"], index=i)
+                    cmd = w["launch"].format(host=hostname, port=port, threads=self.cfg["threads_per_worker"], index=i,
+                                             token_file=self.token_path())
                     procs.append(subprocess.Popen(shlex.split(cmd), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
             addrs = list(w["hosts"])
         else:

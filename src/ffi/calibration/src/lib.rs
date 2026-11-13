@@ -4,6 +4,7 @@
 //! workers (`calib-coord`, `calib-worker`); `calib.py` turns the measurements into constants and checks them.
 
 pub mod api;
+pub mod channel;
 pub mod inputs;
 pub mod json;
 pub mod proto;

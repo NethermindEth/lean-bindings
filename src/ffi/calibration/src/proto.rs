@@ -16,7 +16,29 @@ pub const DONE: u8 = 4;
 pub const FETCH: u8 = 5;
 pub const PROOF: u8 = 6;
 pub const RESET: u8 = 7;
-pub const SHUTDOWN: u8 = 8;
+
+/// Whether a task may fetch a child from `addr`: only this worker itself or a worker the coordinator listed.
+pub fn child_allowed(addr: &str, me: &str, peers: &[String]) -> bool {
+    addr == me || peers.iter().any(|p| p == addr)
+}
+
+/// HELLO: the coordinator's worker list, which bounds where tasks may fetch from.
+pub fn encode_hello(peers: &[String]) -> Vec<u8> {
+    let mut w = Writer::default();
+    w.u8(HELLO).u32(peers.len() as u32);
+    for p in peers {
+        w.str(p);
+    }
+    w.buf
+}
+
+/// Decodes a HELLO frame after its tag byte.
+pub fn decode_hello(r: &mut Reader) -> io::Result<Vec<String>> {
+    let n = r.count(4)?;
+    let peers = (0..n).map(|_| r.str()).collect::<io::Result<_>>()?;
+    r.end()?;
+    Ok(peers)
+}
 
 pub struct Child {
     pub id: u64,
@@ -160,6 +182,19 @@ pub fn decode_done(r: &mut Reader) -> io::Result<Done> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn children_come_only_from_listed_workers() {
+        let peers = vec!["10.0.0.1:47100".to_string(), "10.0.0.2:47100".to_string()];
+        assert!(child_allowed("10.0.0.2:47100", "10.0.0.1:47100", &peers));
+        assert!(child_allowed("127.0.0.1:1", "127.0.0.1:1", &[]));
+        assert!(!child_allowed("10.0.0.9:47100", "10.0.0.1:47100", &peers));
+        assert!(!child_allowed("10.0.0.2:4710", "10.0.0.1:47100", &peers));
+        let hello = encode_hello(&peers);
+        let mut r = Reader::new(&hello);
+        assert_eq!(r.u8().unwrap(), HELLO);
+        assert_eq!(decode_hello(&mut r).unwrap(), peers);
+    }
 
     #[test]
     fn tasks_and_results_round_trip() {

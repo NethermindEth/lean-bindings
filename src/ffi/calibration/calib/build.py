@@ -22,13 +22,13 @@ BINARIES = ("calib-node", "calib-worker", "calib-coord")
 
 
 def _git(*args: str) -> str:
-    return subprocess.run(["git", "-C", REPO, *args], check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["git", "-c", f"safe.directory={REPO}", "-C", REPO, *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
 def _has(ref: str, pattern: str, path: str) -> bool:
     if ref == ".":
         return subprocess.run(["grep", "-rqF", pattern, os.path.join(REPO, path)]).returncode == 0
-    return subprocess.run(["git", "-C", REPO, "grep", "-qF", pattern, ref, "--", path]).returncode == 0
+    return subprocess.run(["git", "-c", f"safe.directory={REPO}", "-C", REPO, "grep", "-qF", pattern, ref, "--", path]).returncode == 0
 
 
 def detect(ref: str) -> list[str]:
@@ -43,10 +43,10 @@ def detect(ref: str) -> list[str]:
 def build(ref: str, out_dir: str, features: list[str] | None = None, cache: str | None = None,
           log=print) -> dict:
     """Builds into `out_dir`/bin/<label>; returns {label, ref, sha, features, bin}."""
-    if ref.startswith("origin/") and subprocess.run(["git", "-C", REPO, "rev-parse", "-q", "--verify", ref],
+    if ref.startswith("origin/") and subprocess.run(["git", "-c", f"safe.directory={REPO}", "-C", REPO, "rev-parse", "-q", "--verify", ref],
                                                     capture_output=True).returncode != 0:
         branch = ref[len("origin/"):]
-        subprocess.run(["git", "-C", REPO, "fetch", "-q", "origin", f"{branch}:refs/remotes/{ref}"], check=True)
+        subprocess.run(["git", "-c", f"safe.directory={REPO}", "-C", REPO, "fetch", "-q", "origin", f"{branch}:refs/remotes/{ref}"], check=True)
     sha = _git("rev-parse", "HEAD" if ref == "." else ref)
     feats = detect(ref) if features is None else features
     label = f"{sha[:10]}{'-' + '-'.join(feats) if feats else ''}"
@@ -62,7 +62,7 @@ def build(ref: str, out_dir: str, features: list[str] | None = None, cache: str 
         ffi = os.path.join(root, "src", "ffi")
         if not os.path.exists(os.path.join(ffi, "Cargo.toml")):
             os.makedirs(root, exist_ok=True)
-            archive = subprocess.run(["git", "-C", REPO, "archive", sha, "src/ffi"], check=True, capture_output=True).stdout
+            archive = subprocess.run(["git", "-c", f"safe.directory={REPO}", "-C", REPO, "archive", sha, "src/ffi"], check=True, capture_output=True).stdout
             subprocess.run(["tar", "-x", "-C", root], input=archive, check=True)
         target = os.path.join(ffi, "calibration")
         shutil.rmtree(target, ignore_errors=True)

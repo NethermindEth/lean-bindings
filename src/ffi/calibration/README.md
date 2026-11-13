@@ -65,10 +65,13 @@ See `configs/reference.example.json`. The keys:
 
 ### Remote workers
 
-Copy `calib-worker` (from `DIR/bin/<label>/`) to each host and either start it yourself
-(`LEANVM_NUM_THREADS=T calib-worker 0.0.0.0:47100 HOST:47100`) or give a `launch` template. Workers fetch child proofs
-from each other directly over TCP, so their addresses must be mutually reachable. The protocol is unauthenticated:
-use a private network.
+Copy `calib-worker` (from `DIR/bin/<label>/`) to each host and give a `launch` template; `{token_file}` is a private
+temporary file holding the run key, which the template copies to the host (see `configs/reference.example.json`).
+Workers listen on loopback unless started with `--remote`, and fetch child proofs from each other directly over TCP,
+so their addresses must be mutually reachable. Every connection proves knowledge of the per-run key (a
+challenge-response, then a Keccak MAC with a sequence number on every frame); frames are bounded (64 KiB before
+authentication, 256 MiB after) and buffered only as they arrive; a worker fetches children only from the workers the
+coordinator listed and accepts at most 64 connections. Traffic is not encrypted: use a private network.
 
 ## EVM execution
 
