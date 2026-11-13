@@ -17,11 +17,12 @@
 #
 # --arch refuses to run on another architecture. --yield-to-manual-runs exits 0 without running when a manual
 # (workflow_dispatch) run of the repository's benchmark workflows is waiting for, or running on, LABEL; it reads
-# GH_TOKEN. --lean-bindings-ref is recorded with the hardware; the caller checks that revision out.
+# GH_TOKEN. It refuses (exit 4) with less than --min-free-gb (default 20) free for the output or docker's images, and
+# removes an image it pulled. --lean-bindings-ref is recorded with the hardware; the caller checks that revision out.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
-scenarios=smoke out= timeout_min=170 workers= threads= mem= docker= arch= lb_ref= yield_repo= runner_label=
+scenarios=smoke out= timeout_min=170 workers= threads= mem= docker= arch= lb_ref= yield_repo= runner_label= min_free_gb=20
 while [ $# -gt 0 ]; do
   case $1 in
     --scenarios) scenarios=$2; shift 2 ;;
@@ -31,6 +32,7 @@ while [ $# -gt 0 ]; do
     --lean-bindings-ref) lb_ref=$2; shift 2 ;;
     --yield-to-manual-runs) yield_repo=$2; shift 2 ;;
     --runner-label) runner_label=$2; shift 2 ;;
+    --min-free-gb) min_free_gb=$2; shift 2 ;;
     --workers) workers=$2; shift 2 ;;
     --threads) threads=$2; shift 2 ;;
     --memory-per-worker-gb) mem=$2; shift 2 ;;
@@ -54,11 +56,24 @@ if [ -n "$yield_repo" ]; then
   fi
 fi
 
+{ uname -a; nproc 2>/dev/null; lscpu 2>/dev/null; free -g 2>/dev/null; df -h "$out"; } > "$out/machine.txt" 2>&1 || true
+
+free_gb() { df -Pk "$1" 2>/dev/null | awk 'NR==2 {print int($4 / 1048576)}'; }
+need_free() {
+  local f; f=$(free_gb "$1")
+  [ -z "$f" ] || [ "$f" -ge "$min_free_gb" ] || { echo "only $f GB free on $1 ($2); need $min_free_gb" >&2; exit 4; }
+}
+need_free "$out" "output, builds and caches"
+
 if [ -n "$docker" ] || ! command -v cargo >/dev/null; then
   image=${docker:-rust:1.99.0-bookworm}
   repo=$(cd "$here/../../.." && pwd)
   name="lean-calibration-$$"
-  trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+  need_free "$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)" "docker images"
+  # An image this run pulls is removed again, so the machine keeps only what it had.
+  pulled=
+  docker image inspect "$image" >/dev/null 2>&1 || pulled=1
+  trap 'docker rm -f "$name" >/dev/null 2>&1 || true; [ -z "$pulled" ] || docker rmi "$image" >/dev/null 2>&1 || true' EXIT
   # The library and cargo caches live under the mounted output so nothing outlives the caller's directory.
   docker run --rm --name "$name" --label lean-calibration=1 -v "$repo":/repo -v "$out":/out \
     -w /repo/src/ffi/calibration -e HOME=/out/.home -e CARGO_HOME=/usr/local/cargo \
@@ -67,8 +82,8 @@ if [ -n "$docker" ] || ! command -v cargo >/dev/null; then
      ci/run-calibration.sh --scenarios '$scenarios' --out /out --timeout-minutes $timeout_min \
        ${lb_ref:+--lean-bindings-ref '$lb_ref'} \
        ${workers:+--workers $workers} ${threads:+--threads $threads} ${mem:+--memory-per-worker-gb $mem}; \
-     rc=\$?; chown -R \$HOST_UID:\$HOST_GID /out /repo/src/ffi/target 2>/dev/null; exit \$rc"
-  exit $?
+     rc=\$?; chown -R \$HOST_UID:\$HOST_GID /out /repo/src/ffi/target 2>/dev/null; exit \$rc" && rc=0 || rc=$?
+  exit $rc
 fi
 
 {
