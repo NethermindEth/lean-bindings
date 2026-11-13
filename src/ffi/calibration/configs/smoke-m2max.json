@@ -1,0 +1,23 @@
+{
+  "label": "smoke: 2 local workers on an M2 Max (not a reference machine)",
+  "key": "flat",
+  "lib_ref": ".",
+  "batch_lib_ref": "origin/feature/eip8288-batch-leaves",
+  "gas_limits": [60000000],
+  "builder_budget_s": 4.0,
+  "validator_budget_s": 2.0,
+  "reference_workers": 2,
+  "workers": {"mode": "local", "count": 2, "base_port": 47300},
+  "threads_per_worker": 5,
+  "memory_per_worker_gb": 6,
+  "margin": 1.5,
+  "fanin": 4,
+  "sigs_per_node": 16,
+  "bounds": {"code_log": 11, "trace_log": 30, "inner_log_inv_rate": 1, "claims": 256, "max_inner_proofs_per_step": 16},
+  "preflight": {"mode": "scale", "usable_fraction": 0.6},
+  "reps": 3,
+  "max_iterations": 2,
+  "evm_fraction": 0.5,
+  "tx": {"signature_gas": 4040, "frames_per_tx": 1},
+  "quiet": {"max_load1": 5, "timeout_s": 3600}
+}
