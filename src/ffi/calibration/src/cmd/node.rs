@@ -2,8 +2,9 @@
 //!
 //! ```text
 //! calib-node info
-//! calib-node pad CODE_LOG
-//! calib-node leaf OUT PAD ITERS RATE CLAIMS SEED     prove a generic leaf (untimed for the block) into a corpus file
+//! calib-node pad CODE_LOG [SEED]
+//! calib-node leaf OUT CODE_LOG ITERS RATE CLAIMS SEED  prove a generic leaf of the most instructions within 2^CODE_LOG
+//!                                                      (untimed for the block) into a corpus file
 //! calib-node sigs OUT COUNT SEED                       sign COUNT messages into a corpus file
 //! calib-node cell sigs SIGFILE N                       one step verifying N signatures
 //! calib-node cell leaves GUEST RETAIN LEAF...         one step verifying these leaves; GUEST base|batched; RETAIN
@@ -137,14 +138,17 @@ fn main() {
     let a = |i: usize| args.get(i).map(String::as_str).unwrap_or_else(|| usage());
     match a(0) {
         "info" => println!("{}", capabilities()),
-        "pad" => match inputs::pad_for_code_log(num(a(1))) {
-            Some(p) => println!("{p}"),
-            None => std::process::exit(1),
-        },
+        "pad" => {
+            match inputs::pad_for_code_log(num(a(1)), args.get(2).map_or(0, |s| num(s)) as u64) {
+                Some(p) => println!("{p}"),
+                None => std::process::exit(1),
+            }
+        }
         "leaf" => {
             leanvm_core::init_prover();
-            let (out, pad, iters, rate, claims, seed) =
+            let (out, code_log, iters, rate, claims, seed) =
                 (a(1), num(a(2)), num(a(3)), num(a(4)), num(a(5)), num(a(6)));
+            let pad = inputs::pad_for_code_log(code_log, seed as u64).unwrap_or_else(|| usage());
             let program = inputs::compile_program(pad, seed as u64);
             let p = inputs::prove_leaf(&program, iters, rate, claims, seed as u64);
             inputs::write_leaf_file(out, &p.leaf).expect("writes the leaf");

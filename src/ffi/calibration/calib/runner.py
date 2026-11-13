@@ -54,14 +54,14 @@ class Runner:
         return host.wait_quiet(self.quiet.get("max_load1", 5), self.quiet.get("timeout_s", 1800))
 
     # ---- corpus -------------------------------------------------------------------------------------------------
-    def leaf(self, build: dict, pad: int, iters: int, rate: int, claims: int, seed: int) -> tuple[str, dict]:
+    def leaf(self, build: dict, code_log: int, iters: int, rate: int, claims: int, seed: int) -> tuple[str, dict]:
         d = os.path.join(self.out, "corpus", build["label"])
         os.makedirs(d, exist_ok=True)
-        path = os.path.join(d, f"leaf-p{pad}-i{iters}-r{rate}-c{claims}-s{seed}.bin")
+        path = os.path.join(d, f"leaf-k{code_log}-i{iters}-r{rate}-c{claims}-s{seed}.bin")
         meta = path + ".json"
         if os.path.exists(path) and os.path.exists(meta):
             return path, json.load(open(meta))
-        p = subprocess.run([os.path.join(build["bin"], "calib-node"), "leaf", path, str(pad), str(iters), str(rate),
+        p = subprocess.run([os.path.join(build["bin"], "calib-node"), "leaf", path, str(code_log), str(iters), str(rate),
                             str(claims), str(seed)], capture_output=True, text=True, env=self.env())
         res = result_line(p.stdout)
         if p.returncode != 0 or res is None:

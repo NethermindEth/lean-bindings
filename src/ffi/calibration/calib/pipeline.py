@@ -86,33 +86,38 @@ def _cell_time(cells: dict, name: str) -> float | None:
     return c.get("prove_s") if c.get("status") == "ok" else None
 
 
+def slope(cells: dict, small: str, large: str, dn: float) -> tuple[float | None, str]:
+    """Machine-seconds per unit between two cells `dn` units apart. Small slopes drown in timing noise, so the time slope
+    is floored by the cycle slope at the larger cell's seconds per cycle; the label says which one was used."""
+    a, b = cells.get(small, {}), cells.get(large, {})
+    if a.get("status") != "ok" or b.get("status") != "ok":
+        return None, "not measured"
+    by_time = (b["prove_s"] - a["prove_s"]) / dn
+    by_cycles = (b["cycles"] - a["cycles"]) / dn * b["prove_s"] / b["cycles"]
+    if by_time >= by_cycles:
+        return max(0.0, by_time), "measured (time slope)"
+    return max(0.0, by_cycles), "measured cycles x measured s/cycle (time slope within noise)"
+
+
 def marginals(cells: dict, cfg: dict) -> tuple[gasmath.Marginals, dict]:
     L = cfg["sigs_per_node"]
     fan = cfg["fanin"]
     mi = cfg["bounds"]["max_inner_proofs_per_step"]
+    C = cfg["bounds"]["claims"]
     labels = {}
     sig_pts = [(n, _cell_time(cells, f"sigs-{n}")) for n in sorted({max(1, L // 4), max(2, L // 2), L})]
     _, sig = gasmath.fit_line([(n, t) for n, t in sig_pts if t is not None])
     m_pts = [(c, _cell_time(cells, f"merge-{c}x1")) for c in sorted({2, fan, mi})]
     m_fixed, m_child = gasmath.fit_line([(c, t) for c, t in m_pts if t is not None])
-    t1, tL = _cell_time(cells, "merge-2x1"), _cell_time(cells, f"merge-2x{L}")
-    carry = max(0.0, (tL - t1) / (2 * (L - 1))) if None not in (t1, tL) and L > 1 else 0.0
-    labels["carry_sig"] = "measured" if None not in (t1, tL) else "not measured (0)"
+    labels["sig"] = labels["merge_child"] = "measured (least-squares time slope)"
+    carry, labels["carry_sig"] = slope(cells, "merge-2x1", f"merge-2x{L}", 2 * (L - 1))
     leaf = _cell_time(cells, "generic-leaf")
-    m = gasmath.Marginals(sig=sig, merge_child=m_child, merge_fixed=m_fixed, carry_sig=carry, generic_leaf_step=leaf)
-    C = cfg["bounds"]["claims"]
-    b1, bC = _cell_time(cells, "batch-leaf-r1"), _cell_time(cells, f"batch-leaf-r{C}")
-    if None not in (b1, bC):
-        m.claim_in_leaf = max(0.0, (bC - b1) / (C - 1))
-    r1, rC = _cell_time(cells, "mergebatch-r1"), _cell_time(cells, f"mergebatch-r{C}")
-    if None not in (r1, rC):
-        m.carry_record = max(0.0, (rC - r1) / (2 * (C - 1)))
-    f1, fC = _cell_time(cells, "finalize-r1"), _cell_time(cells, f"finalize-r{C}")
-    if None not in (f1, fC):
-        m.finalize_record = max(0.0, (fC - f1) / (C - 1))
-        m.finalize_fixed = f1 - (r1 or 0) / 2 if r1 else None
-    labels["claim"] = "measured" if m.claim_in_leaf is not None and m.carry_record is not None and m.finalize_record is not None \
-        else "not measured (no batch-pricing build or cells failed)"
+    labels["generic_leaf_step"] = "measured"
+    m = gasmath.Marginals(sig=sig, merge_child=m_child, merge_fixed=m_fixed, carry_sig=carry or 0.0,
+                          generic_leaf_step=leaf)
+    m.claim_in_leaf, labels["claim_in_leaf"] = slope(cells, "batch-leaf-r1", f"batch-leaf-r{C}", C - 1)
+    m.carry_record, labels["carry_record"] = slope(cells, "mergebatch-r1", f"mergebatch-r{C}", 2 * (C - 1))
+    m.finalize_record, labels["finalize_record"] = slope(cells, "finalize-r1", f"finalize-r{C}", C - 1)
     m.labels = labels
     return m, labels
 
@@ -160,13 +165,11 @@ class Calibration:
                         f"{k} build {b['label']} enforces MAX_INNER_PROOFS_PER_STEP = {lib} < {cfg['bounds']['max_inner_proofs_per_step']}: "
                         f"its blocks are planned within {lib}")
         self.res["capabilities"] = self.caps
-        self.pad = int(subprocess.run([os.path.join(base["bin"], "calib-node"), "pad", str(self.res["preflight"]["code_log_used"])],
-                                      capture_output=True, text=True, check=True).stdout)
         self.save()
 
     def max_leaf(self, build: dict, seed: int, claims: int = 1) -> str:
         pre = self.res["preflight"]
-        path, meta = self.run.leaf(build, self.pad, pre["iters"], self.cfg["bounds"]["inner_log_inv_rate"], claims, seed)
+        path, meta = self.run.leaf(build, pre["code_log_used"], pre["iters"], self.cfg["bounds"]["inner_log_inv_rate"], claims, seed)
         self.res.setdefault("leaves", {})[os.path.basename(path)] = meta
         return path
 

@@ -30,10 +30,11 @@ pub fn compile_program(pad: usize, seed: u64) -> Program {
     compile(&parse(&program_source(pad, seed)).expect("the generated program parses"))
 }
 
-/// The largest padding whose program, support code included, still has at most `2^code_log` instructions: the
-/// most expensive program of that padded size. `None` if even no padding exceeds it.
-pub fn pad_for_code_log(code_log: usize) -> Option<usize> {
-    let fits = |pad: usize| compile_program(pad, 0).code_len() <= 1 << code_log;
+/// The largest padding whose program for `seed`, support code included, still has at most `2^code_log` instructions:
+/// the most expensive program of that padded size. Per seed, since the embedded constants change the instruction
+/// count. `None` if even no padding exceeds it.
+pub fn pad_for_code_log(code_log: usize, seed: u64) -> Option<usize> {
+    let fits = |pad: usize| compile_program(pad, seed).code_len() <= 1 << code_log;
     if !fits(0) {
         return None;
     }
@@ -192,9 +193,11 @@ mod tests {
             rec_aggregation::generic_verification_key(&table(&a)),
             rec_aggregation::generic_verification_key(&table(&b))
         );
-        let pad = pad_for_code_log(8).expect("2^8 fits the loop");
-        assert!(compile_program(pad, 0).code_len() <= 256);
-        assert!(compile_program(pad + 1, 0).code_len() > 256);
+        for seed in [0, 1000, 40_000] {
+            let pad = pad_for_code_log(8, seed).expect("2^8 fits the loop");
+            assert!(compile_program(pad, seed).code_len() <= 256);
+            assert!(compile_program(pad + 1, seed).code_len() > 256);
+        }
     }
 
     #[test]
