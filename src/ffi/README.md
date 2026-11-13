@@ -31,16 +31,18 @@ fails if the backend is unavailable. Verification fails closed; proving requires
 
 `cargo run --release --locked --example fixtures -- <directory>`, run from `src/ffi`, produces genuine test
 signatures and proofs and prints the pinned recursive verification key; `fixtures --sign-message <hex> <file>` signs
-one message, and `fixtures --prove-stark <hex> <file>` proves a leanSTARK dependency on it, the singleton batch leaf
-`[hex]`. `cargo run --release --locked --example batch_leaves [n]` proves an `n`-claim batch leaf with the
+one message, and `fixtures --prove-stark <hex> <file>` proves a leanSTARK dependency on it as guest 0 takes one, on the
+bare message. The vectors hold a direct leanSTARK proof for each guest: `stark-proof.bin` on the bare claim and
+`stark-claim-proof.bin` on the singleton batch leaf `[claim]`. `cargo run --release --locked --example batch_leaves [n]` proves an `n`-claim batch leaf with the
 `examples/batch_leaves/batch.py` template and aggregates it as `n` batch claims and the leaf's payment. **Build Lean** packages the vectors,
 this tool and the `lean_startup_stub` example as opt-in test assets of `Nethermind.Crypto.Lean`.
 
-The C ABI is version 15, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
-`nlean_limits`, `nlean_aggregated_vk`, `nlean_verify_recursive` and `nlean_prove_recursive` take a leading `u32` guest:
+The C ABI is version 16, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
+`nlean_limits`, `nlean_aggregated_vk`, `nlean_verify_leanstark`, `nlean_verify_recursive` and `nlean_prove_recursive` take a
+leading `u32` guest:
 0 for EIP-8288's, 1 for the one with ethereum/EIPs#12664 batch pricing (see below); any other value fails, and the key
 passed must be that guest's. Guest 0 is the ABI 12 package's guest and host unchanged (`crates/rec_aggregation_base`),
-so its key, limits and aggregation input encoding are that package's.
+so its key, limits, direct leanSTARK statement (the bare claim) and aggregation input encoding are that package's.
 `nlean_limits` writes seven u32 values (proof bytes, dependencies, inner proofs per step,
 SPHINCS witness bytes, aggregation input bytes, then leanSTARK dependencies per list for guest 0 or claims per batch leaf
 for guest 1, then leanSTARK instructions); startup checks these against the managed protocol bounds before accepting work.
@@ -154,7 +156,7 @@ EIP, with the pinned guest's generic leanVM CPU proof as its leanSTARK profile:
 * The guest checks every entry of the selected list and of each child list, discarded entries
   included, against its run. Both schemes share the 256-dependency list bound; there is no separate leanSTARK cap.
 
-Startup checks ABI 14, the pinned keys and the seven bounds together. New devnets require fresh
+Startup checks the ABI version, the pinned keys and the seven bounds together. New devnets require fresh
 chain and database namespaces.
 
 The latest companion specification has no block dependency quota: blocks are bounded by gas, mode-0 wrappers by `MAX_LEANSIG_DEPS_PER_WRAPPER`, `MAX_LEANSTARK_DEPS_PER_WRAPPER` and `MAX_WRAPPER_BYTES`, and mode-1 wrappers by `MAX_WRAPPER_BYTES` and the dependency-list limit of the circuit behind `AGGREGATED_VK`, which EIP-8288 fixes from benchmarks before activation. This prototype guest's limit is 256 dependencies; a received mode-1 wrapper over it is invalid and discarded before verification, without penalizing its sender. Blocks have no such limit in the draft, so this key cannot prove every block the draft permits and this prototype is not full-capacity conformance. Raising the bound changes the guest and so `AGGREGATED_VK`. Local inability to prove or retain a set is not an inclusion-list omission excuse. Full activation requires a verifier and proof format supporting every set the fork's gas rules permit, with the complete construction, including recursive merges and discards, benchmarked against the slot deadline.

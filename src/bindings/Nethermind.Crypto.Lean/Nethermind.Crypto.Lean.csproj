@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <Description>Native EIP-8288 Lean backend (libnethermind_lean, ABI 14) for linux-x64 (x86-64-v3 + PCLMULQDQ) and linux-arm64 (AES/PMULL), with opt-in test assets (NethermindCryptoLeanTestAssets=true).</Description>
+    <Description>Native EIP-8288 Lean backend (libnethermind_lean, ABI 16) for linux-x64 (x86-64-v3 + PCLMULQDQ) and linux-arm64 (AES/PMULL), with opt-in test assets (NethermindCryptoLeanTestAssets=true).</Description>
     <PackageId>Nethermind.Crypto.Lean</PackageId>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/nethermindeth/lean-bindings</PackageProjectUrl>

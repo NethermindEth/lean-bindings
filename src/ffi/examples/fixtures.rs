@@ -17,10 +17,10 @@ fn main() {
         }
         let output = arguments.next().expect("witness output file");
         assert!(arguments.next().is_none(), "unexpected fixture arguments");
-        // `key ‖ witness`: a NiceTry v2 signature, or a leanSTARK proof of the accept-all program on the message's
-        // singleton batch statement.
+        // `key ‖ witness`: a NiceTry v2 signature, or a leanSTARK proof of the accept-all program on the message itself,
+        // the statement EIP-8288's guest takes.
         let output_bytes = if directory == "--prove-stark" {
-            let (witness, key) = prove_stark(ANY_INPUT_PROGRAM, &batch_hash(&[message])).unwrap();
+            let (witness, key) = prove_stark(ANY_INPUT_PROGRAM, &message).unwrap();
             [&key[..], &witness[..]].concat()
         } else {
             let (sk, pk) = key_gen_from_seed([42; 32]);
@@ -62,10 +62,15 @@ fn main() {
     }
     save("sphincs-multi-keys.bin", &multi_keys);
     let data_hash = [9; 32];
-    let (witness, key) = prove_stark(ANY_INPUT_PROGRAM, &batch_hash(&[data_hash])).unwrap();
+    // Guest 0 takes a proof of the bare claim, guest 1 one of `get_claim_hash(claim)`; both under one key.
+    let (witness, key) = prove_stark(ANY_INPUT_PROGRAM, &data_hash).unwrap();
     save("stark-key.bin", &key);
     save("stark-message.bin", &data_hash);
     save("stark-proof.bin", &witness);
+    let (claim_witness, claim_key) =
+        prove_stark(ANY_INPUT_PROGRAM, &batch_hash(&[data_hash])).unwrap();
+    assert_eq!(claim_key, key);
+    save("stark-claim-proof.bin", &claim_witness);
     // A two-claim batch leaf and each claim's singleton proof, all under the key above.
     let mut claims = [keccak(b"batch claim 0"), keccak(b"batch claim 1")];
     claims.sort();

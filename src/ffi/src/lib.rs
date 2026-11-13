@@ -692,7 +692,7 @@ fn checked(f: impl FnOnce() -> Result<bool, ()>) -> i32 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn nlean_abi_version() -> u32 {
-    15
+    16
 }
 /// Copies up to `len` bytes of the calling thread's last contained panic message into `out` and returns its full
 /// length; empty unless that thread's latest `checked` call returned -1.
@@ -773,21 +773,27 @@ pub unsafe extern "C" fn nlean_verify_leansphincs(
         ))
     })
 }
+/// Verifies a direct leanSTARK witness as `guest` ([`guest_of`]) takes one: EIP-8288's guest on the bare claim, the
+/// batch-pricing guest on `get_claim_hash(claim)`.
+///
 /// # Safety
 /// Input pointers must reference their declared lengths; output pointers must be writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn nlean_verify_leanstark(
+    guest: u32,
     data: *const u8,
     vk: *const u8,
     witness: *const u8,
     len: usize,
 ) -> i32 {
     checked(|| {
-        Ok(rec_aggregation::verify_generic(
-            unsafe { bytes(data, 32)? }.try_into().map_err(|_| ())?,
-            unsafe { bytes(vk, 32)? }.try_into().map_err(|_| ())?,
-            unsafe { bytes(witness, len)? },
-        ))
+        let data: &[u8; 32] = unsafe { bytes(data, 32)? }.try_into().map_err(|_| ())?;
+        let vk: &[u8; 32] = unsafe { bytes(vk, 32)? }.try_into().map_err(|_| ())?;
+        let witness = unsafe { bytes(witness, len)? };
+        Ok(match guest_of(guest)? {
+            Guest::Base => rec_aggregation_base::verify_generic(data, vk, witness),
+            Guest::Batched => rec_aggregation::verify_generic(data, vk, witness),
+        })
     })
 }
 /// Verifies a proof of `guest` ([`guest_of`]), whose key must be `vk`.
@@ -1006,7 +1012,7 @@ mod tests {
 
     #[test]
     fn exported_abi_and_limits() {
-        assert_eq!(nlean_abi_version(), 15);
+        assert_eq!(nlean_abi_version(), 16);
         let mut limits = [0u32; 7];
         assert_eq!(unsafe { nlean_limits(1, limits.as_mut_ptr(), 7) }, 1);
         assert_eq!(limits[2], 12, "MAX_INNER_PROOFS_PER_STEP");
@@ -1038,6 +1044,35 @@ mod tests {
             })
             .collect();
         assert_eq!(keys[0].as_slice(), base.as_slice());
+    }
+
+    /// A direct leanSTARK witness is checked as the named guest takes it: guest 0 on the bare claim, as the ABI 12
+    /// package did, and guest 1 on `get_claim_hash(claim)`, which rejects a proof of the bare claim.
+    #[test]
+    fn direct_leanstark_witnesses_follow_the_guest() {
+        let claim = keccak(b"direct claim");
+        let (bare, key) = prove_stark(ANY_INPUT_PROGRAM, &claim).unwrap();
+        let (wrapped, wrapped_key) = prove_stark(ANY_INPUT_PROGRAM, &batch_hash(&[claim])).unwrap();
+        assert_eq!(key, wrapped_key);
+        let verify = |guest: u32, witness: &[u8]| unsafe {
+            nlean_verify_leanstark(
+                guest,
+                claim.as_ptr(),
+                key.as_ptr(),
+                witness.as_ptr(),
+                witness.len(),
+            )
+        };
+        assert_eq!(
+            [
+                verify(0, &bare),
+                verify(0, &wrapped),
+                verify(1, &bare),
+                verify(1, &wrapped),
+                verify(2, &wrapped)
+            ],
+            [1, 0, 0, 1, 0]
+        );
     }
 
     /// EIP-8288 Test Cases 2 and 12, and ethereum/EIPs#12664: a batch leaf and singleton proofs under one key cover
