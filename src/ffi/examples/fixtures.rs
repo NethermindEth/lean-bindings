@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Demerzel Solutions Limited
 // SPDX-License-Identifier: MIT
 use nethermind_lean::{
-    ANY_INPUT_PROGRAM, aggregated_vk, batch_hash, keccak, prove_stark, verification_key,
+    ANY_INPUT_PROGRAM, abi_aggregated_vk, batch_hash, keccak, prove_stark, verification_key,
 };
 use rec_aggregation::Guest;
 use signatures::lean_sphincs::{key_gen_from_seed, sign};
@@ -81,7 +81,7 @@ fn main() {
         (Guest::Base, "aggregated-key.bin"),
         (Guest::Batched, "aggregated-batched-key.bin"),
     ] {
-        let key = aggregated_vk(guest);
+        let key = abi_aggregated_vk(guest);
         save(file, &key);
         println!(
             "AGGREGATED_VK {guest:?}={}",

@@ -3,6 +3,8 @@
 
 //! Pinned LeanVM verification and recursive aggregation of complete dependency sets.
 
+mod base;
+
 use rec_aggregation::{
     BATCHED_LEANSTARK_SCHEME, BatchLeaf, EthereumClaims, EthereumProof, Guest,
     LEANSTARK_LEAF_PAYMENT_SCHEME, MAX_CLAIMS_PER_BATCH_LEAF, MAX_GENERIC_BYTECODE_LOG,
@@ -61,6 +63,27 @@ pub fn keccak(bytes: &[u8]) -> [u8; 32] {
 
 pub fn aggregated_vk(guest: Guest) -> [u8; 32] {
     rec_aggregation::aggregated_vk(guest)
+}
+
+/// The key of the guest an ABI call names: guest 0 is the ABI 12 package's EIP-8288 guest ([`base`]), not this crate's
+/// `Guest::Base`.
+pub fn abi_aggregated_vk(guest: Guest) -> [u8; 32] {
+    match guest {
+        Guest::Base => base::aggregated_vk(),
+        Guest::Batched => aggregated_vk(guest),
+    }
+}
+fn abi_verify(guest: Guest, hash: &[u8; 32], proof: &[u8]) -> Result<(), ()> {
+    match guest {
+        Guest::Base => base::verify_aggregate(hash, proof),
+        Guest::Batched => verify_aggregate(guest, hash, proof),
+    }
+}
+fn abi_prove(guest: Guest, hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
+    match guest {
+        Guest::Base => base::prove_aggregate(hash, input),
+        Guest::Batched => prove_aggregate(guest, hash, input),
+    }
 }
 
 /// The aggregation program an ABI call names: 0 for EIP-8288's, 1 for the one with ethereum/EIPs#12664 batch pricing.
@@ -669,7 +692,7 @@ fn checked(f: impl FnOnce() -> Result<bool, ()>) -> i32 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn nlean_abi_version() -> u32 {
-    14
+    15
 }
 /// Copies up to `len` bytes of the calling thread's last contained panic message into `out` and returns its full
 /// length; empty unless that thread's latest `checked` call returned -1.
@@ -688,22 +711,29 @@ pub unsafe extern "C" fn nlean_last_error(out: *mut u8, len: usize) -> usize {
         message.len()
     })
 }
+/// Writes the seven limits of `guest` ([`guest_of`]): ABI 12's for EIP-8288's guest, whose sixth is its leanSTARK
+/// dependencies per list, and for the batch-pricing guest the claims per batch leaf in that place.
+///
 /// # Safety
 /// Output must hold seven writable u32 values.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nlean_limits(out: *mut u32, len: usize) -> i32 {
+pub unsafe extern "C" fn nlean_limits(guest: u32, out: *mut u32, len: usize) -> i32 {
     if out.is_null() || len != 7 {
         return 0;
     }
-    let limits = [
-        MAX_BYTES as u32,
-        MAX_DEPS as u32,
-        MAX_INNER_PROOFS_PER_STEP as u32,
-        (lean_sphincs::PUB_KEY_SIZE + lean_sphincs::SIG_SIZE) as u32,
-        MAX_INPUT_BYTES as u32,
-        MAX_CLAIMS_PER_BATCH_LEAF as u32,
-        1 << MAX_GENERIC_BYTECODE_LOG,
-    ];
+    let limits = match guest_of(guest) {
+        Ok(Guest::Base) => base::limits(),
+        Ok(Guest::Batched) => [
+            MAX_BYTES as u32,
+            MAX_DEPS as u32,
+            MAX_INNER_PROOFS_PER_STEP as u32,
+            (lean_sphincs::PUB_KEY_SIZE + lean_sphincs::SIG_SIZE) as u32,
+            MAX_INPUT_BYTES as u32,
+            MAX_CLAIMS_PER_BATCH_LEAF as u32,
+            1 << MAX_GENERIC_BYTECODE_LOG,
+        ],
+        Err(()) => return 0,
+    };
     unsafe {
         std::ptr::copy_nonoverlapping(limits.as_ptr(), out, limits.len());
     }
@@ -719,7 +749,7 @@ pub unsafe extern "C" fn nlean_aggregated_vk(guest: u32, out: *mut u8) -> i32 {
         return 0;
     }
     checked(|| {
-        let key = aggregated_vk(guest_of(guest)?);
+        let key = abi_aggregated_vk(guest_of(guest)?);
         unsafe {
             std::ptr::copy_nonoverlapping(key.as_ptr(), out, 32);
         }
@@ -775,11 +805,11 @@ pub unsafe extern "C" fn nlean_verify_recursive(
 ) -> i32 {
     checked(|| {
         let guest = guest_of(guest)?;
-        if unsafe { bytes(vk, vk_len)? } != aggregated_vk(guest) {
+        if unsafe { bytes(vk, vk_len)? } != abi_aggregated_vk(guest) {
             return Ok(false);
         }
         let expected = unsafe { bytes(hash, 32)? }.try_into().map_err(|_| ())?;
-        verify_aggregate(guest, expected, unsafe { bytes(proof, len)? })?;
+        abi_verify(guest, expected, unsafe { bytes(proof, len)? })?;
         Ok(true)
     })
 }
@@ -802,11 +832,11 @@ pub unsafe extern "C" fn nlean_prove_recursive(
         let guest = guest_of(guest)?;
         if out.is_null()
             || out_len.is_null()
-            || unsafe { bytes(vk, vk_len)? } != aggregated_vk(guest)
+            || unsafe { bytes(vk, vk_len)? } != abi_aggregated_vk(guest)
         {
             return Ok(false);
         }
-        let proof = prove_aggregate(
+        let proof = abi_prove(
             guest,
             unsafe { bytes(hash, 32)? }.try_into().map_err(|_| ())?,
             unsafe { bytes_with_limit(input, input_len, MAX_INPUT_BYTES)? },
@@ -976,21 +1006,38 @@ mod tests {
 
     #[test]
     fn exported_abi_and_limits() {
-        assert_eq!(nlean_abi_version(), 14);
+        assert_eq!(nlean_abi_version(), 15);
         let mut limits = [0u32; 7];
-        assert_eq!(unsafe { nlean_limits(limits.as_mut_ptr(), 7) }, 1);
+        assert_eq!(unsafe { nlean_limits(1, limits.as_mut_ptr(), 7) }, 1);
         assert_eq!(limits[2], 12, "MAX_INNER_PROOFS_PER_STEP");
         assert_eq!(limits[5], 256, "MAX_CLAIMS_PER_BATCH_LEAF");
         assert_eq!(limits[6], 2048, "leanSTARK instructions");
-        assert_eq!(unsafe { nlean_limits(limits.as_mut_ptr(), 6) }, 0);
+        assert_eq!(unsafe { nlean_limits(1, limits.as_mut_ptr(), 6) }, 0);
+        assert_eq!(unsafe { nlean_limits(2, limits.as_mut_ptr(), 7) }, 0);
+        // EIP-8288's guest keeps the ABI 12 package's limits.
+        let mut base = [0u32; 7];
+        assert_eq!(unsafe { nlean_limits(0, base.as_mut_ptr(), 7) }, 1);
+        assert_eq!(base, [8 << 20, 256, 16, base[3], 18 << 20, 16, 2048]);
         // One key per guest, and no third guest.
         let mut keys = [[0u8; 32]; 3];
         let verdicts = [0, 1, 2]
             .map(|guest| unsafe { nlean_aggregated_vk(guest, keys[guest as usize].as_mut_ptr()) });
         assert_eq!(verdicts, [1, 1, 0]);
-        assert_eq!(keys[0], aggregated_vk(BASE));
+        assert_eq!(keys[0], base::aggregated_vk());
         assert_eq!(keys[1], aggregated_vk(BATCHED));
         assert_ne!(keys[0], keys[1]);
+        // Guest 0 is EIP-8288's guest as the ABI 12 package pins it.
+        let base: Vec<u8> = (0..32)
+            .map(|i| {
+                u8::from_str_radix(
+                    &"f7cf74585d02043051f0575c23c6b441b0b08ac9e273f5e989c5984b8a4ac0e5"
+                        [2 * i..2 * i + 2],
+                    16,
+                )
+                .unwrap()
+            })
+            .collect();
+        assert_eq!(keys[0].as_slice(), base.as_slice());
     }
 
     /// EIP-8288 Test Cases 2 and 12, and ethereum/EIPs#12664: a batch leaf and singleton proofs under one key cover

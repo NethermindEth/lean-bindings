@@ -166,6 +166,7 @@ dependencies = [
  "parallel",
  "primitives",
  "rec_aggregation",
+ "rec_aggregation_base",
  "signatures 0.1.0",
  "tikv-jemallocator",
 ]
@@ -282,6 +283,24 @@ dependencies = [
 
 [[package]]
 name = "rec_aggregation"
+version = "0.1.0"
+dependencies = [
+ "fiat_shamir",
+ "keccak_gkr",
+ "lean_compiler",
+ "lean_da",
+ "leanvm_core",
+ "parallel",
+ "pcs",
+ "primitives",
+ "rand",
+ "signatures 0.1.0",
+ "tracing",
+ "verifier",
+]
+
+[[package]]
+name = "rec_aggregation_base"
 version = "0.1.0"
 dependencies = [
  "fiat_shamir",

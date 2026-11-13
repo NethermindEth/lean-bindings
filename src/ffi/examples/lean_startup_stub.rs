@@ -43,7 +43,7 @@ pub unsafe extern "C" fn nlean_aggregated_vk(guest: u32, out: *mut u8) -> i32 {
 /// # Safety
 /// The non-null output must hold seven u32 values.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nlean_limits(out: *mut u32, len: usize) -> i32 {
+pub unsafe extern "C" fn nlean_limits(_guest: u32, out: *mut u32, len: usize) -> i32 {
     if out.is_null() || len != 7 {
         return 0;
     }

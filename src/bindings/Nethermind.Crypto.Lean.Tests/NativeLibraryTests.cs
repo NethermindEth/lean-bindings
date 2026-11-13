@@ -13,13 +13,14 @@ namespace Nethermind.Crypto.Lean.Tests;
 public partial class NativeLibraryTests
 {
     private const string Library = "nethermind_lean";
-    private const uint ExpectedAbi = 14;
-    // EIP-8288's guest (0), and the one with ethereum/EIPs#12664 batch pricing (1).
-    private const string ExpectedAggregatedVk = "86110d71079c44fbae0561223e7201108097b80f34aea13a23e9b96be9b7adaa";
+    private const uint ExpectedAbi = 15;
+    // EIP-8288's guest (0), the ABI 12 package's unchanged, and the one with ethereum/EIPs#12664 batch pricing (1).
+    private const string ExpectedAggregatedVk = "f7cf74585d02043051f0575c23c6b441b0b08ac9e273f5e989c5984b8a4ac0e5";
     private const string ExpectedBatchedAggregatedVk = "df3a802307fe9831311df1288864e5ab0e672b19a224f6b23a374fc873a69828";
-    // Proof bytes, dependencies, inner proofs per step, NiceTry v2 witness bytes, aggregation input bytes, claims per
-    // batch leaf, leanSTARK instructions.
-    private static readonly uint[] ExpectedLimits = [8 * 1024 * 1024, 256, 12, 32 + 6176, 18 * 1024 * 1024, 256, 2048];
+    // Proof bytes, dependencies, inner proofs per step, NiceTry v2 witness bytes, aggregation input bytes, leanSTARK
+    // dependencies per list (guest 0) or claims per batch leaf (guest 1), leanSTARK instructions.
+    private static readonly uint[] ExpectedLimits = [8 * 1024 * 1024, 256, 16, 32 + 6176, 18 * 1024 * 1024, 16, 2048];
+    private static readonly uint[] ExpectedBatchedLimits = [8 * 1024 * 1024, 256, 12, 32 + 6176, 18 * 1024 * 1024, 256, 2048];
 
     // A project reference leaves the library under runtimes/<rid>/native; a package consumer gets it beside the binary.
     static NativeLibraryTests() => NativeLibrary.SetDllImportResolver(typeof(NativeLibraryTests).Assembly, static (name, assembly, searchPath) =>
@@ -32,7 +33,7 @@ public partial class NativeLibraryTests
     private static unsafe partial int nlean_aggregated_vk(uint guest, byte* output);
 
     [LibraryImport(Library)]
-    private static unsafe partial int nlean_limits(uint* output, nuint length);
+    private static unsafe partial int nlean_limits(uint guest, uint* output, nuint length);
 
     [LibraryImport(Library)]
     private static unsafe partial int nlean_verify_leansphincs(byte* data, byte* vk, byte* witness, nuint length);
@@ -62,13 +63,16 @@ public partial class NativeLibraryTests
     public async Task Should_reject_an_unknown_guest() => await Assert.That(GetAggregatedVk(2).Result).IsEqualTo(0);
 
     [Test]
-    public async Task Should_match_limits()
+    [Arguments(0u)]
+    [Arguments(1u)]
+    public async Task Should_match_limits(uint guest)
     {
-        uint[] limits = new uint[ExpectedLimits.Length];
-        int result = GetLimits(limits);
+        uint[] expected = guest == 0 ? ExpectedLimits : ExpectedBatchedLimits;
+        uint[] limits = new uint[expected.Length];
+        int result = GetLimits(guest, limits);
 
         await Assert.That(result).IsEqualTo(1);
-        await Assert.That(limits).IsEquivalentTo(ExpectedLimits);
+        await Assert.That(limits).IsEquivalentTo(expected);
     }
 
     [Test]
@@ -120,10 +124,10 @@ public partial class NativeLibraryTests
                 : nlean_verify_leansphincs(d, k, w, (nuint)witness.Length);
     }
 
-    private static unsafe int GetLimits(uint[] limits)
+    private static unsafe int GetLimits(uint guest, uint[] limits)
     {
         fixed (uint* output = limits)
-            return nlean_limits(output, (nuint)limits.Length);
+            return nlean_limits(guest, output, (nuint)limits.Length);
     }
 
     private static unsafe (int Result, byte[] Vk) GetAggregatedVk(uint guest)
