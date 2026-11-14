@@ -1,7 +1,7 @@
 {
   "label": "GCE, post-quantum signature leaves (lean-bindings feature/pq-signature-leaves) on the batch guest",
   "mode": "pq-leaves",
-  "pq_ref": "4957077131a060094777339f5db8c777c7dc1fdd",
+  "pq_ref": "da6351bd09e728064ce49a8d69bb179ef3b769c7",
   "schemes": ["slhdsa128s", "falcon512", "mldsa44"],
   "reps": 3,
   "quiet": {

@@ -146,14 +146,28 @@ def max_n(bench: Bench, scheme: str, ladder: list[dict]) -> tuple[int, list[dict
                   f"log_committed={r.get('log_committed')})")
         return ok
 
-    # lo always fits (0: none measured does); hi, once set, does not.
+    # The committed witness grows in power-of-two steps of the memory image, so many N share one size: bisect
+    # (fits is monotone in N) rather than walk. lo always fits (0: none measured does); hi, once set, does not.
     lo = max((p["n"] for p in ladder if p["status"] == "ok" and p["log_committed"] <= MAX_LOG_COMMITTED), default=0)
-    n = guess
-    if fits(n):
-        lo = n
-        while lo < MAX_CLAIMS and fits(lo + 1):
-            lo += 1
-        return lo, probes
+    hi = MAX_CLAIMS + 1
+    # From the slope's guess, gallop up (doubling the step) until a probe fails or the claim cap fits, so no probe
+    # lands far above the bound, where a lattice leaf would need several times the machine's memory.
+    n, step = max(lo + 1, guess), max(1, guess // 8)
+    while n < hi:
+        if fits(n):
+            lo = n
+            if n == MAX_CLAIMS:
+                break
+            n, step = min(MAX_CLAIMS, n + step), step * 2
+        else:
+            hi = n
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo, probes
     hi = n
     while hi - lo > 1:
         mid = (lo + hi) // 2
