@@ -88,10 +88,6 @@ pub fn f192_literal(f: F192) -> String {
     format!("f192({}, {}, {})", f.c0, f.c1, f.c2)
 }
 
-pub fn field_list(values: &[F192]) -> String {
-    format!("[{}]", values.iter().map(|&f| f192_literal(f)).collect::<Vec<_>>().join(", "))
-}
-
 /// 16 bytes as one canonical cell: two little-endian 64-bit lanes.
 pub fn cell(bytes: &[u8]) -> F192 {
     let lane = |o: usize| u64::from_le_bytes(bytes[o..o + 8].try_into().unwrap());
