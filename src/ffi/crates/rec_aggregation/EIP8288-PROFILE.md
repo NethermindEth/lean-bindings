@@ -1,8 +1,8 @@
 # leanSTARK EIP-8288 profile v1
 
-This is the proof-system specification that Generic Proof Verification and Batching
-([EIPs#12664](https://github.com/ethereum/EIPs/pull/12664), which absorbed EIPs#12654) leaves to "the fork's pinned
-proof-system specification" for the leanSTARK schemes (`0x11`, `0x12`, `0x13`). The EIP pins it by repository and
+This is the proof-system specification that Batched Generic Proof Dependencies
+([EIPs#12664](https://github.com/ethereum/EIPs/pull/12664) at `34ef363a`) leaves to "the fork's pinned proof-system
+specification" for `LEANSTARK_SCHEME` (`0x11`). The EIP pins it by repository and
 commit. It covers the leanVM CPU proof of a leaf as implemented by this crate's aggregation guest, guest 1 of the C ABI
 (`Guest::Batched`; `guests/lean_ethereum.py`, `src/aggregation/generic.rs`), and by the leanVM core revision
 `../../Cargo.toml` takes. Guest 0, EIP-8288's guest in `../rec_aggregation_base`, keeps the flat table key and is not
@@ -34,8 +34,9 @@ program_commitment = keccak256(COMMITTED_TAG || u8 kgen || root || ood)         
 verification_key_hash = get_vk_hash(program_commitment)                          # EIPs#12664
 ```
 
-Guest 1 does not apply `get_vk_hash` yet: a dependency's `verification_key_hash` is `program_commitment` itself
-(`guests/BATCH_PRICING.md` lists this with the other parts of #12664 still to come).
+`get_vk_hash(c) = keccak256("EIP8288:vk:v1" || c)`, a 45-byte preimage. The guest re-cuts the commitment's bytes,
+hinted and range-checked, three bytes on behind the 13-byte tag, so a wrong tag, a commitment of another width or the
+bare commitment as the key is rejected.
 
 - `COMMITTED_TAG = "leanvm-commit-1"` (15 bytes). With `kgen`, it fills one 16-byte cell. Its first bytes differ from
   upstream's table-digest tag `"leanvm-v1"`, so the two kinds of key never share a transcript.
@@ -115,7 +116,7 @@ EIP-8288 requires a key to bind at most one complete program and layout even whe
   The native check builds the guest's hints, so it rejects any proof outside them.
 - Bytes: a witness is at most 8 MiB (`MAX_BYTES`), and aggregation input is at most 18 MiB.
 - A leaf holds 1 to 256 strictly increasing claims (`MAX_CLAIMS_PER_BATCH_LEAF`); a step verifies at most 16 leaves
-  and children together (`MAX_INNER_PROOFS_PER_STEP`, `guests/BATCH_PRICING.md`).
+  and children together (`MAX_INNER_PROOFS_PER_STEP`, `guests/BATCHING.md`).
 
 ## 7. One construction for every size
 
@@ -132,10 +133,10 @@ program `ANY_INPUT_PROGRAM` with the claim `data_hash = 0x09…09`, proved on `g
 
 - `stark-key-hash-vectors.txt`: the table, `kgen`, `root`, every `ood_point` coordinate, `ood`, `program_commitment`
   and `vk_hash`. An implementation checks that it derives each value from the one before.
-- `stark-batched-key.bin`, `stark-message.bin`, `stark-claim-proof.bin`: the honest `program_commitment`, claim and
+- `stark-batched-key.bin`, `stark-message.bin`, `stark-claim-proof.bin`: the honest key (`vk_hash`), claim and
   witness. These must verify. (`stark-key.bin` and `stark-proof.bin` are guest 0's flat-keyed pair.)
-- `stark-key-opening-wrong-ood.bin` and `stark-key-opening-wrong-root.bin`: `program_commitment ‖ witness` with `ood`
-  or `root` tampered and the commitment recomputed over it. These must be rejected.
+- `stark-key-opening-wrong-ood.bin` and `stark-key-opening-wrong-root.bin`: `vk_hash ‖ witness` with `ood` or `root`
+  tampered and the key recomputed over it. These must be rejected.
 - The case where a proof is made under a key with a wrong `ood` is in `src/aggregation/generic_tests.rs`
   (`a_key_must_carry_the_tables_out_of_domain_value`). There, only the opening's OOD claim can reject the proof. It
   needs a prover switch that the shipped library does not build with.

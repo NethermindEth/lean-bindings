@@ -36,13 +36,13 @@ signatures and proofs and prints the pinned recursive verification key; `fixture
 one message, and `fixtures --prove-stark <hex> <file>` proves a leanSTARK dependency on it as guest 0 takes one, on the
 bare message. The vectors hold a direct leanSTARK proof for each guest: `stark-proof.bin` on the bare claim and
 `stark-claim-proof.bin` on the singleton batch leaf `[claim]`. `cargo run --release --locked --example batch_leaves [n]` proves an `n`-claim batch leaf with the
-`examples/batch_leaves/batch.py` template and aggregates it as `n` batch claims and the leaf's payment. **Build Lean** packages the vectors,
+`examples/batch_leaves/batch.py` template and aggregates its `n` leanSTARK dependencies. **Build Lean** packages the vectors,
 this tool and the `lean_startup_stub` example as opt-in test assets of `Nethermind.Crypto.Lean`.
 
-The C ABI is version 16, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
+The C ABI is version 17, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
 `nlean_limits`, `nlean_aggregated_vk`, `nlean_verify_leanstark`, `nlean_verify_recursive` and `nlean_prove_recursive` take a
 leading `u32` guest:
-0 for EIP-8288's, 1 for the one with ethereum/EIPs#12664 batch pricing (see below); any other value fails, and the key
+0 for EIP-8288's, 1 for the one with ethereum/EIPs#12664 batched generic proof dependencies (see below); any other value fails, and the key
 passed must be that guest's. Guest 0 is the ABI 12 package 0.12.1's guest and host unchanged (`crates/rec_aggregation_base`),
 so its key, limits, direct leanSTARK statement (the bare claim) and aggregation input encoding are that package's.
 `nlean_limits` writes seven u32 values (proof bytes, dependencies, inner proofs per step,
@@ -102,7 +102,8 @@ resolved dependency.
   Guest 1 takes `kgen`, `root` (32 bytes), `ood` (32 bytes), then the execution proof of the committed program on
   the singleton statement `get_batch_hash([data_hash])`. `root` is the WHIR commitment to the program's stacked
   bytecode table zero-padded to `2^16` words at rate 1/16, and `ood` the table's value at an out-of-domain point drawn
-  from `root`, as two 16-byte cells. Its key is the program's Fiat-Shamir IV,
+  from `root`, as two 16-byte cells. Its key is ethereum/EIPs#12664 `get_vk_hash(program_commitment) =
+  keccak256("EIP8288:vk:v1" || program_commitment)` of the program's Fiat-Shamir IV, the program commitment
   `keccak256("leanvm-commit-1" || kgen || root || ood)`, so the key binds one program before the proof's first
   challenge; the proof sends the table's value at the bus's point and opens `root` there and at the out-of-domain
   point, so verifying it costs the same whatever the program's size. The 32-byte public input is packed into two
@@ -110,27 +111,20 @@ resolved dependency.
   direct admission and in aggregation, even when all its claims are discarded.
   [`crates/rec_aggregation/EIP8288-PROFILE.md`](crates/rec_aggregation/EIP8288-PROFILE.md) is guest 1's full profile.
 * **aggregation input:** direct count then `(96-byte dependency, witness blob)` pairs;
-  child count then `(record count/records, proof blob)` pairs; discard count/records; then, only when nonempty,
-  leaf count then `(32-byte key, claim count, 32-byte claims, dependency count/triples, leanSTARK witness blob)`
-  entries, the triples being those the leaf establishes. A record is 192 bytes: a dependency, then its source for a
-  batch claim and 96 zero bytes otherwise. The proof is of `hash`: the selected records' intermediate statement, or,
-  when they hold a batch claim, their dependencies' finalized digest.
+  child count then `(dependency count/triples, proof blob)` pairs; discard count/triples; then, for guest 1 and only
+  when nonempty, leaf count then `(32-byte key, claim count, 32-byte claims, dependency count/triples, leanSTARK
+  witness blob)` entries, the triples being the `(0x11, claim, key)` ones the leaf establishes. The proof is of `hash`,
+  the selected dependencies' `get_deps_hash`.
 * **leaf:** a leanSTARK witness whose public input is
   `get_batch_hash(claims) = keccak256(b"EIP8288:batch:v1" || claims)`, EIP-8288's `get_claim_hash` for one claim, over
   1 to `MAX_CLAIMS_PER_BATCH_LEAF` claims (1 for guest 0, 256 for guest 1, guest constants bound to their
   `AGGREGATED_VK`), strictly increasing in byte-lexicographic order: the host and the guest check the order, the leaf
-  program need not. A leaf establishes `(0x11, claim, key)` and, under guest 1, `(0x12, claim, key)` and its payment
-  `(0x13, get_batch_hash(claims), key)`. Leaves are private aggregation inputs; mode-0 wrappers carry singleton proofs.
-* **batch claims and leaf payments (`0x12`, `0x13`, guest 1 only, ethereum/EIPs#12664):** 31 zero bytes then the
-  scheme, a payment's digest nonzero; guest 0 rejects both as unknown. A leanSTARK list entry is `data || key` with
-  the key `keccak256(scheme word || vk)` for a payment. A batch claim's key in an intermediate statement is
-  `keccak256(scheme word || vk || source digest)`, binding it to the payment of the leaf that established it; only a
-  leaf derives it, so a union cannot create a source and pruning cannot change one. A finalizing node publishes its
-  list with each batch claim keyed `keccak256(scheme word || vk)` once its source payment is in the list, and its
-  statement is `get_batch_final_hash(deps_hash) = keccak256("EIP8288:batch-final:v1" || deps_hash)`, which no child
-  statement is rebuilt with: a finalized proof is no child, payment-only ones included. A block holding either scheme
-  is verified against `get_batch_final_hash(block_deps_hash)`. Records are deduplicated by dependency: of several
-  verified sources the prover keeps a paid one.
+  program need not. A leaf establishes `(0x11, claim, key)` for each of its claims (ethereum/EIPs#12664); a
+  mode-1 wrapper retains any subset of them. Mode-0 wrappers carry singleton proofs.
+* **guest 1's dependency digest (ethereum/EIPs#12664):** `get_deps_hash` is `keccak256` of the canonical sorted
+  96-byte triples `scheme word || data_hash || key`, scheme word included, for every list, block commitments included.
+  Only `0x10` and `0x11` are accepted, with 31 zero padding bytes; the former batch-pricing schemes `0x12` and `0x13`
+  are unknown to both guests.
 * **aggregate:** the EIP-8288 `stark_proof`, one mixed guest proof without dependencies
   or raw witnesses. It verifies against `deps_hash` and `AGGREGATED_VK`
   alone; a child's dependencies come from the aggregation input. Proving an empty list
@@ -144,7 +138,7 @@ Every supplied raw witness and child proof is authenticated even when another in
 covers the same claim. An unchanged verified statement can reuse its parent proof without
 executing another recursive proving step.
 
-### Deviation: leanSTARK enabled
+### Deviation: leanSTARK enabled (guest 0)
 
 EIP-8288 (EIPs#12475/#12590) reserves `LEANSTARK_SCHEME` (`0x11`) until `get_deps_hash` is
 defined for it. This implementation enables it anyway, as its one deliberate deviation from the

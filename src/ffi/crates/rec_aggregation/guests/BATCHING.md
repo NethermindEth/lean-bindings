@@ -1,111 +1,86 @@
-# Batch pricing in the leanVM guest
+# Batched generic proof dependencies in the leanVM guest
 
-Generic Proof Verification and Batching ([ethereum/EIPs#12664](https://github.com/ethereum/EIPs/pull/12664), which
-absorbed the EIP-8288 amendments of the closed #12654) builds on EIP-8288. Both specify statements and leave their
-encoding to the proof system. This note covers how `lean_ethereum.py` and its host (`src/aggregation`) realise them, and
-what of #12664 at `0cbf1366` they do not yet.
+Batched Generic Proof Dependencies ([ethereum/EIPs#12664](https://github.com/ethereum/EIPs/pull/12664) at `34ef363a`)
+enables EIP-8288's `LEANSTARK_SCHEME` and lets one leaf prove claims for many transactions. Both EIPs specify
+statements and leave their encoding to the proof system. This note covers how `lean_ethereum.py` and its host
+(`src/aggregation`) realise them, and what of #12664 they do not yet.
 
 ## Two guests
 
-The C ABI (version 16) selects the guest with a leading `u32` argument on `nlean_limits`, `nlean_aggregated_vk`,
-`nlean_verify_leanstark`, `nlean_verify_recursive` and `nlean_prove_recursive`. The key a caller passes must be that guest's key. A consumer maps
-its fork's `AGGREGATED_VK` to a guest.
+The C ABI (version 17) selects the guest with a leading `u32` argument on `nlean_limits`, `nlean_aggregated_vk`,
+`nlean_verify_leanstark`, `nlean_verify_recursive` and `nlean_prove_recursive`. The key a caller passes must be that
+guest's key. A consumer maps its fork's `AGGREGATED_VK` to a guest.
 
 - Guest 0 is EIP-8288's guest and host exactly as the ABI 12 package 0.12.1 ships them (leanSPHINCS keys laid out
-  `PK.seed ‖ PK.root`), vendored unchanged as `crates/rec_aggregation_base`. Its key (`f6f37690…`), its limits (16 recursive inputs per step, 16 leanSTARK
-  dependencies per list), its direct leanSTARK statement (the bare claim) and its aggregation input encoding are that
-  package's, so a chain without batch pricing is unaffected by this crate.
-- Guest 1 compiles this crate's `lean_ethereum.py` (`Guest::Batched`): leaves of up to 256 claims and both new schemes.
-  The crate's `Guest::Base` placeholders (`MAX_CLAIMS_PER_BATCH_LEAF = 1`, `BATCHED_DEPENDENCIES = 0`) remain for its own
-  tests only; the ABI no longer exposes them.
+  `PK.seed ‖ PK.root`), vendored unchanged as `crates/rec_aggregation_base`. Its key (`f6f37690…`), its limits (16
+  recursive inputs per step, 16 leanSTARK dependencies per list), its direct leanSTARK statement (the bare claim), its
+  split dependency digest and its aggregation input encoding are that package's, so a chain without #12664 is
+  unaffected by this crate.
+- Guest 1 compiles this crate's `lean_ethereum.py` (`Guest::Batched`): leaves of up to 256 claims, the scheme-bearing
+  dependency digest and `get_vk_hash` keys. The crate's `Guest::Base` placeholders (`MAX_CLAIMS_PER_BATCH_LEAF = 1`)
+  remain for its own tests only; the ABI does not expose them.
 
-## Leanstark list entries
+## Dependency digest
 
-Each leanSTARK list entry is 64 bytes, `data ‖ key`. The key depends on the scheme:
+`get_deps_hash` is `keccak256` of the canonical 96-byte triples `scheme word ‖ data_hash ‖ key`, every statement's and
+every child's. The guest keeps one coverage region per scheme, its declared claims then its duplicate slots, so each
+writer is range-checked into its own scheme. It copies each region's declared entries behind their scheme word into one
+list, leanSPHINCS (`0x10`) first as the triples sort, and hashes that list 17 triples (102 cells, six block pairs) a
+loop frame through a sponge-state chain (`deps_list_digest`). A child's claims are collected the same way, read at
+hinted offsets into this node's tables, then hashed with the same function. The scheme word in the preimage is what
+makes a published triple's scheme the scheme that verified it.
 
-| Scheme | Data | Key |
-| --- | --- | --- |
-| `0x11` | claim | `vk` |
-| `0x12`, intermediate | claim | `keccak256(word(0x12) ‖ vk ‖ source)` |
-| `0x12`, finalized | claim | `keccak256(word(0x12) ‖ vk)` |
-| `0x13` | leaf digest | `keccak256(word(0x13) ‖ vk)` |
+## Leaves and keys
 
-- `word(s)` is the 32-byte scheme word.
-- `source` is the leaf's `get_batch_hash(claims)`.
-- An intermediate `0x12` entry is the EIP's `(dependency, source)` record. Only a leaf derives its key (`establish`), so a
-  union cannot create a source and pruning cannot change one. Changing a source needs another verified leaf.
-- These keys replace the EIP's 192-byte `get_batch_state_hash` records. Intermediate statements therefore share the plain
-  digest form, and the scheme-bound keys keep them apart from ordinary lists.
-- The host keeps one record per dependency, preferring a source whose payment is retained. The guest does not reject two
-  sources for one claim; finalization's bijection does.
+A leaf's statement is `get_batch_hash(claims) = keccak256(b"EIP8288:batch:v1" ‖ claims)` over 1 to 256 strictly
+increasing claims, `get_claim_hash` for one. It is hashed in 17-cell (272-byte) block-pair chunks carried through a
+sponge-state chain, followed by a remainder of up to 16 cells (`leaf_digest`). Claim bytes are hinted in the exponent
+and range-checked; order is decided at the first differing byte (`batch_increasing`). Each claim establishes
+`(0x11, claim, key)`; a node publishes any subset.
 
-## Finalization as a node mode
-
-Any node may finalize; the `final` hint selects it. A finalizing node maps its declared list one-to-one onto a finalized
-list:
-
-- Each `0x12` entry is checked against its hinted `(vk, source)` and rekeyed to the finalized key, once its payment
-  `(source, keccak256(word(0x13) ‖ vk))` is found in the node's own list.
-- Every other entry is copied unchanged.
-
-The node publishes `get_batch_final_hash(deps_hash) = keccak256("EIP8288:batch-final:v1" ‖ deps_hash)` over the
-finalized lists' plain digest:
-
-- The guest re-cuts the digest's bytes six bytes on, behind the 22-byte tag (`batch_final_hash`).
-- Child statements are always rebuilt in the plain form, so a finalized proof is never a child, payment-only ones
-  included.
-- Payment presence is checked only here, so an intermediate proof may hold claims without their payments.
-
-## Claim hashing
-
-A leaf's statement is hashed in 17-cell (272-byte) block-pair chunks carried through a sponge-state chain, followed by
-a remainder of up to 16 cells (`leaf_digest`). The cost is linear in the claim count, with no 256-arm unrolled match.
-
-Claim bytes are hinted in the exponent and range-checked. Order is decided at the first differing byte
-(`batch_increasing`).
+The key is `get_vk_hash(program_commitment) = keccak256(b"EIP8288:vk:v1" ‖ program_commitment)`
+(`check_vk_hash`). The guest rehashes the hinted `kgen`, root and `ood` into the commitment, re-cuts its range-checked
+bytes three bytes on behind the 13-byte tag, checks the result is the claim's key, and seeds the leaf proof's transcript
+with the commitment.
 
 ## Step arity
 
 Measured with the committed bytecode key (`../EIP8288-PROFILE.md`) and near-cap programs (2^11 instructions) under
-distinct keys, every claim sponsored and the step finalized, at rate 1/2 on a 12-core, 32 GB machine
-(`examples/agg_bench.rs batch 16`, `children 16`):
+distinct keys, at rate 1/2 on a 12-core, 32 GB machine (`examples/agg_bench.rs batch 16`, `children 16`):
 
-| Step | Cycles | Committed witness | Peak memory |
+| Step | Cycles | Committed witness | Prove |
 | --- | --- | --- | --- |
-| 1 leaf of 256 claims | 0.49M | 2^23.8 | |
-| 16 leaves of 256 claims | 7.0M | 2^27.6 | 9.9 GB (whole run) |
-| 8 leaves and 8 children of 256 claims | 5.5M | 2^27.3 | |
-| 16 children | 3.4M | 2^26.8 | 7.1 GB |
+| 1 leaf of 256 claims | 0.47M | 2^23.8 | 0.30 s |
+| 16 leaves of 256 claims | 7.0M | 2^27.6 | 6.1 s |
+| 8 leaves and 8 children of 256 claims | 5.6M | 2^27.3 | 4.5 s |
+| 16 children | 3.4M | 2^26.8 | 2.1 s |
 
 `MAX_INNER_PROOFS_PER_STEP` is therefore 16, as #12664 sets it, leaving about 2^2.4 of the outer proof's 2^30 bound for
-the leanSPHINCS signatures a step may add. Under the earlier flat key, which rehashed the whole table in every leaf
-(2.96M cycles a leaf), 14 leaves exceeded 2^30 and the arity was 12.
+the leanSPHINCS signatures a step may add. Under the earlier flat key, which rehashed the whole
+table in every leaf (2.96M cycles a leaf), 14 leaves exceeded 2^30 and the arity was 12.
 
-## Against #12664 at `0cbf1366`
+## Against #12664 at `34ef363a`
 
-Implemented: batch leaves with exact, strictly increasing claim lists, a direct leanSTARK witness as a one-claim leaf
-(`get_claim_hash(claim) = get_batch_hash([claim])`), payment binding through intermediate records, finalization, an
-openable program commitment as the leaf key (below), and `MAX_INNER_PROOFS_PER_STEP = 16` (see Step arity), counting
-discarded and redundant inputs; the ABI counts each direct witness as one.
+Implemented: `LEANSTARK_SCHEME` with multi-claim leaves (`MAX_CLAIMS_PER_BATCH_LEAF = 256`) and their claim-order,
+width and count checks before hashing; a direct leanSTARK witness as a one-claim leaf, so a proof of the bare claim
+satisfies nothing; the scheme-bearing 96-byte-triple `get_deps_hash` for every statement; `get_vk_hash` keys over an
+openable program commitment (below); and `MAX_INNER_PROOFS_PER_STEP = 16`, counting discarded and redundant inputs, with
+each direct witness counted as one by the ABI. Recursive statements stay EIP-8288's `(get_deps_hash(deps),
+AGGREGATED_VK)`.
 
-Not yet, each needing a new `AGGREGATED_VK`:
+Not yet:
 
-- The replaced dependency digest: `get_deps_hash` over canonical 96-byte triples, scheme word included, in place of the
-  split leanSPHINCS/leanSTARK lists and the scheme-bound keys above. It also makes scheme separation structural.
-- The tagged statement domains: `DEPS_HASH(b"EIP8288:aggregate:v1" ‖ tag ‖ payload)` with tags 0x00 (ordinary, over
-  `deps_hash`), 0x01 (intermediate, over the 192-byte records) and 0x02 (finalized). Today ordinary statements are the
-  plain digest and finalization uses the `EIP8288:batch-final:v1` tag.
-- `get_vk_hash(program_commitment) = keccak256(b"EIP8288:vk:v1" ‖ program_commitment)`: the dependency key is still
-  the commitment itself.
-- Output capacity of at least `MAX_RLP_BLOCK_SIZE // 96` dependencies, with counters that never narrow (65,535 and
-  65,536 test lengths). The guest's lists are bounded at 256 today.
+- Output capacity of at least `MAX_DEPS_PER_BLOCK` (16,384) dependencies, with counters that never narrow (the
+  65,535- and 65,536-entry test lengths). The ABI bounds a statement at 256 dependencies.
+- The finalized resource bounds and the joint benchmarks the activation requirements name; the values here are this
+  prototype's.
 
 ## Program commitments and adversarial keys
 
-#12664 makes the leanSTARK verification key a `program_commitment` that binds at most one complete program and layout even
-when the key is chosen adversarially, supports sound openings of the program-table evaluations verification needs, and
-authenticates them inside recursion at cost sublinear in the padded program size. Guest 1 keys a program by the
-committed bytecode key of `../EIP8288-PROFILE.md`: a WHIR commitment to the stacked table and an out-of-domain value
+#12664 makes the leanSTARK verification key name a `program_commitment` that binds at most one complete program and
+layout even when chosen adversarially, supports sound openings of the program-table evaluations verification needs,
+and authenticates them inside recursion at cost sublinear in the padded program size. Guest 1 commits to a program by
+the committed bytecode key of `../EIP8288-PROFILE.md`: a WHIR commitment to the stacked table and an out-of-domain value
 drawn from it, opened by each proof at the bus's point and the out-of-domain point, at a cost independent of the
 program's size. The core changes it needs are patched in from Marchhill/leanVM `feature/eip8288-bytecode-commitment`
 until they are upstream. Guest 0 keeps the flat digest `keccak256("leanvm-v1" ‖ table)` unchanged.
