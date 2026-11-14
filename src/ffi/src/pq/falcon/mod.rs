@@ -14,7 +14,7 @@ use tide_fn_dsa::{
     SIGNATURE_SIZE_512, SigningKey, SigningKeyStandard, VRFY_KEY_SIZE_512, VerifyingKey, VerifyingKeyStandard,
 };
 
-use crate::common::{Claim, Hints, Scheme, cell, count, f192_literal};
+use super::common::{Claim, Hints, Scheme, cell, count, f192_literal};
 
 const GUEST: &str = include_str!("falcon.py");
 const CLAIM_TAG: &[u8; 16] = b"EIP8288:fn512:v1";
@@ -28,9 +28,9 @@ pub struct Falcon512;
 
 #[derive(Clone)]
 pub struct FalconItem {
-    pk: [u8; VRFY_KEY_SIZE_512],
-    msg: [u8; 32],
-    sig: Vec<u8>,
+    pub pk: [u8; VRFY_KEY_SIZE_512],
+    pub msg: [u8; 32],
+    pub sig: Vec<u8>,
     /// The same key's signature over another message.
     other: Vec<u8>,
 }
@@ -68,6 +68,85 @@ impl RngCore for Stream {
 }
 
 impl CryptoRng for Stream {}
+
+/// The fixed length of a PADDED Falcon-512 signature: header, nonce and the compressed `s2` zero-filled to this size.
+pub const PADDED_SIGNATURE_LEN: usize = 666;
+
+/// The item of a PADDED signature that the reference verification (Falcon-512 round 3, PQClean profile) and this leaf's
+/// host computation both accept, as a relay checks it before admission and a prover before proving.
+pub fn verified(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Option<FalconItem> {
+    if sig.len() != PADDED_SIGNATURE_LEN {
+        return None;
+    }
+    let item = FalconItem {
+        pk: pk.try_into().ok()?,
+        msg: *msg,
+        sig: sig.to_vec(),
+        other: Vec::new(),
+    };
+    (verifies(pk, msg, sig) && norm(pk, msg, sig, &mut Hints::default()) <= NORM_BOUND).then_some(item)
+}
+
+/// `sig` in the PADDED encoding, if its compressed `s2` fits.
+pub fn padded(sig: &[u8]) -> Option<Vec<u8>> {
+    let mut out = sig.to_vec();
+    (out.len() <= PADDED_SIGNATURE_LEN).then(|| {
+        out.resize(PADDED_SIGNATURE_LEN, 0);
+        out
+    })
+}
+
+/// The item of a signature without any check, to show that the leaf rejects what the native check does.
+#[cfg(test)]
+pub(super) fn unchecked(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> FalconItem {
+    FalconItem {
+        pk: pk.try_into().unwrap(),
+        msg: *msg,
+        sig: sig.to_vec(),
+        other: Vec::new(),
+    }
+}
+
+/// Equivalence vectors: honest PADDED signatures and the encodings and substitutions the native check must reject.
+pub(super) fn vector_inputs() -> Vec<super::RawCase> {
+    // Keys whose signatures fit the padded size, which nearly all do.
+    let mut honest = (0..).map(Falcon512::item).filter(|i| padded(&i.sig).is_some() && padded(&i.other).is_some());
+    let (a, b) = (honest.next().unwrap(), honest.next().unwrap());
+    let (sig, other) = (padded(&a.sig).unwrap(), padded(&a.other).unwrap());
+    let case = |label, pk: &[u8], msg, sig: &[u8], valid| (label, pk.to_vec(), msg, sig.to_vec(), valid);
+    let mut cases = vec![
+        case("honest", &a.pk, a.msg, &sig, true),
+        case("honest, second key", &b.pk, b.msg, &padded(&b.sig).unwrap(), true),
+        case("signature over another message", &a.pk, a.msg, &other, false),
+        case("another key", &b.pk, a.msg, &sig, false),
+        case("truncated signature", &a.pk, a.msg, &sig[..PADDED_SIGNATURE_LEN - 1], false),
+        case("extended signature", &a.pk, a.msg, &[&sig[..], &[0]].concat(), false),
+        case("truncated key", &a.pk[..VRFY_KEY_SIZE_512 - 1], a.msg, &sig, false),
+    ];
+    if a.sig.len() < PADDED_SIGNATURE_LEN {
+        cases.push(case("variable-length compressed encoding", &a.pk, a.msg, &a.sig, false));
+        let mut nonzero = sig.clone();
+        nonzero[PADDED_SIGNATURE_LEN - 1] = 1;
+        cases.push(case("nonzero padding", &a.pk, a.msg, &nonzero, false));
+    }
+    let mut msg = a.msg;
+    msg[0] ^= 1;
+    cases.push(case("altered message", &a.pk, msg, &sig, false));
+    for (label, at, value) in [("constant-time encoding header", 0, 0x59), ("Falcon-1024 header", 0, 0x3a)] {
+        let mut altered = sig.clone();
+        altered[at] = value;
+        cases.push(case(label, &a.pk, a.msg, &altered, false));
+    }
+    for (label, at) in [("altered nonce", 1), ("altered s2", 50)] {
+        let mut altered = sig.clone();
+        altered[at] ^= 1;
+        cases.push(case(label, &a.pk, a.msg, &altered, false));
+    }
+    let mut pk = a.pk;
+    pk[100] ^= 1;
+    cases.push(case("altered key", &pk, a.msg, &sig, false));
+    cases
+}
 
 fn sign(sk: &[u8], msg: &[u8], i: usize, label: &[u8]) -> Vec<u8> {
     let mut sig = [0; SIGNATURE_SIZE_512];
@@ -122,7 +201,7 @@ fn chain(cells: &[F192]) -> [F192; 2] {
     let mut h = [F192::ZERO; 2];
     for pair in cells.chunks(2) {
         let bytes = [h[0], h[1], pair[0], pair[1]].map(cell_bytes).concat();
-        let d = nethermind_lean::keccak(&bytes);
+        let d = crate::keccak(&bytes);
         h = [cell(&d[..16]), cell(&d[16..])];
     }
     h
@@ -383,7 +462,7 @@ impl Scheme for Falcon512 {
         let mut bytes = CLAIM_TAG.to_vec();
         bytes.extend_from_slice(&item.msg);
         bytes.extend_from_slice(&item.pk);
-        nethermind_lean::keccak(&bytes)
+        crate::keccak(&bytes)
     }
 
     fn setup_hints(hints: &mut Hints) {
@@ -436,7 +515,7 @@ impl Scheme for Falcon512 {
         assert_eq!(got, want, "negacyclic NTT");
 
         // The host's verification agrees with the reference implementation on honest and forged signatures.
-        for item in crate::common::items::<Self>(4) {
+        for item in super::common::items::<Self>(4) {
             assert!(verifies(&item.pk, &item.msg, &item.sig));
             assert!(!verifies(&item.pk, &item.msg, &item.other));
             assert!(norm(&item.pk, &item.msg, &item.sig, &mut Hints::default()) <= NORM_BOUND);

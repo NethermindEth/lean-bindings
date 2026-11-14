@@ -11,7 +11,7 @@ use fips204::traits::{KeyGen, SerDes, Signer, Verifier};
 use primitives::field::F192;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 
-use crate::common::{Claim, Hints, Scheme, cells, count, f192_literal};
+use super::common::{Claim, Hints, Scheme, cells, count, f192_literal};
 
 const GUEST: &str = include_str!("mldsa.py");
 /// The claim's domain: one cell.
@@ -51,8 +51,64 @@ fn signed(key: usize, msg: [u8; 32]) -> Item {
     }
 }
 
+/// The item of a signature that FIPS 204's verification (ML-DSA-44, pure, empty context) and this leaf's host computation
+/// both accept, as a relay checks it before admission and a prover before proving.
+pub fn verified(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Option<Item> {
+    let item = Item {
+        pk: pk.try_into().ok()?,
+        msg: *msg,
+        sig: sig.try_into().ok()?,
+        key: 0,
+    };
+    let key = ml_dsa_44::PublicKey::try_from_bytes(item.pk).ok()?;
+    (key.verify(msg, &item.sig, &[]) && recompute_ctilde(&item, &mut Hints::default()) == item.sig[..32]).then_some(item)
+}
+
+/// Equivalence vectors: honest signatures and the encodings and substitutions the native check must reject.
+pub(super) fn vector_inputs() -> Vec<super::RawCase> {
+    let (a, b) = (signed(0, message(0)), signed(1, message(1)));
+    let case = |label, pk: &[u8], msg, sig: &[u8], valid| (label, pk.to_vec(), msg, sig.to_vec(), valid);
+    let mut cases = vec![
+        case("honest", &a.pk, a.msg, &a.sig, true),
+        case("honest, second key", &b.pk, b.msg, &b.sig, true),
+        case("signature over another message", &a.pk, a.msg, &MlDsa44::forge(&a).sig, false),
+        case("another key", &b.pk, a.msg, &a.sig, false),
+        case("truncated signature", &a.pk, a.msg, &a.sig[..ml_dsa_44::SIG_LEN - 1], false),
+        case("extended signature", &a.pk, a.msg, &[&a.sig[..], &[0]].concat(), false),
+        case("truncated key", &a.pk[..ml_dsa_44::PK_LEN - 1], a.msg, &a.sig, false),
+    ];
+    let mut msg = a.msg;
+    msg[31] ^= 1;
+    cases.push(case("altered message", &a.pk, msg, &a.sig, false));
+    for (label, at) in [("altered c~", 0), ("altered z", 100)] {
+        let mut sig = a.sig;
+        sig[at] ^= 1;
+        cases.push(case(label, &a.pk, a.msg, &sig, false));
+    }
+    let mut pk = a.pk;
+    pk[40] ^= 1;
+    cases.push(case("altered key", &pk, a.msg, &a.sig, false));
+    // The hint: OMEGA index bytes, then the four rows' cumulative counts.
+    let hint = ml_dsa_44::SIG_LEN - OMEGA - 4;
+    let total = a.sig[ml_dsa_44::SIG_LEN - 1] as usize;
+    if total < OMEGA {
+        let mut sig = a.sig;
+        sig[hint + total] = 1;
+        cases.push(case("nonzero hint padding", &a.pk, a.msg, &sig, false));
+    }
+    let mut sig = a.sig;
+    sig[hint + OMEGA] = OMEGA as u8 + 1;
+    cases.push(case("hint count above omega", &a.pk, a.msg, &sig, false));
+    let mut seed = [0u8; 32];
+    seed[..8].copy_from_slice(&0u64.to_le_bytes());
+    let (_, sk) = ml_dsa_44::KG::keygen_from_seed(&seed);
+    let with_context = sk.try_sign_with_seed(&seed, &a.msg, b"ctx").expect("signs");
+    cases.push(case("nonempty context", &a.pk, a.msg, &with_context, false));
+    cases
+}
+
 fn message(i: usize) -> [u8; 32] {
-    nethermind_lean::keccak(&(i as u64).to_le_bytes())
+    crate::keccak(&(i as u64).to_le_bytes())
 }
 
 /// FIPS 204's M' (empty context), zero-filled to three cells.
@@ -248,7 +304,7 @@ fn table_digest(table: &[F192]) -> [F192; 2] {
         let mut pre = h.to_vec();
         pre.extend(cell_bytes(pair[0]));
         pre.extend(cell_bytes(pair[1]));
-        h = nethermind_lean::keccak(&pre);
+        h = crate::keccak(&pre);
     }
     let c = cells(&h);
     [c[0], c[1]]
@@ -362,7 +418,7 @@ impl Scheme for MlDsa44 {
         let mut bytes = CLAIM_TAG.to_vec();
         bytes.extend_from_slice(&tr);
         bytes.extend_from_slice(&m_cells(&item.msg));
-        nethermind_lean::keccak(&bytes)
+        crate::keccak(&bytes)
     }
 
     fn setup_hints(hints: &mut Hints) {
@@ -388,7 +444,7 @@ impl Scheme for MlDsa44 {
     }
 
     fn reference_check() {
-        for item in crate::common::items::<Self>(4) {
+        for item in super::common::items::<Self>(4) {
             let pk = ml_dsa_44::PublicKey::try_from_bytes(item.pk).expect("a key");
             assert!(pk.verify(&item.msg, &item.sig, &[]));
             assert_eq!(

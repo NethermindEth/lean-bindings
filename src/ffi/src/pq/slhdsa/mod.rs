@@ -11,7 +11,7 @@ use fips205::traits::{KeyGen, SerDes, Signer, Verifier};
 use primitives::field::F192;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 
-use crate::common::{Claim, Hints, Scheme, cell, cells, count};
+use super::common::{Claim, Hints, Scheme, cell, cells, count};
 
 const GUEST: &str = include_str!("slhdsa.py");
 /// The claim's domain: one cell.
@@ -50,8 +50,70 @@ fn signed(key: usize, msg: [u8; 32]) -> Item {
     }
 }
 
+/// The item of a signature that FIPS 205's verification (SLH-DSA-SHAKE-128s, pure, empty context) and this leaf's host
+/// computation both accept, as a relay checks it before admission and a prover before proving.
+pub fn verified(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Option<Item> {
+    let signature: [u8; slh_dsa_shake_128s::SIG_LEN] = sig.try_into().ok()?;
+    let item = Item {
+        pk: pk.try_into().ok()?,
+        msg: *msg,
+        sig: sig.to_vec(),
+        key: 0,
+    };
+    let key = slh_dsa_shake_128s::PublicKey::try_from_bytes(&item.pk).ok()?;
+    (key.verify(msg, &signature, &[]) && recompute(&item, &mut Hints::default()) == item.pk[N..]).then_some(item)
+}
+
+/// The item of a signature without any check, to show that the leaf rejects what the native check does.
+#[cfg(test)]
+pub(super) fn unchecked(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Item {
+    Item {
+        pk: pk.try_into().unwrap(),
+        msg: *msg,
+        sig: sig.to_vec(),
+        key: 0,
+    }
+}
+
+/// Equivalence vectors: honest signatures and the encodings and substitutions the native check must reject.
+pub(super) fn vector_inputs() -> Vec<super::RawCase> {
+    let (a, b) = (signed(0, message(0)), signed(1, message(1)));
+    let case = |label, pk: &[u8], msg, sig: &[u8], valid| (label, pk.to_vec(), msg, sig.to_vec(), valid);
+    let mut cases = vec![
+        case("honest", &a.pk, a.msg, &a.sig, true),
+        case("honest, second key", &b.pk, b.msg, &b.sig, true),
+        case("signature over another message", &a.pk, a.msg, &SlhDsa128s::forge(&a).sig, false),
+        case("another key", &b.pk, a.msg, &a.sig, false),
+        case("truncated signature", &a.pk, a.msg, &a.sig[..a.sig.len() - 1], false),
+        case("extended signature", &a.pk, a.msg, &[&a.sig[..], &[0]].concat(), false),
+        case("truncated key", &a.pk[..31], a.msg, &a.sig, false),
+    ];
+    let mut msg = a.msg;
+    msg[0] ^= 1;
+    cases.push(case("altered message", &a.pk, msg, &a.sig, false));
+    for (label, at) in [("altered randomizer", 0), ("altered FORS", N + 5 * N), ("altered hypertree", a.sig.len() - 1)] {
+        let mut sig = a.sig.clone();
+        sig[at] ^= 1;
+        cases.push(case(label, &a.pk, a.msg, &sig, false));
+    }
+    for (label, at) in [("altered PK.seed", 0), ("altered PK.root", N)] {
+        let mut pk = a.pk;
+        pk[at] ^= 1;
+        cases.push(case(label, &pk, a.msg, &a.sig, false));
+    }
+    let seed = |tag: u8| {
+        let mut s = [tag; N];
+        s[..8].copy_from_slice(&0u64.to_le_bytes());
+        s
+    };
+    let (_, sk) = slh_dsa_shake_128s::KG::keygen_with_seeds(&seed(1), &seed(2), &seed(3));
+    let with_context = sk.try_sign(&a.msg, b"ctx", false).expect("signs");
+    cases.push(case("nonempty context", &a.pk, a.msg, &with_context, false));
+    cases
+}
+
 fn message(i: usize) -> [u8; 32] {
-    nethermind_lean::keccak(&(i as u64).to_le_bytes())
+    crate::keccak(&(i as u64).to_le_bytes())
 }
 
 fn shake(parts: &[&[u8]], out: &mut [u8]) {
@@ -181,7 +243,7 @@ impl Scheme for SlhDsa128s {
     }
 
     fn claim(item: &Item) -> Claim {
-        nethermind_lean::keccak(&[&CLAIM_TAG[..], &item.pk, &item.msg].concat())
+        crate::keccak(&[&CLAIM_TAG[..], &item.pk, &item.msg].concat())
     }
 
     fn push_hints(item: &Item, hints: &mut Hints) {
@@ -198,7 +260,7 @@ impl Scheme for SlhDsa128s {
     }
 
     fn reference_check() {
-        for item in crate::common::items::<Self>(3) {
+        for item in super::common::items::<Self>(3) {
             let pk = slh_dsa_shake_128s::PublicKey::try_from_bytes(&item.pk).expect("a key");
             let sig: [u8; slh_dsa_shake_128s::SIG_LEN] = item.sig.clone().try_into().unwrap();
             assert!(pk.verify(&item.msg, &sig, &[]));

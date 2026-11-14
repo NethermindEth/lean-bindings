@@ -39,7 +39,7 @@ bare message. The vectors hold a direct leanSTARK proof for each guest: `stark-p
 `examples/batch_leaves/batch.py` template and aggregates its `n` leanSTARK dependencies. **Build Lean** packages the vectors,
 this tool and the `lean_startup_stub` example as opt-in test assets of `Nethermind.Crypto.Lean`.
 
-The C ABI is version 17, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
+The C ABI is version 18, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
 `nlean_limits`, `nlean_aggregated_vk`, `nlean_verify_leanstark`, `nlean_verify_recursive` and `nlean_prove_recursive` take a
 leading `u32` guest:
 0 for EIP-8288's, 1 for the one with ethereum/EIPs#12664 batched generic proof dependencies (see below); any other value fails, and the key
@@ -56,6 +56,22 @@ accepts malformed inputs. Panic diagnostics on ABI callers and the pinned parall
 pool are suppressed while native calls are active; the previous hook remains active for
 unrelated threads and outside native calls. The upstream pool resumes worker panics on the
 dispatcher, where the ABI catches them.
+
+### Recognized signature programs (EIP-8437 mode 2)
+
+`src/pq` holds generic leaves that verify ML-DSA-44, Falcon-512 (PADDED) or SLH-DSA-SHAKE-128s signatures over 32-byte
+messages and publish `get_batch_hash` of one claim per signature (see `examples/pq_leaves/README.md` for the claims and
+costs). Profiles are `u32` identifiers: 1 ML-DSA-44, 2 Falcon-512, 3 SLH-DSA-SHAKE-128s.
+
+- `nlean_recognized_key(profile, out)` writes the profile's EIP-8288 verification key hash, `get_vk_hash` of its committed
+  bytecode.
+- `nlean_verify_raw(profile, pk, pk_len, msg, sig, sig_len, claim)` is a relay's native check: 1, with the claim written,
+  when both the scheme's reference verification and the leaf's host computation accept, else 0.
+- `nlean_prove_raw_leaf(profile, input, input_len, out, out_len)` proves one leaf over 1 to 256 signatures (a u32 count,
+  then per signature a u32-length key, the 32-byte message and a u32-length signature) after the same check, returning a
+  witness freed with `nlean_free`. A one-signature leaf is also a direct witness of its dependency under guest 1.
+
+`fixtures` writes `raw-vectors.json`: each profile's key and equivalence vectors, accepted ones with their claims.
 
 ## Prototype wire format
 
