@@ -352,8 +352,8 @@ impl Scheme for MlDsa44 {
         }
     }
 
-    fn items(n: usize) -> Vec<Item> {
-        (0..n).map(|i| signed(i, message(i))).collect()
+    fn item(i: usize) -> Item {
+        signed(i, message(i))
     }
 
     fn claim(item: &Item) -> Claim {
@@ -388,7 +388,7 @@ impl Scheme for MlDsa44 {
     }
 
     fn reference_check() {
-        for item in Self::items(4) {
+        for item in crate::common::items::<Self>(4) {
             let pk = ml_dsa_44::PublicKey::try_from_bytes(item.pk).expect("a key");
             assert!(pk.verify(&item.msg, &item.sig, &[]));
             assert_eq!(

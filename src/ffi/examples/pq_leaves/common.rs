@@ -36,13 +36,13 @@ impl Hints {
 /// One signature scheme's leaf.
 pub trait Scheme {
     /// A signed message: whatever `claim` and `push_hints` need.
-    type Item: Clone;
+    type Item: Clone + Send + Sync;
     const NAME: &'static str;
     /// zkDSL defining `setup_scheme()` and `verify_claim(ctx)`.
     fn source() -> String;
     fn placeholders(_: &mut BTreeMap<String, String>) {}
-    /// `n` distinct signed messages, deterministic in `n`.
-    fn items(n: usize) -> Vec<Self::Item>;
+    /// The `i`th signed message, deterministic in `i` and distinct from every other.
+    fn item(i: usize) -> Self::Item;
     fn claim(item: &Self::Item) -> Claim;
     /// The streams the per-proof setup pops, before any claim's.
     fn setup_hints(_: &mut Hints) {}
@@ -64,8 +64,8 @@ impl Scheme for Null {
     fn source() -> String {
         "def setup_scheme():\n    return 0\n\n\ndef verify_claim(ctx):\n    c = StackBuf(2)\n    hint_witness(c, \"claim\")\n    return c[0], c[1]\n".into()
     }
-    fn items(n: usize) -> Vec<Claim> {
-        (0..n as u64).map(|i| nethermind_lean::keccak(&i.to_le_bytes())).collect()
+    fn item(i: usize) -> Claim {
+        nethermind_lean::keccak(&(i as u64).to_le_bytes())
     }
     fn claim(item: &Claim) -> Claim {
         *item
@@ -76,6 +76,26 @@ impl Scheme for Null {
     fn forge(item: &Claim) -> Claim {
         *item
     }
+}
+
+/// Runs `f` on `0..n` across the machine's threads, in order of index.
+fn parallel<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    let threads = std::thread::available_parallelism().map_or(1, usize::from).min(n.max(1));
+    let mut out: Vec<Vec<T>> = Vec::new();
+    std::thread::scope(|scope| {
+        let f = &f;
+        let handles: Vec<_> = (0..threads)
+            .map(|t| scope.spawn(move || (t..n).step_by(threads).map(f).collect::<Vec<T>>()))
+            .collect();
+        out = handles.into_iter().map(|h| h.join().expect("a worker")).collect();
+    });
+    let mut iters: Vec<_> = out.into_iter().map(Vec::into_iter).collect();
+    (0..n).map(|i| iters[i % threads].next().expect("an item")).collect()
+}
+
+/// `n` distinct signed messages: [`Scheme::item`] of `0..n`, generated in parallel (signing is slow for some schemes).
+pub fn items<S: Scheme>(n: usize) -> Vec<S::Item> {
+    parallel(n, S::item)
 }
 
 /// `g^n`, a count as the program takes it.
@@ -211,8 +231,14 @@ fn witness<S: Scheme>(mut items: Vec<S::Item>) -> (Vec<Claim>, Hints) {
         vec![count(cells / 17), count(cells % 17), F192::new(u64::from(cells % 17 <= 8), 0, 0)],
     );
     S::setup_hints(&mut hints);
-    for item in &items {
-        S::push_hints(item, &mut hints);
+    for one in parallel(items.len(), |i| {
+        let mut h = Hints::default();
+        S::push_hints(&items[i], &mut h);
+        h
+    }) {
+        for (name, entries) in one.0 {
+            hints.0.entry(name).or_default().extend(entries);
+        }
     }
     (claims, hints)
 }
@@ -228,9 +254,13 @@ pub struct Leaf {
 /// Proves the leaf of `items` under `program`; `Err` when the program rejects them.
 pub fn prove_items<S: Scheme>(program: &Program, items: Vec<S::Item>, statement: Option<Claim>) -> Result<Leaf, String> {
     let (claims, hints) = witness::<S>(items);
+    prove_witness(program, claims, &hints, statement)
+}
+
+fn prove_witness(program: &Program, claims: Vec<Claim>, hints: &Hints, statement: Option<Claim>) -> Result<Leaf, String> {
     let mut program = program.clone();
-    for (name, entries) in hints.0 {
-        program.set_witness(&name, entries);
+    for (name, entries) in &hints.0 {
+        program.set_witness(name, entries.clone());
     }
     let statement = statement.unwrap_or_else(|| batch_hash(&claims));
     let started = Instant::now();
@@ -272,7 +302,7 @@ pub fn test<S: Scheme>() {
     S::reference_check();
     println!("{}: reference vectors match", S::NAME);
     let program = program::<S>();
-    let items = S::items(2);
+    let items = items::<S>(2);
     let leaf = prove_items::<S>(&program, items.clone(), None).expect("an honest leaf proves");
     assert!(verify_batch_leaf(Guest::Batched, &leaf.claims, &leaf.key, &leaf.witness));
     println!("{}: a leaf of 2 signatures proves and verifies ({} cycles)", S::NAME, leaf.stats.cycles);
@@ -305,12 +335,14 @@ pub fn prove_leaf<S: Scheme>(n: usize, reps: usize, aggregate: bool) {
     let program = program::<S>();
     let compile_s = started.elapsed().as_secs_f64();
     let s = size(&program);
-    let items = S::items(n);
+    let started = Instant::now();
+    let (claims, hints) = witness::<S>(items::<S>(n));
+    let witness_s = started.elapsed().as_secs_f64();
     if aggregate {
         rec_aggregation::warm_up(Guest::Batched);
     }
     for run in 0..=reps {
-        let leaf = prove_items::<S>(&program, items.clone(), None).expect("the leaf proves");
+        let leaf = prove_witness(&program, claims.clone(), &hints, None).expect("the leaf proves");
         let agg = aggregate.then(|| aggregation_step(&leaf));
         if run == 0 {
             continue;
@@ -318,7 +350,7 @@ pub fn prove_leaf<S: Scheme>(n: usize, reps: usize, aggregate: bool) {
         let st = &leaf.stats;
         let agg = agg.map_or(String::new(), |(s, cycles)| format!(",\"agg_s\":{s:.4},\"agg_cycles\":{cycles}"));
         println!(
-            "{{\"scheme\":\"{}\",\"n\":{n},\"run\":{run},\"prove_s\":{:.4},\"cycles\":{},\"rows\":{:?},\"committed\":{},\"log_committed\":{:.3},\"log_mem\":{},\"instructions\":{},\"padded\":{},\"witness_bytes\":{},\"peak_rss\":{},\"compile_s\":{compile_s:.3},\"threads\":\"{}\"{agg}}}",
+            "{{\"scheme\":\"{}\",\"n\":{n},\"run\":{run},\"prove_s\":{:.4},\"cycles\":{},\"rows\":{:?},\"committed\":{},\"log_committed\":{:.3},\"log_mem\":{},\"instructions\":{},\"padded\":{},\"witness_bytes\":{},\"peak_rss\":{},\"compile_s\":{compile_s:.3},\"witness_s\":{witness_s:.3},\"threads\":\"{}\"{agg}}}",
             S::NAME,
             leaf.prove_s,
             st.cycles,

@@ -176,8 +176,8 @@ impl Scheme for SlhDsa128s {
         ps.insert("CLAIM_TAG".into(), u128::from_le_bytes(*CLAIM_TAG).to_string());
     }
 
-    fn items(n: usize) -> Vec<Item> {
-        (0..n).map(|i| signed(i, message(i))).collect()
+    fn item(i: usize) -> Item {
+        signed(i, message(i))
     }
 
     fn claim(item: &Item) -> Claim {
@@ -198,7 +198,7 @@ impl Scheme for SlhDsa128s {
     }
 
     fn reference_check() {
-        for item in Self::items(3) {
+        for item in crate::common::items::<Self>(3) {
             let pk = slh_dsa_shake_128s::PublicKey::try_from_bytes(&item.pk).expect("a key");
             let sig: [u8; slh_dsa_shake_128s::SIG_LEN] = item.sig.clone().try_into().unwrap();
             assert!(pk.verify(&item.msg, &sig, &[]));

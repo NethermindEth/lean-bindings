@@ -360,27 +360,23 @@ impl Scheme for Falcon512 {
         ps.insert("FNINV".into(), f192_literal(count(NINV as usize)));
     }
 
-    fn items(n: usize) -> Vec<FalconItem> {
-        (0..n)
-            .map(|i| {
-                let mut seed = [0u8; 48];
-                Stream::new(b"key", i).fill_bytes(&mut seed);
-                let (mut sk, mut pk) = ([0; SIGN_KEY_SIZE_512], [0; VRFY_KEY_SIZE_512]);
-                KeyPairGenerator512::default()
-                    .keygen_from_seed_pqclean(FN_DSA_LOGN_512, &seed, &mut sk, &mut pk)
-                    .expect("keygen");
-                let mut msg = [0x42u8; 32];
-                msg[..8].copy_from_slice(&(i as u64).to_le_bytes());
-                let mut other_msg = msg;
-                other_msg[31] ^= 1;
-                FalconItem {
-                    pk,
-                    msg,
-                    sig: sign(&sk, &msg, i, b"sign"),
-                    other: sign(&sk, &other_msg, i, b"sign-other"),
-                }
-            })
-            .collect()
+    fn item(i: usize) -> FalconItem {
+        let mut seed = [0u8; 48];
+        Stream::new(b"key", i).fill_bytes(&mut seed);
+        let (mut sk, mut pk) = ([0; SIGN_KEY_SIZE_512], [0; VRFY_KEY_SIZE_512]);
+        KeyPairGenerator512::default()
+            .keygen_from_seed_pqclean(FN_DSA_LOGN_512, &seed, &mut sk, &mut pk)
+            .expect("keygen");
+        let mut msg = [0x42u8; 32];
+        msg[..8].copy_from_slice(&(i as u64).to_le_bytes());
+        let mut other_msg = msg;
+        other_msg[31] ^= 1;
+        FalconItem {
+            pk,
+            msg,
+            sig: sign(&sk, &msg, i, b"sign"),
+            other: sign(&sk, &other_msg, i, b"sign-other"),
+        }
     }
 
     fn claim(item: &FalconItem) -> Claim {
@@ -440,7 +436,7 @@ impl Scheme for Falcon512 {
         assert_eq!(got, want, "negacyclic NTT");
 
         // The host's verification agrees with the reference implementation on honest and forged signatures.
-        for item in Self::items(4) {
+        for item in crate::common::items::<Self>(4) {
             assert!(verifies(&item.pk, &item.msg, &item.sig));
             assert!(!verifies(&item.pk, &item.msg, &item.other));
             assert!(norm(&item.pk, &item.msg, &item.sig, &mut Hints::default()) <= NORM_BOUND);
