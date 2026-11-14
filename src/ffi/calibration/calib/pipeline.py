@@ -22,6 +22,9 @@ STEP_GB_FIXED = {"flat": 0.6, "committed": 0.8}
 LEAF_STEP_GB = {"flat": {7: 1.2, 8: 1.4, 9: 2.0, 10: 3.1, 11: 4.7}, "committed": {k: 1.2 for k in range(7, 12)}}
 
 
+TRACE_STEP = 0.1
+
+
 def iters_for_trace(trace_log: float) -> int:
     return max(4, int(round(2 ** (REF_ITERS_LOG + trace_log - REF_TRACE_LOG))))
 
@@ -169,7 +172,23 @@ class Calibration:
 
     def max_leaf(self, build: dict, seed: int, claims: int = 1) -> str:
         pre = self.res["preflight"]
-        path, meta = self.run.leaf(build, pre["code_log_used"], pre["iters"], self.cfg["bounds"]["inner_log_inv_rate"], claims, seed)
+        while True:
+            try:
+                path, meta = self.run.leaf(build, pre["code_log_used"], pre["iters"], self.cfg["bounds"]["inner_log_inv_rate"],
+                                           claims, seed)
+                break
+            except RuntimeError as e:
+                # The verifier caps the stacked committed witness (leanVM MAX_STACKED_LOG): the largest provable trace
+                # is just below the configured height, so step down until the leaf proves.
+                if "WitnessOutOfRange" not in str(e) or pre["trace_log_used"] <= 16:
+                    raise
+                pre["trace_log_used"] = round(pre["trace_log_used"] - TRACE_STEP, 2)
+                pre["iters"] = iters_for_trace(pre["trace_log_used"])
+                note = (f"trace capped by the verifier's committed-witness bound: using 2^{pre['trace_log_used']:g}, "
+                        f"the largest provable within 2^{TRACE_STEP:g} of 2^{pre['trace_log_requested']:g}")
+                pre["notes"] = [n for n in pre["notes"] if not n.startswith("trace capped")] + [note]
+                pre["scaled"] = True
+                self.log("preflight: " + note)
         self.res.setdefault("leaves", {})[os.path.basename(path)] = meta
         return path
 

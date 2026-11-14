@@ -288,7 +288,7 @@ def unmeasured(res: dict) -> list[str]:
     pre = res.get("preflight", {})
     cfg = res["config"]
     if pre.get("trace_log_used") != pre.get("trace_log_requested"):
-        out.append(f"Maximum-resource leaves at 2^{pre.get('trace_log_requested')}: measured at 2^{pre.get('trace_log_used')} (memory).")
+        out.append(f"Maximum-resource leaves at 2^{pre.get('trace_log_requested')}: measured at 2^{pre.get('trace_log_used')} (see the preflight notes).")
     if pre.get("code_log_used") != pre.get("code_log_requested"):
         out.append(f"2^{pre.get('code_log_requested')}-instruction leaves: measured 2^{pre.get('code_log_used')} (memory).")
     if pre.get("step_leaves") != cfg["bounds"]["max_inner_proofs_per_step"]:

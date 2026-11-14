@@ -85,3 +85,23 @@ class CellConditions(unittest.TestCase):
         r.cell = lambda build, name, args, rep, retry=False: next(attempts)
         s = r.cells({"label": "b"}, [("c", [])], reps=3)["c"]
         self.assertEqual((s["status"], s["reps"], s["excluded"], s["prove_s"]), ("ok", 1, 1, 1.0))
+
+
+class MaxLeaf(unittest.TestCase):
+    def test_trace_steps_down_to_the_committed_witness_bound(self):
+        c = pipeline.Calibration.__new__(pipeline.Calibration)
+        c.cfg, c.log = {"bounds": {"inner_log_inv_rate": 1}}, lambda m: None
+        c.res = {"preflight": {"code_log_used": 11, "trace_log_used": 30.0, "trace_log_requested": 30.0,
+                               "iters": pipeline.iters_for_trace(30.0), "notes": [], "scaled": False}}
+        tried = []
+
+        def leaf(build, code_log, iters, rate, claims, seed):
+            tried.append(iters)
+            if iters > pipeline.iters_for_trace(29.8):
+                raise RuntimeError("leaf generation failed (101): WitnessOutOfRange { log_committed: 31 }")
+            return "leaf.bin", {}
+
+        c.run = mock.Mock(leaf=leaf)
+        self.assertEqual(c.max_leaf({"label": "b"}, 1), "leaf.bin")
+        pre = c.res["preflight"]
+        self.assertEqual((pre["trace_log_used"], len(tried), len(pre["notes"])), (29.8, 3, 1))
