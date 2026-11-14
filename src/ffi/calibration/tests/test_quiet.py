@@ -73,6 +73,16 @@ class Quiet(unittest.TestCase):
         self.assertEqual(len(final["iterations"]), 1)
         self.assertEqual(final["final"]["verdict"], "PASS")
 
+    def test_modelled_workers_keep_the_verified_rate_factor(self):
+        c = calibration([block_result(9.0, True), block_result(3.0, True)])
+        c.cfg["model_workers"] = [16]
+        c.constants = lambda G, factor=1.0, workers=None, single=False: {"rate_factor": factor, "workers": workers}
+        with mock.patch.object(pipeline.gasmath, "blocks", return_value={"native": {"native": 64}}):
+            c.calibrate()
+        g = c.res["gas_limits"]["60000000"]
+        self.assertEqual(g["modelled_workers"]["16"]["rate_factor"], g["final"]["constants"]["rate_factor"])
+        self.assertGreater(g["modelled_workers"]["16"]["rate_factor"], 1.0)
+
     def test_block_unquiet_twice_neither_recalibrates_nor_passes(self):
         # Regression: a makespan measured after the gate timed out under load raised every constant by its overshoot.
         c = calibration([block_result(9.0, False), block_result(9.0, False)])

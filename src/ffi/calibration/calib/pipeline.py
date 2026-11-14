@@ -396,8 +396,9 @@ class Calibration:
                 "verdict": ("PASS" if ok and not skipped else "PASS (partial: " + ", ".join(skipped) + " not measured)"
                             if ok else "FAIL")}
             # Modelled: the same measured marginals under a budget for W identical workers of this machine.
+            # The verified rate factor carries over: it corrects what the marginals miss in measured blocks.
             self.res["gas_limits"][str(G)]["modelled_workers"] = {
-                str(w): self.constants(G, workers=w) for w in cfg.get("model_workers", [])}
+                str(w): self.constants(G, final["constants"]["rate_factor"], workers=w) for w in cfg.get("model_workers", [])}
             if self.two_budgets():
                 # For comparison: the same marginals under the single makespan budget (B, margin).
                 self.res["gas_limits"][str(G)]["single_budget"] = {
