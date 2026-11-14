@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: MIT
 #
 # The gas anchor for native verification: Nethermind's ecrecover precompile (3,000 gas) per call on this machine,
-# uncached (ecrecover/EcRecoverTime.cs, the anchor), and as its own BenchmarkDotNet benchmark reports it
+# uncached, with the other baselines (ecrecover/PrecompileTime.cs: BLS12-381 pairing, KZG point evaluation, P-256),
+# and as its own BenchmarkDotNet benchmark reports it
 # (Nethermind.Precompiles.Benchmark, which repeats one input and so times the precompile's last-input cache). Runs in
 # a .NET SDK container that is removed afterwards (with its image, if this run pulled it).
 #
@@ -26,8 +27,8 @@ docker run --rm --name "$name" --label lean-calibration=1 -v "$out":/out -v "$he
     git rev-parse HEAD > /out/nethermind-revision.txt
     git submodule update -q --init --depth 1 src/bench_precompiles
     mkdir -p /src/ecrecover-time
-    sed "s|NETHERMIND/|/src/|" /harness/EcRecoverTime.cs > /src/ecrecover-time/EcRecoverTime.cs
-    (cd /src/ecrecover-time && dotnet run EcRecoverTime.cs) > /out/ecrecover-uncached.txt 2>&1 || rc=$?
+    sed "s|NETHERMIND/|/src/|" /harness/PrecompileTime.cs > /src/ecrecover-time/PrecompileTime.cs
+    (cd /src/ecrecover-time && dotnet run PrecompileTime.cs -- /src/src/bench_precompiles/vectors) > /out/precompiles-uncached.txt 2>&1 || rc=$?
     cd src/Nethermind
     dotnet run -c Release --project Nethermind.Benchmark.Runner -- \
       --filter "Nethermind.Precompiles.Benchmark.ECRecoverBenchmark*" > /out/ecrecover.txt 2>&1 || rc=$?
