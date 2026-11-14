@@ -153,3 +153,29 @@ fn aggregation_step(leaf: &Leaf) -> (f64, usize) {
 pub fn print_vectors() {
     println!("{}", nethermind_lean::pq::vectors_json());
 }
+
+/// Prints test key `args[1]`'s signature under profile `args[0]` (1, 2 or 3) over the 32-byte hex message `args[2]`, with
+/// its public key, claim and the program key, as JSON.
+pub fn print_signature(args: &[String]) {
+    use nethermind_lean::pq::Profile;
+    let profile = Profile::from_id(args[0].parse().expect("profile")).expect("a profile");
+    let key: usize = args[1].parse().expect("key index");
+    let text = args[2].trim_start_matches("0x");
+    let msg: [u8; 32] = (0..32)
+        .map(|i| u8::from_str_radix(&text[2 * i..2 * i + 2], 16).expect("hex"))
+        .collect::<Vec<u8>>()
+        .try_into()
+        .unwrap();
+    let (pk, sig) = profile.sign(key, msg);
+    let claim = profile.verify(&pk, &msg, &sig).expect("the native check accepts it");
+    let hex = |bytes: &[u8]| format!("0x{}", bytes.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    println!(
+        "{{\"profile\":{},\"programKey\":\"{}\",\"publicKey\":\"{}\",\"message\":\"{}\",\"signature\":\"{}\",\"claim\":\"{}\"}}",
+        profile as u32,
+        hex(&profile.key()),
+        hex(&pk),
+        hex(&msg),
+        hex(&sig),
+        hex(&claim)
+    );
+}

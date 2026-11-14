@@ -9,6 +9,7 @@
 //! pq_leaves test  <scheme>                       reference vectors, then the negative cases
 //! pq_leaves prove <scheme> <n> [reps] [--agg]    one JSON line per timed run, after a warm-up
 //! pq_leaves vectors                              EIP-8437 native/leaf equivalence vectors, as JSON
+//! pq_leaves sign <profile> <key> <message-hex>    a test key's signature, as JSON
 //! ```
 //!
 //! Schemes: `null` (hinted claims, the statement alone), `mldsa44`, `falcon512`, `slhdsa128s`.
@@ -26,8 +27,12 @@ fn main() {
         bench::print_vectors();
         return;
     }
+    if arg(0) == Some("sign") {
+        bench::print_signature(&args[1..]);
+        return;
+    }
     let (Some(command), Some(scheme)) = (arg(0), arg(1)) else {
-        eprintln!("usage: pq_leaves size|test|prove <scheme> [n] [reps] [--agg] | pq_leaves vectors");
+        eprintln!("usage: pq_leaves size|test|prove <scheme> [n] [reps] [--agg] | pq_leaves vectors | pq_leaves sign <profile> <key> <message-hex>");
         std::process::exit(2);
     };
     leanvm_core::init_prover();

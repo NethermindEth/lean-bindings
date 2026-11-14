@@ -75,6 +75,12 @@ pub(super) fn unchecked(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Item {
     }
 }
 
+/// Key `key`'s signature over `msg`, with its public key.
+pub(super) fn sign_message(key: usize, msg: [u8; 32]) -> (Vec<u8>, Vec<u8>) {
+    let item = signed(key, msg);
+    (item.pk.to_vec(), item.sig)
+}
+
 /// Equivalence vectors: honest signatures and the encodings and substitutions the native check must reject.
 pub(super) fn vector_inputs() -> Vec<super::RawCase> {
     let (a, b) = (signed(0, message(0)), signed(1, message(1)));

@@ -73,6 +73,15 @@ impl Profile {
         }
     }
 
+    /// Deterministic test key `key`'s signature over `msg` and its public key, for fixtures and devnets.
+    pub fn sign(self, key: usize, msg: [u8; 32]) -> (Vec<u8>, Vec<u8>) {
+        match self {
+            Profile::MlDsa44 => mldsa::sign_message(key, msg),
+            Profile::Falcon512 => falcon::sign_message(key, msg),
+            Profile::SlhDsa128s => slhdsa::sign_message(key, msg),
+        }
+    }
+
     /// Proves one leaf over `signatures`, each `(public key, message, signature)`: its sorted claims and witness under
     /// [`Profile::key`]. `Err` when a signature fails the native check, two share a claim, or the count is outside
     /// `1..=MAX_CLAIMS_PER_BATCH_LEAF`.
@@ -178,6 +187,14 @@ mod tests {
             let vectors = of(profile);
             assert_eq!(vectors.iter().filter(|v| v.claim.is_some()).count(), 2, "{}", profile.name());
             assert!(vectors.iter().filter(|v| v.claim.is_none()).count() >= 10, "{}", profile.name());
+        }
+    }
+
+    #[test]
+    fn test_keys_sign_what_the_native_check_accepts() {
+        for profile in Profile::ALL {
+            let (pk, sig) = profile.sign(7, [9; 32]);
+            assert!(profile.verify(&pk, &[9; 32], &sig).is_some(), "{}", profile.name());
         }
     }
 

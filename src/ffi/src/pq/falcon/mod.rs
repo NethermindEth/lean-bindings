@@ -107,6 +107,20 @@ pub(super) fn unchecked(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> FalconItem {
     }
 }
 
+/// Key `key`'s PADDED signature over `msg`, with its public key: signing retries until the compressed `s2` fits.
+pub(super) fn sign_message(key: usize, msg: [u8; 32]) -> (Vec<u8>, Vec<u8>) {
+    let mut seed = [0u8; 48];
+    Stream::new(b"key", key).fill_bytes(&mut seed);
+    let (mut sk, mut pk) = ([0; SIGN_KEY_SIZE_512], [0; VRFY_KEY_SIZE_512]);
+    KeyPairGenerator512::default()
+        .keygen_from_seed_pqclean(FN_DSA_LOGN_512, &seed, &mut sk, &mut pk)
+        .expect("keygen");
+    let sig = (0u8..)
+        .find_map(|attempt| padded(&sign(&sk, &msg, key, &[b"sign-padded".as_slice(), &[attempt]].concat())))
+        .expect("a signature fits");
+    (pk.to_vec(), sig)
+}
+
 /// Equivalence vectors: honest PADDED signatures and the encodings and substitutions the native check must reject.
 pub(super) fn vector_inputs() -> Vec<super::RawCase> {
     // Keys whose signatures fit the padded size, which nearly all do.
