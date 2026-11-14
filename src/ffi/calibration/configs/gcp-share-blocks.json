@@ -1,0 +1,26 @@
+{
+  "label": "GCE, one worker's share (G / 16) of adversarial 60M blocks at the ethereum/EIPs#12664 @ 539579f7 charges, committed key with the batch guest (lean-bindings#6 @ a344762)",
+  "mode": "worst",
+  "lib_ref": "a344762eee45e9807db07e010d30e6fe5cc41962",
+  "bounds": {
+    "code_log": 11,
+    "trace_log": 29.5,
+    "inner_log_inv_rate": 1
+  },
+  "cells": false,
+  "share_blocks": true,
+  "batch_leaves": 5,
+  "gas_limit": 60000000,
+  "model_workers": 16,
+  "reps": 4,
+  "quiet": {
+    "max_load1": 4,
+    "timeout_s": 600
+  },
+  "workers": {
+    "mode": "local",
+    "count": 1,
+    "base_port": 47100
+  },
+  "threads_per_worker": 22
+}

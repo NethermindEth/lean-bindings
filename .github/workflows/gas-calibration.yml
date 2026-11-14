@@ -1,0 +1,63 @@
+name: Gas calibration
+
+# EIP-8288 / ethereum/EIPs#12664 activation calibration (src/ffi/calibration). Manual only: it proves blocks for hours
+# on the machine it runs on. Pick a runner with `runs_on`; a hosted label never waits for a box.
+on:
+  workflow_dispatch:
+    inputs:
+      runs_on:
+        description: Runner labels, as JSON (e.g. "ubuntu-latest" or ["self-hosted","eip8288-calibration"])
+        default: '"ubuntu-latest"'
+        type: string
+      scenarios:
+        description: smoke, reference, or a config path under src/ffi/calibration
+        default: smoke
+        type: string
+      timeout_minutes:
+        description: Calibration time limit (the job allows 15 more)
+        default: '170'
+        type: string
+  workflow_call:
+    inputs:
+      runs_on:
+        type: string
+        default: '"ubuntu-latest"'
+      scenarios:
+        type: string
+        default: smoke
+      timeout_minutes:
+        type: string
+        default: '170'
+
+permissions:
+  contents: read
+
+jobs:
+  calibrate:
+    name: Calibrate (${{ inputs.scenarios }})
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes) + 15 }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Calibrate
+        env:
+          SCENARIOS: ${{ inputs.scenarios }}
+          TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+        run: |
+          src/ffi/calibration/ci/run-calibration.sh --scenarios "$SCENARIOS" \
+            --out "$RUNNER_TEMP/calibration" --timeout-minutes "$TIMEOUT_MINUTES"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gas-calibration-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/calibration
+            !${{ runner.temp }}/calibration/bin
+            !${{ runner.temp }}/calibration/corpus
+          if-no-files-found: warn
