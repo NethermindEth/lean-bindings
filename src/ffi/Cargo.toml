@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 [package]
 name = "nethermind-lean"
-version = "0.17.0"
+version = "0.18.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT"
@@ -24,15 +24,16 @@ bench.workspace = true
 lean_compiler.workspace = true
 leanvm_core.workspace = true
 fiat_shamir.workspace = true
-
-[dev-dependencies]
-verifier.workspace = true
-# examples/pq_leaves only: peak RSS and the signature schemes' reference implementations.
-libc = "0.2"
+# The recognized signature programs' reference implementations (src/pq): native checks and the leaves' hosts.
 fips204 = { version = "0.4", default-features = false, features = ["default-rng", "ml-dsa-44"] }
 fips205 = { version = "0.4", default-features = false, features = ["default-rng", "slh_dsa_shake_128s"] }
 tide-fn-dsa = "0.4"
 sha3 = "0.10"
+
+[dev-dependencies]
+verifier.workspace = true
+# examples/pq_leaves only: peak RSS.
+libc = "0.2"
 
 [workspace]
 members = ["crates/*"]
