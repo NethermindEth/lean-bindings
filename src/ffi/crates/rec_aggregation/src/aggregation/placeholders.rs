@@ -911,10 +911,28 @@ fn signature_placeholders(guest: Guest, ps: &mut impl FnMut(&str, String)) {
     let mut tag_tail = [0; 16];
     tag_tail[..6].copy_from_slice(&BATCH_FINAL_TAG[16..]);
     ps("FINAL_TAG_1", dsl_u128(pack_16_bytes(&tag_tail)).to_string());
-    // The leanVM tag ahead of a program's table in its digest: its first 8 bytes as a lane, its 9th byte.
-    let tag: &[u8; 9] = verifier::TAG.try_into().expect("a 9-byte tag");
-    ps("TAG_LANE0", u64::from_le_bytes(tag[..8].try_into().unwrap()).to_string());
-    ps("TAG_BYTE8", tag[8].to_string());
+    // A committed program's key: its first cell, `verifier::COMMITTED_TAG ‖ u8 kgen`, for every kgen; and the
+    // commitment's rate, as the g-power `open_stacked` dispatches on.
+    let key_cells = (0..=MAX_GENERIC_BYTECODE_LOG).map(|kgen| {
+        let mut cell = [0u8; 16];
+        cell[..15].copy_from_slice(verifier::COMMITTED_TAG);
+        cell[15] = kgen as u8;
+        dsl_u128(pack_16_bytes(&cell))
+    });
+    ps("GEN_KEY_CELLS", literals(key_cells));
+    // The public input seeding its out-of-domain point's sponge: `verifier::COMMITTED_OOD_TAG ‖ u8 kgen`, then zero.
+    let ood_cells = (0..=MAX_GENERIC_BYTECODE_LOG).map(|kgen| {
+        let mut cell = [0u8; 16];
+        cell[..15].copy_from_slice(verifier::COMMITTED_OOD_TAG);
+        cell[15] = kgen as u8;
+        dsl_u128(pack_16_bytes(&cell))
+    });
+    ps("GEN_OOD_CELLS", literals(ood_cells));
+    ps("GEN_RATE_SEL", (verifier::COMMITTED_BYTECODE_LOG_INV_RATE - MIN_LOG_INV_RATE).to_string());
+    // The size arm of the commitment's opening: one stack size for every kgen under the cap.
+    let stack_log = verifier::committed_bytecode_stack_log(16 << MAX_GENERIC_BYTECODE_LOG);
+    assert_eq!(stack_log, verifier::MIN_STACKED_LOG, "every committed program opens in the least stack");
+    ps("GEN_STACK_LOG", stack_log.to_string());
     ps("CLAIM_GROUP", CLAIM_GROUP.to_string());
     ps("BIG_GROUPS", BIG_GROUPS.to_string());
     ps("MAX_RECURSIONS", MAX_RECURSIONS.to_string());

@@ -1,7 +1,9 @@
 # EIP-8288 native Lean integration
 
-This adapter proves on unmodified [leanEthereum/leanVM](https://github.com/leanEthereum/leanVM), pinned to
-`e4dcb8d5436c9bf76398d890c57c59613af12956` in `Cargo.toml`; `Cargo.lock` pins every other dependency. The EIP-8288
+This adapter proves on [leanEthereum/leanVM](https://github.com/leanEthereum/leanVM), pinned to
+`e4dcb8d5436c9bf76398d890c57c59613af12956` in `Cargo.toml`; `Cargo.lock` pins every other dependency. Until the
+committed bytecode key's core changes are upstream, a `[patch]` in `Cargo.toml` takes the core from those changes on
+top of the pin ([Marchhill/leanVM `feature/eip8288-bytecode-commitment`](https://github.com/Marchhill/leanVM/tree/feature/eip8288-bytecode-commitment)). The EIP-8288
 recursive guest and NiceTry v2 signatures live in `crates/`, vendored from the same revision with EIP-8288 changes on
 top (see `crates/README.md`). The guest verifies leanSPHINCS (NiceTry v2) signatures, generic leanVM execution proofs
 and its own child proofs. Upstream replacement belongs behind the existing `ILeanProofVerifier` interface and thin C
@@ -62,8 +64,8 @@ individual witnesses to 8 MiB and aggregation input to 18 MiB; managed callers f
 the local 1.25 MiB pinned-prover bound (`Eip8288Constants.MaxAggregateProofBytes`, not an EIP-8288
 constant) to every aggregate proof. This is an input-buffer limit, not a process memory bound.
 Dependency lists are bounded to 256, of either scheme. Direct leanSTARK witnesses (singleton leaves), batch leaves
-and recursive children together are bounded to EIP-8288's `MAX_INNER_PROOFS_PER_STEP` (12 here, provisional: 13
-maximum-resource leaves fit a step's 2^30 committed-witness bound and 14 do not) per call, discarded and
+and recursive children together are bounded to EIP-8288's `MAX_INNER_PROOFS_PER_STEP` (16, provisional: under the committed
+bytecode key 16 maximum-resource leaves commit 2^27.6 of a step's 2^30 witness bound) per call, discarded and
 redundant ones included; leanSPHINCS witnesses do not count. This format and the
 pinned key are prototype protocol choices, pending finalized EIP-8288 encodings.
 
@@ -93,14 +95,20 @@ resolved dependency.
 * **SPHINCS witness:** public key (32 bytes), signature (6176 bytes). As in EIP-8288, the
   dependency key is the public key itself, root then public parameter. Both the key and the
   signature over `data_hash` are checked.
-* **leanSTARK witness (`0x11`, a deviation, see below):** `kgen` (one byte, at most 11), the program's stacked
-  bytecode table (`16 · 2^kgen` little-endian u64 words, zero padding included, as upstream's `bytecode_table`), then
-  the upstream execution proof (`Proof::to_bytes`). The dependency key is upstream's program digest and Fiat-Shamir
-  IV, `keccak256("leanvm-v1" || table)`, so the key binds the program before the proof's first challenge, as EIP-8288
-  batch leaves (EIPs#12654) require of the key. The program's 32-byte public input, packed into two 128-bit field
-  cells, is the singleton statement `get_batch_hash([data_hash])`. At most 2048 instructions, counting the padded
-  table. These bounds apply to every leaf, at direct admission and in aggregation, even when all its claims are
-  discarded.
+* **leanSTARK witness (`0x11`, a deviation, see below):** the format depends on the guest. Guest 0 (EIP-8288's,
+  unchanged) takes `kgen` (one byte, at most 11), the program's stacked bytecode table (`16 · 2^kgen` little-endian
+  u64 words, zero padding included, as upstream's `bytecode_table`), then the upstream execution proof
+  (`Proof::to_bytes`) of the bare claim; its key is upstream's program digest, `keccak256("leanvm-v1" || table)`.
+  Guest 1 takes `kgen`, `root` (32 bytes), `ood` (32 bytes), then the execution proof of the committed program on
+  the singleton statement `get_batch_hash([data_hash])`. `root` is the WHIR commitment to the program's stacked
+  bytecode table zero-padded to `2^16` words at rate 1/16, and `ood` the table's value at an out-of-domain point drawn
+  from `root`, as two 16-byte cells. Its key is the program's Fiat-Shamir IV,
+  `keccak256("leanvm-commit-1" || kgen || root || ood)`, so the key binds one program before the proof's first
+  challenge; the proof sends the table's value at the bus's point and opens `root` there and at the out-of-domain
+  point, so verifying it costs the same whatever the program's size. The 32-byte public input is packed into two
+  128-bit field cells. At most 2048 instructions, counting the padded table. These bounds apply to every leaf, at
+  direct admission and in aggregation, even when all its claims are discarded.
+  [`crates/rec_aggregation/EIP8288-PROFILE.md`](crates/rec_aggregation/EIP8288-PROFILE.md) is guest 1's full profile.
 * **aggregation input:** direct count then `(96-byte dependency, witness blob)` pairs;
   child count then `(record count/records, proof blob)` pairs; discard count/records; then, only when nonempty,
   leaf count then `(32-byte key, claim count, 32-byte claims, dependency count/triples, leanSTARK witness blob)`

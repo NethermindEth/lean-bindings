@@ -66,25 +66,27 @@ Claim bytes are hinted in the exponent and range-checked. Order is decided at th
 
 ## Step arity
 
-Measured with the flat program key and near-cap programs (2^11 instructions), every claim sponsored and the step
-finalized:
+Measured with the committed bytecode key (`../EIP8288-PROFILE.md`) and near-cap programs (2^11 instructions) under
+distinct keys, every claim sponsored and the step finalized, at rate 1/2 on a 12-core, 32 GB machine
+(`examples/agg_bench.rs batch 16`, `children 16`):
 
-| Step | Cycles | Committed witness | Result |
+| Step | Cycles | Committed witness | Peak memory |
 | --- | --- | --- | --- |
-| 1 leaf of 256 claims | 2.96M | 2^26.2 | fits |
-| 12 leaves of 256 claims | 34.9M | 2^29.8 | fits (~22 GB peak) |
-| 13 leaves of 256 claims | 37.8M | 2^29.8 | fits |
-| 14 leaves, any claim count | — | over 2^30 | fails |
-| 16 leaves, even 1 claim each | — | over 2^30 | fails |
-| 16 children | 3.5M | — | fits |
+| 1 leaf of 256 claims | 0.49M | 2^23.8 | |
+| 16 leaves of 256 claims | 7.0M | 2^27.6 | 9.9 GB (whole run) |
+| 8 leaves and 8 children of 256 claims | 5.5M | 2^27.3 | |
+| 16 children | 3.4M | 2^26.8 | 7.1 GB |
 
-`MAX_INNER_PROOFS_PER_STEP` is therefore provisionally 12, leaving room for the leanSPHINCS signatures a step may add.
-A different program-commitment construction changes these numbers.
+`MAX_INNER_PROOFS_PER_STEP` is therefore 16, as #12664 sets it, leaving about 2^2.4 of the outer proof's 2^30 bound for
+the leanSPHINCS signatures a step may add. Under the earlier flat key, which rehashed the whole table in every leaf
+(2.96M cycles a leaf), 14 leaves exceeded 2^30 and the arity was 12.
 
 ## Against #12664 at `0cbf1366`
 
 Implemented: batch leaves with exact, strictly increasing claim lists, a direct leanSTARK witness as a one-claim leaf
-(`get_claim_hash(claim) = get_batch_hash([claim])`), payment binding through intermediate records, and finalization.
+(`get_claim_hash(claim) = get_batch_hash([claim])`), payment binding through intermediate records, finalization, an
+openable program commitment as the leaf key (below), and `MAX_INNER_PROOFS_PER_STEP = 16` (see Step arity), counting
+discarded and redundant inputs; the ABI counts each direct witness as one.
 
 Not yet, each needing a new `AGGREGATED_VK`:
 
@@ -93,9 +95,8 @@ Not yet, each needing a new `AGGREGATED_VK`:
 - The tagged statement domains: `DEPS_HASH(b"EIP8288:aggregate:v1" ‖ tag ‖ payload)` with tags 0x00 (ordinary, over
   `deps_hash`), 0x01 (intermediate, over the 192-byte records) and 0x02 (finalized). Today ordinary statements are the
   plain digest and finalization uses the `EIP8288:batch-final:v1` tag.
-- `get_vk_hash(program_commitment) = keccak256(b"EIP8288:vk:v1" ‖ program_commitment)`.
-- `MAX_INNER_PROOFS_PER_STEP = 16`, counting direct inputs across wrappers and discarded or redundant proofs. The arity
-  table above fails 14 leaves under the flat key, so 16 depends on the commitment construction.
+- `get_vk_hash(program_commitment) = keccak256(b"EIP8288:vk:v1" ‖ program_commitment)`: the dependency key is still
+  the commitment itself.
 - Output capacity of at least `MAX_RLP_BLOCK_SIZE // 96` dependencies, with counters that never narrow (65,535 and
   65,536 test lengths). The guest's lists are bounded at 256 today.
 
@@ -103,7 +104,8 @@ Not yet, each needing a new `AGGREGATED_VK`:
 
 #12664 makes the leanSTARK verification key a `program_commitment` that binds at most one complete program and layout even
 when the key is chosen adversarially, supports sound openings of the program-table evaluations verification needs, and
-authenticates them inside recursion at cost sublinear in the padded program size. The flat digest
-`keccak256("leanvm-v1" ‖ table)` used here binds the table only by rehashing all of it, so it meets none of the opening
-requirements. NethermindEth/lean-bindings#10 prototypes an openable bytecode commitment as the key; this crate takes it
-when that lands.
+authenticates them inside recursion at cost sublinear in the padded program size. Guest 1 keys a program by the
+committed bytecode key of `../EIP8288-PROFILE.md`: a WHIR commitment to the stacked table and an out-of-domain value
+drawn from it, opened by each proof at the bus's point and the out-of-domain point, at a cost independent of the
+program's size. The core changes it needs are patched in from Marchhill/leanVM `feature/eip8288-bytecode-commitment`
+until they are upstream. Guest 0 keeps the flat digest `keccak256("leanvm-v1" ‖ table)` unchanged.

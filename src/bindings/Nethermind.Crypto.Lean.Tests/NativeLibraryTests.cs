@@ -16,11 +16,11 @@ public partial class NativeLibraryTests
     private const uint ExpectedAbi = 16;
     // EIP-8288's guest (0), the ABI 12 package's unchanged, and the one with ethereum/EIPs#12664 batch pricing (1).
     private const string ExpectedAggregatedVk = "f7cf74585d02043051f0575c23c6b441b0b08ac9e273f5e989c5984b8a4ac0e5";
-    private const string ExpectedBatchedAggregatedVk = "df3a802307fe9831311df1288864e5ab0e672b19a224f6b23a374fc873a69828";
+    private const string ExpectedBatchedAggregatedVk = "8085df136766c4745c98d4dc25307f654ae4e5abb1c43e60136c1e2b723295c4";
     // Proof bytes, dependencies, inner proofs per step, NiceTry v2 witness bytes, aggregation input bytes, leanSTARK
     // dependencies per list (guest 0) or claims per batch leaf (guest 1), leanSTARK instructions.
     private static readonly uint[] ExpectedLimits = [8 * 1024 * 1024, 256, 16, 32 + 6176, 18 * 1024 * 1024, 16, 2048];
-    private static readonly uint[] ExpectedBatchedLimits = [8 * 1024 * 1024, 256, 12, 32 + 6176, 18 * 1024 * 1024, 256, 2048];
+    private static readonly uint[] ExpectedBatchedLimits = [8 * 1024 * 1024, 256, 16, 32 + 6176, 18 * 1024 * 1024, 256, 2048];
 
     // A project reference leaves the library under runtimes/<rid>/native; a package consumer gets it beside the binary.
     static NativeLibraryTests() => NativeLibrary.SetDllImportResolver(typeof(NativeLibraryTests).Assembly, static (name, assembly, searchPath) =>
@@ -78,7 +78,7 @@ public partial class NativeLibraryTests
     [Test]
     [Arguments("sphincs-message.bin", "sphincs-key.bin", "sphincs-signature.bin", false, 0u)]
     [Arguments("stark-message.bin", "stark-key.bin", "stark-proof.bin", true, 0u)]
-    [Arguments("stark-message.bin", "stark-key.bin", "stark-claim-proof.bin", true, 1u)]
+    [Arguments("stark-message.bin", "stark-batched-key.bin", "stark-claim-proof.bin", true, 1u)]
     public async Task Should_verify_vector_and_reject_a_flipped_byte(string message, string key, string witness, bool leanStark, uint guest)
     {
         byte[] data = Vector(message), vk = Vector(key), proof = Vector(witness);
@@ -88,13 +88,14 @@ public partial class NativeLibraryTests
         await Assert.That(Verify(leanStark, data, vk, proof, guest)).IsEqualTo(0);
     }
 
-    // Guest 0 takes a direct leanSTARK proof of the bare claim, guest 1 one of get_claim_hash(claim); neither takes the other's.
+    // Guest 0 takes a flat-keyed direct leanSTARK proof of the bare claim, guest 1 a committed-keyed one of
+    // get_claim_hash(claim); neither takes the other's.
     [Test]
-    [Arguments("stark-proof.bin", 1u)]
-    [Arguments("stark-claim-proof.bin", 0u)]
-    [Arguments("stark-claim-proof.bin", 2u)]
-    public async Task Should_reject_a_leanstark_vector_under_another_guest(string witness, uint guest) =>
-        await Assert.That(Verify(true, Vector("stark-message.bin"), Vector("stark-key.bin"), Vector(witness), guest)).IsEqualTo(0);
+    [Arguments("stark-key.bin", "stark-proof.bin", 1u)]
+    [Arguments("stark-batched-key.bin", "stark-claim-proof.bin", 0u)]
+    [Arguments("stark-batched-key.bin", "stark-claim-proof.bin", 2u)]
+    public async Task Should_reject_a_leanstark_vector_under_another_guest(string key, string witness, uint guest) =>
+        await Assert.That(Verify(true, Vector("stark-message.bin"), Vector(key), Vector(witness), guest)).IsEqualTo(0);
 
     [Test]
     [Arguments("--sign-message", false)]

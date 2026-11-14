@@ -47,8 +47,14 @@ def main():
 
 /// Accepts any canonical public input after 900 multiply-adds: 2^11 instructions.
 fn wide_source() -> String {
+    wide_source_of(900)
+}
+
+/// [`wide_source`] after `steps` multiply-adds: a distinct program, and so key, per count, all of 2^11 instructions
+/// from about 520 on.
+fn wide_source_of(steps: usize) -> String {
     let mut src = String::from("def main():\n    h = StackBuf(2)\n    hint_witness(h, \"pi\")\n    acc = h[0]\n");
-    src += &"    acc = acc * h[1] + h[0]\n".repeat(900);
+    src += &"    acc = acc * h[1] + h[0]\n".repeat(steps);
     src + "    p = 1\n    p[1] = h[0]\n    p[GEN] = h[1]\n    return\n"
 }
 
@@ -59,7 +65,7 @@ fn cells(digest: &[u8; 32]) -> [primitives::field::F192; 2] {
 /// A batch leaf of `claims`: the program proves `batch_hash(claims)` with its witness stream.
 fn dependency(program: &Program, witness: (&str, Vec<primitives::field::F192>), claims: Vec<[u8; 32]>) -> BatchLeaf {
     let table: Vec<u64> = bytecode_table(program.prog()).iter().map(|w| w.0).collect();
-    let mut program = program.clone();
+    let mut program = program.clone().committed();
     program.set_witness(witness.0, vec![witness.1]);
     let (proof, _) = prove(&program, cells(&batch_hash(&claims)), RATE).expect("the dependency proves");
     let vk = generic_verification_key(&table).expect("within the cap");
@@ -191,10 +197,36 @@ fn main() {
                 aggregate_finalized_with_stats(GUEST, &[], vec![one.clone()], vec![], &all, &[], RATE).expect("proves")
             });
             let n = std::env::args().nth(2).map_or(16, |a| a.parse().expect("n"));
-            let leaves: Vec<BatchLeaf> = (0..n).map(|i| wide_leaf(full(2 + i as u8))).collect();
+            // Distinct keys: each leaf's program is a different near-cap one.
+            let leaves: Vec<BatchLeaf> = (0..n)
+                .map(|i| {
+                    let program = compile(&parse(&wide_source_of(900 - i)).expect("parse"));
+                    assert_eq!(program.prog().len(), wide.prog().len(), "2^11 instructions");
+                    let claims = full(2 + i as u8);
+                    let pi = cells(&batch_hash(&claims)).to_vec();
+                    dependency(&program, ("pi", pi), claims)
+                })
+                .collect();
             let kept = declared(leaves.iter().flat_map(|leaf| sponsored(leaf, &leaf.0[..1])).collect());
-            report(&format!("final step of {n} leaves of {size} claims, one kept each"), || {
+            report(&format!("final step of {n} leaves of {size} claims under distinct keys, one kept each"), || {
                 aggregate_finalized_with_stats(GUEST, &[], leaves.clone(), vec![], &kept, &[], RATE).expect("proves")
+            });
+            // Half the step recursive: n/2 such leaves beside n/2 children, each child an intermediate proof of one
+            // more such leaf with every claim and its payment.
+            let half = n / 2;
+            let children: Vec<EthereumProof> = (0..half)
+                .map(|i| {
+                    let child_leaf = wide_leaf(full(100 + i as u8));
+                    let all = declared(sponsored(&child_leaf, &child_leaf.0));
+                    aggregate_with_stats(GUEST, &[], vec![child_leaf], vec![], &[], Some(&all), RATE).expect("proves").0
+                })
+                .collect();
+            let mixed: Vec<_> = leaves[..half].to_vec();
+            let mut kept: Vec<_> = mixed.iter().flat_map(|leaf| sponsored(leaf, &leaf.0[..1])).collect();
+            kept.extend(children.iter().flat_map(|child| child.claims().generic.iter().copied()));
+            let kept = declared(kept);
+            report(&format!("final step of {half} leaves and {half} children of {size} claims"), || {
+                aggregate_finalized_with_stats(GUEST, &children, mixed.clone(), vec![], &kept, &[], RATE).expect("proves")
             });
         }
         _ => panic!("mode: sigs [n] | children [n] | generic | batch [n] [size]"),

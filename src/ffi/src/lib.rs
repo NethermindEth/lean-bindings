@@ -324,23 +324,33 @@ fn dependency(scheme: u8, data: &[u8; 32], key: &[u8; 32]) -> Dep {
 pub const ANY_INPUT_PROGRAM: &str = "def main():\n    h = StackBuf(2)\n    hint_witness(h, \"pi\")\n    p = 1\n    p[1] = h[0]\n    p[GEN] = h[1]\n    return\n";
 
 /// Compiles `source`, a leanVM program reading its public input from the `pi` hint, and proves it on `hash`: the
-/// leanSTARK witness and verification key of the batch leaf whose `batch_hash(claims)` is `hash`, so of the
-/// dependency `(data_hash, key)` for `hash = batch_hash(&[data_hash])`. For tests and fixtures.
-pub fn prove_stark(source: &str, hash: &[u8; 32]) -> Result<(Vec<u8>, [u8; 32]), ()> {
+/// leanSTARK witness and verification key `guest` takes for the batch leaf whose `batch_hash(claims)` is `hash`, so of
+/// the dependency `(data_hash, key)` for `hash = batch_hash(&[data_hash])`. Guest 0 keys a program by its flat table
+/// digest, guest 1 by its committed bytecode key. For tests and fixtures.
+pub fn prove_stark(guest: Guest, source: &str, hash: &[u8; 32]) -> Result<(Vec<u8>, [u8; 32]), ()> {
     let _guard = begin_proof();
-    let mut program = lean_compiler::compile(&lean_compiler::parse(source).map_err(|_| ())?);
+    let program = lean_compiler::compile(&lean_compiler::parse(source).map_err(|_| ())?);
+    let mut program = match guest {
+        Guest::Base => program,
+        Guest::Batched => program.committed(),
+    };
     let table: Vec<u64> = leanvm_core::cpu::bytecode_table(program.prog())
         .iter()
         .map(|word| word.0)
         .collect();
-    let key = rec_aggregation::generic_verification_key(&table).ok_or(())?;
     let input = fiat_shamir::merkle::hash_to_scalars(hash);
     program.set_witness("pi", vec![input.to_vec()]);
     let (proof, _) = leanvm_core::cpu::prove(&program, input, LOG_INV_RATE).map_err(|_| ())?;
-    Ok((
-        rec_aggregation::generic_witness(&table, &proof).ok_or(())?,
-        key,
-    ))
+    match guest {
+        Guest::Base => Ok((
+            rec_aggregation_base::generic_witness(&table, &proof).ok_or(())?,
+            rec_aggregation_base::generic_verification_key(&table).ok_or(())?,
+        )),
+        Guest::Batched => Ok((
+            rec_aggregation::generic_witness(&table, &proof).ok_or(())?,
+            rec_aggregation::generic_verification_key(&table).ok_or(())?,
+        )),
+    }
 }
 
 // EIP-8288 `stark_proof`: the guest proof alone, checked against `deps_hash` and the pinned key.
@@ -1001,13 +1011,13 @@ mod tests {
 
     fn proven(index: u8) -> (Dep, Vec<u8>) {
         let message = keccak(&[0x51, index]);
-        let (witness, key) = prove_stark(ANY_INPUT_PROGRAM, &batch_hash(&[message])).unwrap();
+        let (witness, key) = prove_stark(BATCHED, ANY_INPUT_PROGRAM, &batch_hash(&[message])).unwrap();
         (leanstark_dependency(&message, &key), witness)
     }
 
     /// A leaf of `claims` under the accept-all program's key, and that key.
     fn batch(claims: &[[u8; 32]]) -> (Vec<u8>, [u8; 32]) {
-        prove_stark(ANY_INPUT_PROGRAM, &batch_hash(claims)).unwrap()
+        prove_stark(BATCHED, ANY_INPUT_PROGRAM, &batch_hash(claims)).unwrap()
     }
 
     #[test]
@@ -1015,7 +1025,7 @@ mod tests {
         assert_eq!(nlean_abi_version(), 16);
         let mut limits = [0u32; 7];
         assert_eq!(unsafe { nlean_limits(1, limits.as_mut_ptr(), 7) }, 1);
-        assert_eq!(limits[2], 12, "MAX_INNER_PROOFS_PER_STEP");
+        assert_eq!(limits[2], 16, "MAX_INNER_PROOFS_PER_STEP");
         assert_eq!(limits[5], 256, "MAX_CLAIMS_PER_BATCH_LEAF");
         assert_eq!(limits[6], 2048, "leanSTARK instructions");
         assert_eq!(unsafe { nlean_limits(1, limits.as_mut_ptr(), 6) }, 0);
@@ -1046,32 +1056,32 @@ mod tests {
         assert_eq!(keys[0].as_slice(), base.as_slice());
     }
 
-    /// A direct leanSTARK witness is checked as the named guest takes it: guest 0 on the bare claim, as the ABI 12
-    /// package did, and guest 1 on `get_claim_hash(claim)`, which rejects a proof of the bare claim.
+    /// A direct leanSTARK witness is checked as the named guest takes it: guest 0 on the bare claim under the flat
+    /// table key, as the ABI 12 package did, and guest 1 on `get_claim_hash(claim)` under the committed bytecode key,
+    /// which rejects a proof of the bare claim and a flat-keyed witness.
     #[test]
     fn direct_leanstark_witnesses_follow_the_guest() {
         let claim = keccak(b"direct claim");
-        let (bare, key) = prove_stark(ANY_INPUT_PROGRAM, &claim).unwrap();
-        let (wrapped, wrapped_key) = prove_stark(ANY_INPUT_PROGRAM, &batch_hash(&[claim])).unwrap();
-        assert_eq!(key, wrapped_key);
-        let verify = |guest: u32, witness: &[u8]| unsafe {
-            nlean_verify_leanstark(
-                guest,
-                claim.as_ptr(),
-                key.as_ptr(),
-                witness.as_ptr(),
-                witness.len(),
-            )
+        let wrapped_claim = batch_hash(&[claim]);
+        let (bare, flat_key) = prove_stark(BASE, ANY_INPUT_PROGRAM, &claim).unwrap();
+        let (flat_wrapped, _) = prove_stark(BASE, ANY_INPUT_PROGRAM, &wrapped_claim).unwrap();
+        let (committed_bare, committed_key) = prove_stark(BATCHED, ANY_INPUT_PROGRAM, &claim).unwrap();
+        let (wrapped, _) = prove_stark(BATCHED, ANY_INPUT_PROGRAM, &wrapped_claim).unwrap();
+        assert_ne!(flat_key, committed_key);
+        let verify = |guest: u32, key: &[u8; 32], witness: &[u8]| unsafe {
+            nlean_verify_leanstark(guest, claim.as_ptr(), key.as_ptr(), witness.as_ptr(), witness.len())
         };
         assert_eq!(
             [
-                verify(0, &bare),
-                verify(0, &wrapped),
-                verify(1, &bare),
-                verify(1, &wrapped),
-                verify(2, &wrapped)
+                verify(0, &flat_key, &bare),
+                verify(0, &flat_key, &flat_wrapped),
+                verify(0, &committed_key, &wrapped),
+                verify(1, &committed_key, &committed_bare),
+                verify(1, &committed_key, &wrapped),
+                verify(1, &flat_key, &flat_wrapped),
+                verify(2, &committed_key, &wrapped)
             ],
-            [1, 0, 0, 1, 0]
+            [1, 0, 0, 0, 1, 0, 0]
         );
     }
 
@@ -1207,7 +1217,7 @@ mod tests {
             "    acc = acc * h[1] + h[0]\n".repeat(900)
         );
         let claim = [0x31; 32];
-        let (witness, key) = prove_stark(&source, &batch_hash(&[claim])).unwrap();
+        let (witness, key) = prove_stark(BATCHED, &source, &batch_hash(&[claim])).unwrap();
         assert_eq!(witness[0] as usize, MAX_GENERIC_BYTECODE_LOG);
         let dep = leanstark_dependency(&claim, &key);
         assert!(verify_witness(&dep, &witness));
@@ -1657,6 +1667,7 @@ mod tests {
         }
         // A payment under another key sources nothing.
         let (other_witness, other_key) = prove_stark(
+            BATCHED,
             "def main():\n    h = StackBuf(2)\n    hint_witness(h, \"pi\")\n    acc = h[0]\n    acc = acc * h[1] + h[0]\n    p = 1\n    p[1] = h[0]\n    p[GEN] = h[1]\n    return\n",
             &batch_hash(&[a]),
         )

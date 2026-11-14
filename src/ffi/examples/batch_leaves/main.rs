@@ -33,7 +33,7 @@ fn main() {
     ]);
     let source = lean_compiler::parse_with_replacements(include_str!("batch.py"), &replacements)
         .expect("parses");
-    let mut program = lean_compiler::compile(&source);
+    let mut program = lean_compiler::compile(&source).committed();
 
     // A leaf's claims strictly increase: the aggregation guest rejects any other order.
     let mut claims: Vec<[u8; 32]> = (0..n as u64)

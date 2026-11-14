@@ -381,8 +381,9 @@ KECCAK_STATE = KECCAK_STATE_PLACEHOLDER
 # leanSTARK (0x11) dependencies: the most instructions (log) of a program and claims of a
 # leaf (1 in EIP-8288's guest), whether leaves may establish batch (0x12) and leaf-payment
 # (0x13) dependencies, the claim digest's 16-byte domain as a cell, a leaf digest's cells a
-# block pair, the low cells of the 0x12 and 0x13 scheme words, the leanVM tag's first 8 bytes
-# as a lane and its 9th byte, and the mixed dependency digest's 32-byte domain as two cells.
+# block pair, the low cells of the 0x12 and 0x13 scheme words, a committed key's first cell
+# and its out-of-domain seed's per kgen, the commitment's rate index and stack log, and the
+# mixed dependency digest's 32-byte domain as two cells.
 MAX_GENERIC_BYTECODE_LOG = MAX_GENERIC_BYTECODE_LOG_PLACEHOLDER
 GEN_KGEN_ARMS = MAX_GENERIC_BYTECODE_LOG + 1
 MAX_CLAIMS_PER_BATCH_LEAF = MAX_CLAIMS_PER_BATCH_LEAF_PLACEHOLDER
@@ -391,8 +392,10 @@ BATCH_DOMAIN = BATCH_DOMAIN_PLACEHOLDER
 LEAF_CHUNK = LEAF_CHUNK_PLACEHOLDER
 BATCHED_SCHEME_CELL = BATCHED_SCHEME_CELL_PLACEHOLDER
 PAYMENT_SCHEME_CELL = PAYMENT_SCHEME_CELL_PLACEHOLDER
-TAG_LANE0 = TAG_LANE0_PLACEHOLDER
-TAG_BYTE8 = TAG_BYTE8_PLACEHOLDER
+GEN_KEY_CELLS = GEN_KEY_CELLS_PLACEHOLDER
+GEN_OOD_CELLS = GEN_OOD_CELLS_PLACEHOLDER
+GEN_RATE_SEL = GEN_RATE_SEL_PLACEHOLDER
+GEN_STACK_LOG = GEN_STACK_LOG_PLACEHOLDER
 DEPS_DOMAIN_0 = DEPS_DOMAIN_0_PLACEHOLDER
 DEPS_DOMAIN_1 = DEPS_DOMAIN_1_PLACEHOLDER
 # get_batch_final_hash's 22-byte tag: its first 16 bytes as a cell, the last 6 as a cell's low bytes.
@@ -1712,7 +1715,7 @@ def open_stacked(m_idx: Const, rate_sel, fs0, fs1, fs2, fs3, fs4, target, commit
             for t in unroll(0, yr_log):
                 scalar *= (1 + oz[GEN ** (z_folded + t)] + tail_challenges[GEN ** t])
             ood_inner += scalar
-    return sumcheck_target, point, point1, inner_chain[GEN ** n_levels] + ood_inner, yr_at_tail
+    return sumcheck_target, point, point1, inner_chain[GEN ** n_levels] + ood_inner, yr_at_tail, tail_sp[8], tail_sp[9], tail_sp[10], tail_sp[11], tail_sp[12], msg_cursor
 
 
 # ============================== inner-proof verification ============================
@@ -2061,7 +2064,7 @@ def padding_weight(rows, zeta, tau: Const):
     return (1 + top) * pad, lead, rest
 
 
-def verify_tables(fs0, fs1, fs2, fs3, fs4, cursor, pi_0, pi_1, zeta, g_bus_mu, dims_g, table_rows, g_squares, fp_w, beta, claim_pool, chi, claim_push, claim_pull, claim_count):
+def verify_tables(fs0, fs1, fs2, fs3, fs4, cursor, pi_0, pi_1, zeta, g_bus_mu, dims_g, table_rows, g_squares, fp_w, beta, claim_pool, chi, claim_push, claim_pull, claim_count, committed):
     # Settle the bus against the six tables, in four steps: certify each side's
     # leaf-cube tiling, decompose the three GKR leaf values over it, run the ONE
     # table sumcheck they all reduce to, and bind the public input. Pooled claims
@@ -2141,7 +2144,17 @@ def verify_tables(fs0, fs1, fs2, fs3, fs4, cursor, pi_0, pi_1, zeta, g_bus_mu, d
     # Index-MLE value instead of recomputing them; its column values are mostly
     # deduped pool reads (COORD_FRESH). The identity check against pull's own GKR
     # claim still binds everything.
-    bc_share = hint_witness("bytecode_val")
+    # A committed program's proof (committed = 1) sends that value instead: the stream's next word,
+    # permuted in alone (`verify_bus_balance` in `crates/verifier`), so the words below wait at the
+    # same rate positions in both kinds of proof. Both states are computed and one is selected.
+    bc_rate = StackBuf(8)
+    bc_sent = cursor[GEN ** 0]
+    fs_pack(bc_rate, 0, bc_sent, DS_OBSERVE)
+    bc_sp = fs_perm(sp, bc_rate, 1)
+    sp = fs_cap(sp[0] + committed * (bc_sp[8] + sp[0]), sp[1] + committed * (bc_sp[9] + sp[1]), sp[2] + committed * (bc_sp[10] + sp[2]), sp[3] + committed * (bc_sp[11] + sp[3]), sp[4] + committed * (bc_sp[12] + sp[4]))
+    cursor = cursor + committed * (cursor * GEN + cursor)
+    bc_hint = hint_witness("bytecode_val")
+    bc_share = bc_hint + committed * (bc_sent + bc_hint)
     # Each table's padding rows: their weight on a claim at zeta[..tau], dispatched on
     # its hinted log height tau, which this certifies: the least holding its rows, or
     # its floor. A table is at most the stack, so tau has an arm.
@@ -3278,7 +3291,7 @@ def check_opening_terminal(g_squares, zeta, chi, rm, g_bus_mu, g_zc_n, g_log_mem
     assert inner_sum * yr_at_tail == sumcheck_target
 
 
-def verify_sub(pi_0, pi_1, seed_0, seed_1, g_kbc, g_squares):
+def verify_sub(pi_0, pi_1, seed_0, seed_1, g_kbc, g_squares, committed):
     # In-circuit verification of ONE inner proof for the statement (pi_0, pi_1) about
     # the program with Fiat-Shamir seed (seed_0, seed_1) and g^kbc instructions,
     # mirroring `crates/verifier` step for step; the `# ---- ... ----` headers below run
@@ -3286,7 +3299,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_kbc, g_squares):
     # sub-proof's entry of every witness stream and the body lowers once. The
     # exponent tables are shared read-only. The caller must bound g_kbc. Returns
     # the bytecode claim left open: its point (zeta's first kbc coordinates, then
-    # the bus alphas) and its value.
+    # the bus alphas) and its value, then the transcript's end (capacity and cursor), where a
+    # committed program's (committed = 1) bytecode opening follows.
     #
     # The pool holds every committed-coordinate claim's value in decompose order
     # (the points are the GKR zetas, resolvable from the baked block structure) and
@@ -3391,7 +3405,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_kbc, g_squares):
 
     # ---- the bus leaves, the table sumcheck, and the public-input claim ----
     chi = HeapBuf(SIZE_BITS)  # chi[i] = the challenge that bound variable i
-    fs0, fs1, fs2, fs3, fs4, cursor, g_zc_n, bc_share, rm, col_eval_words = verify_tables(fs0, fs1, fs2, fs3, fs4, cursor, pi_0, pi_1, zeta, g_bus_mu, dims_g, table_rows, g_squares, fp_w, beta, claim_pool, chi, claim_push, claim_pull, claim_count)
+    fs0, fs1, fs2, fs3, fs4, cursor, g_zc_n, bc_share, rm, col_eval_words = verify_tables(fs0, fs1, fs2, fs3, fs4, cursor, pi_0, pi_1, zeta, g_bus_mu, dims_g, table_rows, g_squares, fp_w, beta, claim_pool, chi, claim_push, claim_pull, claim_count, committed)
 
     # ---- KECCAK validity, by GKR over the rounds ----
     tau_keccak_g = dims_g[GEN ** (TABLE_KECCAK + 1)]  # the KECCAK table's certified tau
@@ -3459,7 +3473,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_kbc, g_squares):
     # One arm per size, the rate passed on. Both are transcript-bound and range-checked
     # above, so a single compiled guest dispatches independently for every inner proof
     # in a mixed-rate batch.
-    sumcheck_target, point, point1, inner_total, yr_at_tail = match(log(size_sel), range(0, LIG_N_LOG_SIZES), lambda m_idx: open_stacked(m_idx, rate_sel, sp[8], sp[9], sp[10], sp[11], sp[12], target, commit_root_0, commit_root_1, cursor))
+    sumcheck_target, point, point1, inner_total, yr_at_tail, end0, end1, end2, end3, end4, end_cursor = match(log(size_sel), range(0, LIG_N_LOG_SIZES), lambda m_idx: open_stacked(m_idx, rate_sel, sp[8], sp[9], sp[10], sp[11], sp[12], target, commit_root_0, commit_root_1, cursor))
     # `stream` is a fixed-capacity witness transport. The shape fixes the exact
     # consumed prefix, whose every word is transcript-bound; the unused suffix
     # is outside the recursively verified proof and intentionally unconstrained.
@@ -3467,113 +3481,71 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_kbc, g_squares):
     # ---- generalized eval_b terminal (runtime claim shapes) ----
     check_opening_terminal(g_squares, zeta, chi, rm, g_bus_mu, g_zc_n, g_log_mem, tau_keccak_g, kappa_base, lam_cl, col_offsets, z_vals, c_table, point, point1, inner_total, yr_at_tail, sumcheck_target)
 
-    return zeta, bus_alpha, bc_share
+    return zeta, bus_alpha, bc_share, end0, end1, end2, end3, end4, end_cursor
 
 
 # ========================= leanSTARK (0x11) dependency verification ========================
-# A claim is data_hash | vk, four cells: the program whose stacked bytecode table hashes to
-# vk accepts data_hash as its public input. vk is upstream's own program digest,
-# keccak256(TAG | table) with TAG the 9-byte "leanvm-v1" and the table 16 * 2^kgen words,
-# little endian: the very Fiat-Shamir IV the dependency's proof was made under, so the
-# guest seeds verify_sub with the claim's vk cells and nothing about the program is
-# hinted unbound. The table is hinted as bytes, which this rehashes into vk and folds
-# into the bytecode claim's value: settled here, never deferred.
-#
-# Why the bytes hashed are the words evaluated: each byte is a cell of the 256-entry
-# table t8 read at a hinted g^b with log(g^b) < 256 checked, so it is the polynomial of
-# an integer below 256, of degree below 8. A word is DEFINED as sum_b x^(8b) byte_b and
-# a hash lane as its bytes' sum at the lane's own shifts, every product of degree below
-# 64, so neither reduces modulo the field polynomial: a word's 64 coefficients are its
-# bytes' bits, and so are the lanes', byte for byte. No split of a word is hinted.
-# With the tag 9 bytes long, lane i + 1 (i >= 0) is word i - 1's top byte (the tag's
-# last byte for i = 0) under word i's low 7 bytes, and the last lane word N - 1's top byte.
+# A claim is data_hash | vk, four cells: the program whose stacked bytecode table commits to a
+# root under vk accepts data_hash as its public input. vk = keccak256(COMMITTED_TAG | kgen | root |
+# ood) (`verifier::committed_key`) is the Fiat-Shamir IV the dependency's proof was made under, so
+# the guest seeds verify_sub with the claim's vk cells, and kgen, the root and ood, hinted, are
+# rehashed into it (KECCAK rejects a cell with a top limb, so their cells are canonical): nothing
+# about the program is hinted unbound. ood's two cells a, b encode the table's value a + Y^2 b at
+# the out-of-domain point a sponge seeded with the root draws (`verifier::committed_ood_point`), which
+# leaves one codeword of the root's list. The proof sends the table's value at the bus's point
+# (bc_share, absorbed) and closes by opening the root's stack there and at the out-of-domain point,
+# which this verifies: one opening of a 2^GEN_STACK_LOG stack, whatever kgen.
 
 
-def gen_table(t8, zeta, alpha, k: Const):
-    # The table of a 2^k-instruction program, hinted a 16-word row (128 bytes in the
-    # exponent) a frame: keccak256(TAG | table), and its multilinear at the bytecode
-    # claim's point (zeta's first k coordinates, then the 4 alphas, LSB first). The
-    # first fold rides the row loop; the rest halve a heap run per coordinate.
-    n_cells = 8 * 2 ** k + 1
-    pre = HeapBuf(GEN ** n_cells)
-    pt = StackBuf(MAX_GENERIC_BYTECODE_LOG + 4)
+def committed_bytecode_eq(zeta, alpha, point1, k: Const):
+    # eq((zeta[..k], alpha, 0, .., 0), point) over the commitment's stack, point1 = 1 + point.
+    v = 1
     for j in unroll(0, k):
-        pt[j] = zeta[GEN ** j]
+        v = v * (zeta[GEN ** j] + point1[GEN ** j])
     for j in unroll(0, 4):
-        pt[k + j] = alpha[GEN ** j]
-    r0 = pt[0]
-    v = HeapBuf(GEN ** (8 * 2 ** k))
-    # Per row boundary: the last word's top byte and the last lane, carried to the next row.
-    carry = HeapBuf(GEN ** (2 * 2 ** k + 2))
-    carry[GEN ** 0] = TAG_BYTE8
-    carry[GEN ** 1] = TAG_LANE0
-    for x in mul_range(1, GEN ** (2 ** k)):
-        rb = StackBuf(128)
-        hint_witness(rb, "gen_bytes")
-        cin = carry * x ** 2
-        hi_prev = cin[GEN ** 0]
-        lanes = StackBuf(17)
-        lanes[0] = cin[GEN ** 1]
-        words = StackBuf(16)
-        for j in unroll(0, 16):
-            lo = 0
-            for b in unroll(0, 7):
-                d = rb[8 * j + b]
-                assert log(d) < 256
-                lo += (2 ** (8 * b)) * t8[d]
-            d7 = rb[8 * j + 7]
-            assert log(d7) < 256
-            h = t8[d7]
-            words[j] = lo + (2 ** 56) * h
-            lanes[j + 1] = hi_prev + 256 * lo
-            hi_prev = h
-        c = pre * x ** 8
-        f = v * x ** 8
-        for q in unroll(0, 8):
-            c[GEN ** q] = lanes[2 * q] + Y_TOWER * lanes[2 * q + 1]
-            a = words[2 * q]
-            bw = words[2 * q + 1]
-            f[GEN ** q] = a + r0 * (a + bw)
-        cout = cin * GEN ** 2
-        cout[GEN ** 0] = hi_prev
-        cout[GEN ** 1] = lanes[16]
-    last = carry * GEN ** (2 * 2 ** k)
-    pre[GEN ** (n_cells - 1)] = last[GEN ** 1] + Y_TOWER * last[GEN ** 0]
-    for rd in unroll(1, k + 4):
-        r = pt[rd]
-        half = 2 ** (k + 3 - rd)
-        nxt = HeapBuf(GEN ** half)
-        for i in mul_range(1, GEN ** half):
-            a = v[i * i]
-            b = v[i * i * GEN]
-            nxt[i] = a + r * (a + b)
-        v = nxt
-    # TAG | table, 17 cells (two KECCAKs) a frame, then the last 1..17 cells padded.
-    pairs = (n_cells - 1) // 17
-    chain = HeapBuf(GEN ** ((pairs + 1) * KECCAK_STATE))
-    zero_state(chain)
-    for xq in mul_range(1, GEN ** pairs):
-        st = chain * xq ** KECCAK_STATE
-        nxt_st = st * GEN ** KECCAK_STATE
-        blk = pre * xq ** 17
-        keccak_cells(blk[0:17], nxt_st[0:KECCAK_STATE], state=st[0:KECCAK_STATE], final=0)
-    state = chain * GEN ** (pairs * KECCAK_STATE)
-    digest = StackBuf(2)
-    rest = n_cells - 17 * pairs
-    tail = pre * GEN ** (17 * pairs)
-    keccak_cells(tail[0:rest], digest, state=state[0:KECCAK_STATE], len=16 * rest - 7)
-    return digest[0], digest[1], v[1]
+        v = v * (alpha[GEN ** j] + point1[GEN ** (k + j)])
+    for j in unroll(k + 4, GEN_STACK_LOG):
+        v = v * point1[GEN ** j]
+    return v
 
 
-def verify_generic(pi_0, pi_1, vk_0, vk_1, t8, g_squares):
+def verify_generic(pi_0, pi_1, vk_0, vk_1, g_squares):
     # One leanSTARK proof of the statement (pi_0, pi_1) under vk; vk seeds the sub-proof's transcript.
     g_kgen = hint_witness("gen_kbc")
     assert log(g_kgen) < MAX_GENERIC_BYTECODE_LOG + 1
-    zeta, alpha, bc_share = verify_sub(pi_0, pi_1, vk_0, vk_1, g_kgen, g_squares)
-    d0, d1, value = match(log(g_kgen), range(0, GEN_KGEN_ARMS), lambda k: gen_table(t8, zeta, alpha, k))
-    assert d0 == vk_0
-    assert d1 == vk_1
-    assert value == bc_share
+    root = StackBuf(2)
+    hint_witness(root, "gen_root")
+    ood = StackBuf(2)
+    hint_witness(ood, "gen_ood")
+    key_cells = HeapBuf(GEN_KGEN_ARMS)
+    ood_cells = HeapBuf(GEN_KGEN_ARMS)
+    for k in unroll(0, GEN_KGEN_ARMS):
+        key_cells[GEN ** k] = GEN_KEY_CELLS[k]
+        ood_cells[GEN ** k] = GEN_OOD_CELLS[k]
+    key = StackBuf(2)
+    keccak_cells([key_cells[g_kgen], root[0], root[1], ood[0], ood[1]], key)
+    assert key[0] == vk_0
+    assert key[1] == vk_1
+    zeta, alpha, bc_share, fs0, fs1, fs2, fs3, fs4, cursor = verify_sub(pi_0, pi_1, vk_0, vk_1, g_kgen, g_squares, 1)
+    # The out-of-domain point: the sponge seeded with the root as IV and the seed cell as public input.
+    no_rate = StackBuf(8)
+    osp = StackBuf(KECCAK_STATE)
+    keccak_cells([root[0], root[1], ood_cells[g_kgen], 0], osp, final=0)
+    ood_point = StackBuf(GEN_STACK_LOG)
+    for j in unroll(0, GEN_STACK_LOG):
+        osp, c = squeeze(osp, no_rate, 0)
+        ood_point[j] = c
+    ood_value = ood[0] + Y_TOWER * Y_TOWER * ood[1]
+    # verify_stacked_opening over the bus claim and the out-of-domain claim: their batching
+    # challenge, then WHIR at target bc_share + scale * ood_value.
+    sp = fs_cap(fs0, fs1, fs2, fs3, fs4)
+    sp, scale = squeeze(sp, no_rate, 0)
+    target, point, point1, inner_total, yr_at_tail, e0, e1, e2, e3, e4, end_cursor = open_stacked(GEN_STACK_LOG - LIG_MIN_LOG_SIZE, GEN ** GEN_RATE_SEL, sp[8], sp[9], sp[10], sp[11], sp[12], bc_share + scale * ood_value, root[0], root[1], cursor)
+    weight = match(log(g_kgen), range(0, GEN_KGEN_ARMS), lambda k: committed_bytecode_eq(zeta, alpha, point1, k))
+    ood_weight = 1
+    for j in unroll(0, GEN_STACK_LOG):
+        ood_weight = ood_weight * (ood_point[j] + point1[GEN ** j])
+    assert (weight + scale * ood_weight + inner_total) * yr_at_tail == target
     return
 
 
@@ -3582,7 +3554,7 @@ def verify_generic(pi_0, pi_1, vk_0, vk_1, t8, g_squares):
 # MAX_CLAIMS_PER_BATCH_LEAF 32-byte claims under the leaf's one vk, EIP-8288's get_claim_hash
 # for one claim. The leaf program need not order its claims; this checks that they strictly
 # increase byte-lexicographically, from bytes hinted in the exponent and range-checked, so a
-# claim's bytes are the bytes of its two cells (see gen_table).
+# claim's bytes are the bytes of its two cells.
 #
 # A leaf establishes dependencies, each covering its own slot data | key. With
 # BATCHED_DEPENDENCIES (ethereum/EIPs#12664) the key binds the scheme word W:
@@ -3620,7 +3592,7 @@ def verify_leaf(table, cover, slots_g, mark, t8, g_squares):
         assert log(idx) < log(slots_g)
         cover[idx] = mark * e
         establish(table * (idx ** 4), claims, n_g, vk[0], vk[1], d_0, d_1)
-    verify_generic(d_0, d_1, vk[0], vk[1], t8, g_squares)
+    verify_generic(d_0, d_1, vk[0], vk[1], g_squares)
     return mark * est_g
 
 
@@ -3728,7 +3700,9 @@ def finalize(table, n_g):
 
 def batch_claim_bytes(claim, claim_bytes, t8):
     # A claim's 32 bytes, each a g-power below g^256, are its two cells: a cell is two lanes of
-    # eight bytes at their own shifts, the second lane above Y_TOWER.
+    # eight bytes at their own shifts, the second lane above Y_TOWER. t8[d] is the polynomial of
+    # an integer below 256, of degree below 8, so no lane reduces modulo the field polynomial: its
+    # 64 coefficients are its bytes' bits, and no split of a cell is hinted.
     hint_witness(claim_bytes[0:32], "batch_bytes")
     for h in unroll(0, 2):
         lo = 0
@@ -4557,7 +4531,7 @@ def main():
         pi = xc * xc
         child_pi[pi] = pi_0
         child_pi[pi * GEN] = pi_1
-        zeta, bus_alpha, bc_share = verify_sub(pi_0, pi_1, seed_0, seed_1, GEN ** BYTECODE_LOG, g_squares)
+        zeta, bus_alpha, bc_share, end0, end1, end2, end3, end4, end_cursor = verify_sub(pi_0, pi_1, seed_0, seed_1, GEN ** BYTECODE_LOG, g_squares, 0)
         # A child is a proof of this bytecode: its bytecode claim joins this node's deferred one.
         defer_out = child_fresh * xc ** DEFER_SIZE
         for k in unroll(0, BYTECODE_LOG):

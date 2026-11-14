@@ -3,7 +3,8 @@
 `rec_aggregation` and `signatures` derive from [leanEthereum/leanVM](https://github.com/leanEthereum/leanVM) at
 `e4dcb8d5436c9bf76398d890c57c59613af12956`, the revision `../Cargo.toml` pins for every other leanVM crate. Upstream
 licenses them under MIT or Apache-2.0 (each crate's `LICENSE-MIT`, `LICENSE-APACHE`). The core (`leanvm_core`, `verifier`,
-`lean_compiler`, `fiat_shamir`, `pcs`, `primitives`) stays an unmodified git dependency.
+`lean_compiler`, `fiat_shamir`, `pcs`, `primitives`) stays a git dependency at that revision, patched in `../Cargo.toml`
+to the committed bytecode key's core changes on top of it until they are upstream.
 
 Changes against upstream, all EIP-8288 specific:
 
@@ -14,8 +15,11 @@ Changes against upstream, all EIP-8288 specific:
   instructions as EIP-8288 batch leaves (scheme `0x11`, `src/aggregation/generic.rs`), and merges or discards child
   aggregates. It compiles as two guests (`Guest`): EIP-8288's, with one-claim leaves, and one adding ethereum/EIPs#12664
   batch pricing, with leaves of up to 256 claims that also establish sponsored batch claims (`0x12`) bound to their leaf
-  payment (`0x13`), and finalization. [`rec_aggregation/guests/BATCH_PRICING.md`](rec_aggregation/guests/BATCH_PRICING.md)
-  describes what the guest decides that the EIPs leave to the proof system.
+  payment (`0x13`), and finalization. Leaves are keyed by a committed bytecode key;
+  [`rec_aggregation/EIP8288-PROFILE.md`](rec_aggregation/EIP8288-PROFILE.md) specifies that key, the witness and the
+  proof encoding as the proof-system profile the EIPs pin, and
+  [`rec_aggregation/guests/BATCH_PRICING.md`](rec_aggregation/guests/BATCH_PRICING.md) describes what the guest decides
+  that the EIPs leave to the proof system. `rec_aggregation_base` is the ABI 12 package's EIP-8288 guest, unchanged.
 
 `crates/upstream.sh diff` prints every change against upstream at the pinned revision; `crates/upstream.sh update <rev>`
 moves the crates and the pin to a newer upstream revision by three-way merge and lists what needs review. After an

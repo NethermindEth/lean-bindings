@@ -95,7 +95,7 @@ pub const MAX_RECURSIONS: usize = 16;
 /// EIP-8288 `MAX_INNER_PROOFS_PER_STEP` (provisional, 16 in the EIP): the most batch leaves and earlier aggregates one
 /// [`aggregate`] call verifies together. Raw leanSPHINCS signatures do not count.
 ///
-/// Chosen with the leaf bounds, as EIPs#12654 requires: a step of 13 maximum-resource leaves (2^11 instructions, 256
-/// claims, finalized) fits the outer proof's 2^30 committed-witness bound and 14 do not, and 16 children cost about one
-/// leaf. 12 leaves room for the leanSPHINCS signatures a step may add.
-pub const MAX_INNER_PROOFS_PER_STEP: usize = 12;
+/// Chosen with the leaf bounds, as ethereum/EIPs#12664 requires: under the committed bytecode key, a finalized step of
+/// 16 maximum-resource leaves (2^11 instructions, 256 claims, distinct keys) commits 2^27.6 of the outer proof's 2^30
+/// witness bound, and 16 children 2^26.8 (`guests/BATCH_PRICING.md`).
+pub const MAX_INNER_PROOFS_PER_STEP: usize = 16;
