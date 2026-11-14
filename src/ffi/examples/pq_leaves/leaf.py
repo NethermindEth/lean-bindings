@@ -15,7 +15,8 @@ LANE_HI_TOP = 170141183460469231731687303715884105728
 
 @inline
 def permute(a, out):
-    # Keccak-f[1600] of the 13-cell state a (lanes 2c, 2c + 1 in cell c), no padding.
+    # Keccak-f[1600] of the 13-cell state a, no padding: lanes 2c, 2c + 1 in cell c < 8, lane 16
+    # alone in cell 8, lanes 17 .. 24 two a cell in cells 9 .. 12.
     keccak(a[0:2], a[2:4], out, tail=a[4:8], cap=a)
     return
 
