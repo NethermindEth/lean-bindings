@@ -63,14 +63,7 @@ def leaf_digest(pre, n_g):
         pad_tail(tail, rest, GEN ** 16, LANE_HI_TOP)
         pairs[0] = chunks * GEN
     chain = HeapBuf(KECCAK_STATE * 33)
-    for k in unroll(0, KECCAK_STATE):
-        chain[GEN ** k] = 0
-    for xq in mul_range(1, pairs[0]):
-        st = chain * xq ** KECCAK_STATE
-        nxt = st * GEN ** KECCAK_STATE
-        blk = pre * xq ** LEAF_CHUNK
-        keccak_cells(blk[0:LEAF_CHUNK], nxt[0:KECCAK_STATE], state=st[0:KECCAK_STATE], final=0)
-    last = chain * pairs[0] ** KECCAK_STATE
+    last = absorb_pairs(chain, pre, pairs[0])
     digest = StackBuf(2)
     if odd == 1:
         a = StackBuf(KECCAK_STATE)
@@ -86,6 +79,19 @@ def leaf_digest(pre, n_g):
         digest[0] = last[1]
         digest[1] = last[GEN]
     return digest[0], digest[1]
+
+
+def absorb_pairs(chain, buf, pairs_g):
+    # The Keccak state after absorbing, from zero, the block pairs (LEAF_CHUNK cells each) at
+    # buf, padding included; chain holds the states, 13 cells each.
+    for k in unroll(0, KECCAK_STATE):
+        chain[GEN ** k] = 0
+    for xq in mul_range(1, pairs_g):
+        st = chain * xq ** KECCAK_STATE
+        nxt = st * GEN ** KECCAK_STATE
+        blk = buf * xq ** LEAF_CHUNK
+        keccak_cells(blk[0:LEAF_CHUNK], nxt[0:KECCAK_STATE], state=st[0:KECCAK_STATE], final=0)
+    return chain * pairs_g ** KECCAK_STATE
 
 
 def pad_tail(tail, rest, end, top):

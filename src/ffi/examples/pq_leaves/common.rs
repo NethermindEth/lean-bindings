@@ -170,6 +170,25 @@ pub fn size(program: &Program) -> Size {
 pub fn report_size<S: Scheme>() {
     let program = program::<S>();
     let s = size(&program);
+    if std::env::var_os("PQ_LEAVES_BREAKDOWN").is_some() {
+        let mut by: BTreeMap<String, usize> = BTreeMap::new();
+        for pc in 0..s.instructions as u32 {
+            let site = program.site_at(pc);
+            *by.entry(site.split(" (").next().unwrap_or("").to_string()).or_default() += 1;
+        }
+        let mut v: Vec<_> = by.into_iter().collect();
+        v.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+        for (f, c) in v {
+            eprintln!("{c:6} {f}");
+        }
+        let dis = lean_compiler::disassemble(program.prog());
+        let annotated: String = dis
+            .lines()
+            .enumerate()
+            .map(|(pc, l)| format!("{:5} {:28} {l}\n", pc, program.site_at(pc as u32)))
+            .collect();
+        std::fs::write(std::env::var("PQ_LEAVES_BREAKDOWN").unwrap(), annotated).ok();
+    }
     println!(
         "{{\"scheme\":\"{}\",\"instructions\":{},\"padded\":{},\"log_padded\":{},\"bound\":{},\"fits\":{}}}",
         S::NAME,
