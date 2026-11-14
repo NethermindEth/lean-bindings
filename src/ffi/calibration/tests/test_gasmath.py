@@ -79,6 +79,12 @@ class GasMath(unittest.TestCase):
         self.assertGreater(bl["batch_one_claim"]["batch_leaves"], bl["batch_full"]["batch_leaves"])
         self.assertNotIn("batch_one_claim", g.blocks(dict(c, LEANSTARK_CLAIM_GAS=None), 60_000_000, tx, 256))
 
+    def test_a_dependency_above_the_transaction_cap_is_inadmissible(self):
+        # Regression: a flat-key STARK charge above the EIP-7825 cap crashed the block construction.
+        tx = g.TxModel()
+        self.assertEqual(g.fill(60_000_000, tx.tx_gas_cap, tx), (0, 0))
+        self.assertEqual(g.fill(60_000_000, 1_000_000, tx, group=tx.max_deps_per_tx(1_000_000) + 1), (0, 0))
+
     def test_scale_and_verdict(self):
         s = g.scale_block({"native": 3000, "generic": 1, "evm_gas": 1e6}, 0.1)
         self.assertEqual((s["native"], s["generic"], s["evm_gas"], s["scale"]), (300, 1, 1e5, 0.1))

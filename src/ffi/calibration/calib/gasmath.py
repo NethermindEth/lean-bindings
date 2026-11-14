@@ -134,11 +134,12 @@ class TxModel:
 
 def fill(gas: float, per_dep: float, tx: TxModel, group: int = 1) -> tuple[int, int]:
     """Groups of `group` declarations costing `per_dep` gas each (data included) that fit in `gas`, packed into as few
-    transactions as the bounds allow. Returns (groups, transactions)."""
+    transactions as the bounds allow. Returns (groups, transactions); (0, 0) when one group exceeds the EIP-7825
+    per-transaction cap, so no such dependency is admissible at all."""
     per_group = per_dep * group
-    per_tx = max(1, tx.max_deps_per_tx(per_dep) // group)
-    if per_tx < 1 or tx.max_deps_per_tx(per_dep) < group:
-        raise ValueError("a group exceeds one transaction")
+    if tx.max_deps_per_tx(per_dep) < group:
+        return 0, 0
+    per_tx = tx.max_deps_per_tx(per_dep) // group
     full_tx_gas = tx.per_tx_overhead() + per_tx * per_group
     n_tx_full = int(gas // full_tx_gas)
     groups = n_tx_full * per_tx
