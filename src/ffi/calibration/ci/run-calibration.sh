@@ -8,8 +8,8 @@
 #                      [--lean-bindings-ref REF] [--yield-to-manual-runs OWNER/REPO --runner-label LABEL]
 #                      [--workers W] [--threads T] [--memory-per-worker-gb M] [--docker IMAGE]
 #
-# A NAME is `smoke` (configs/smoke-m2max.json), `reference` (configs/reference.example.json), `box-committed` or
-# `box-flat` (configs/box-*.json), or a path to any config. Several scenarios run in order, each into DIR/NAME, and
+# A NAME is `smoke` (configs/smoke-m2max.json), `reference` (configs/reference.example.json), another config's
+# name under configs/ (e.g. `box-committed`, `gcp-flat`), or a path to a .json config. Several scenarios run in order, each into DIR/NAME, and
 # share the timeout: each gets the remaining time divided by the scenarios left. Workers default to local processes
 # sized to the machine: a config's `local_workers` (default max(1, cores / min(11, cores))), T = cores / W, memory per
 # worker = 80% of available memory / W. With --docker (or without cargo), the run happens inside IMAGE (default
@@ -107,8 +107,8 @@ for i in "${!names[@]}"; do
   case $name in
     smoke) config=$here/configs/smoke-m2max.json ;;
     reference) config=$here/configs/reference.example.json ;;
-    box-*) config=$here/configs/$name.json ;;
-    *) config=$name; name=$(basename "$name" .json) ;;
+    *.json) config=$name; name=$(basename "$name" .json) ;;
+    *) config=$here/configs/$name.json ;;
   esac
   left=$(( (deadline - $(date +%s)) / (${#names[@]} - i) ))
   [ "$left" -gt 60 ] || { echo "no time left for $name" >&2; rc=124; continue; }

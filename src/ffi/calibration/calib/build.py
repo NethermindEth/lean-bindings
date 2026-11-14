@@ -43,10 +43,14 @@ def detect(ref: str) -> list[str]:
 def build(ref: str, out_dir: str, features: list[str] | None = None, cache: str | None = None,
           log=print) -> dict:
     """Builds into `out_dir`/bin/<label>; returns {label, ref, sha, features, bin}."""
-    if ref.startswith("origin/") and subprocess.run(["git", "-c", f"safe.directory={REPO}", "-C", REPO, "rev-parse", "-q", "--verify", ref],
-                                                    capture_output=True).returncode != 0:
+    known = subprocess.run(["git", "-c", f"safe.directory={REPO}", "-C", REPO, "rev-parse", "-q", "--verify", f"{ref}^{{commit}}"],
+                           capture_output=True).returncode == 0
+    if ref.startswith("origin/") and not known:
         branch = ref[len("origin/"):]
         subprocess.run(["git", "-c", f"safe.directory={REPO}", "-C", REPO, "fetch", "-q", "origin", f"{branch}:refs/remotes/{ref}"], check=True)
+    elif ref != "." and not known:
+        # A pinned commit no branch here contains any more (e.g. after a force-push upstream): fetch it by its full SHA.
+        subprocess.run(["git", "-c", f"safe.directory={REPO}", "-C", REPO, "fetch", "-q", "origin", ref], check=True)
     sha = _git("rev-parse", "HEAD" if ref == "." else ref)
     feats = detect(ref) if features is None else features
     label = f"{sha[:10]}{'-' + '-'.join(feats) if feats else ''}"

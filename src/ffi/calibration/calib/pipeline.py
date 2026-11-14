@@ -184,13 +184,29 @@ class Calibration:
         cells += [(f"merge-2x{L}", ["merge", sigs, "2", str(L)])]
         cells += [("generic-leaf", ["leaves", "base", "1", leaves[0]])]
         cells += [(f"full-step-{len(leaves)}", ["leaves", "base", "1", *leaves])]
+        lad = cfg.get("ladders")
+        if lad:
+            # Single-leaf steps over leaves of a small inner trace: the step cost of program size.
+            iters, rate = iters_for_trace(lad["trace_log"]), cfg["bounds"]["inner_log_inv_rate"]
+            for k in lad.get("code_logs", []):
+                path, _ = self.run.leaf(self.base, k, iters, rate, 1, 60000 + k)
+                cells += [(f"ladder-code-{k}", ["leaves", "base", "1", path])]
         self.log(f"cells on {self.base['label']}: {len(cells)} x {cfg['reps']} reps")
         res = self.run.cells(self.base, cells, cfg["reps"])
         if self.batch:
             bl = [self.max_leaf(self.batch, 5000 + i, C) for i in range(2)]
-            bcells = [("batch-leaf-r1", ["leaves", "batched", "1", bl[0]]), (f"batch-leaf-r{C}", ["leaves", "batched", str(C), bl[0]]),
+            mid = [n for n in (lad or {}).get("claims", []) if 1 < n < C]
+            bcells = [("batch-leaf-r1", ["leaves", "batched", "1", bl[0]]),
+                      *((f"batch-leaf-r{n}", ["leaves", "batched", str(n), bl[0]]) for n in mid),
+                      (f"batch-leaf-r{C}", ["leaves", "batched", str(C), bl[0]]),
                       ("mergebatch-r1", ["mergebatch", "1", *bl]), (f"mergebatch-r{C}", ["mergebatch", str(C), *bl]),
                       ("finalize-r1", ["finalize", "1", bl[0]]), (f"finalize-r{C}", ["finalize", str(C), bl[0]])]
+            if lad:
+                # Claims per leaf need the batch-pricing guest: a leaf of n claims, all retained, at the small trace.
+                iters, rate = iters_for_trace(lad["trace_log"]), cfg["bounds"]["inner_log_inv_rate"]
+                for n in lad.get("claims", []):
+                    path, _ = self.run.leaf(self.batch, pre["code_log_used"], iters, rate, n, 61000 + n)
+                    bcells += [(f"ladder-claims-{n}", ["leaves", "batched", str(n), path])]
             self.log(f"batch cells on {self.batch['label']}: {len(bcells)} x {cfg['reps']} reps")
             res.update(self.run.cells(self.batch, bcells, cfg["reps"]))
         self.res["cells"] = res
