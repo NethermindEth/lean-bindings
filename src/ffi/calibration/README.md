@@ -108,6 +108,20 @@ while it waits. A timed cell repetition measured under load or with swap growth,
 `quiet.timeout_s`, is run once more; if the repeat is violated too it is excluded, so it neither drives the
 recalibration nor passes.
 
+### Measurement sets
+
+A config with a `mode` key runs one measurement set instead of the calibration, under the same per-process, quiet-gate
+and repeat-then-exclude rules (`calib.py worst|pq-leaves --config C --out DIR`, or by name through
+`ci/run-calibration.sh`):
+
+- `worst` (`configs/gcp-worst-cases.json`, `calib/worst.py`): the most expensive valid inputs the batch charges must
+  cover. One maximum-resource leaf of 256 sponsored claims with its payment, a full step of 16 such leaves with one and
+  with all claims retained, and the merge and finalizing steps over 16 sponsored-leaf children (4,112 records).
+- `pq-leaves` (`configs/gcp-pq-leaves.json`, `calib/pq_leaves.py`): the post-quantum signature leaves of lean-bindings
+  `examples/pq_leaves` at `pq_ref`. Per scheme: program size, the leaf's reference and negative tests, an N ladder for
+  per-signature cycles, time and memory, the largest N within the committed-witness bound and 256 claims (probed), and
+  the leaf at that N with the aggregation step that verifies it.
+
 ## Configuration
 
 See `configs/reference.example.json`. The keys:

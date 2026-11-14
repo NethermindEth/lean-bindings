@@ -122,6 +122,14 @@ for i in "${!names[@]}"; do
   fi
   echo "== $name: $w local workers x $t threads, $m GB each, $(( left / 60 )) min"
   mkdir -p "$out/$name"
+  # A config with a `mode` runs one measurement set instead of the calibration: `worst` (calib/worst.py) or
+  # `pq-leaves` (calib/pq_leaves.py), each on one process at a time with every thread.
+  mode=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("mode", ""))' "$config")
+  if [ -n "$mode" ]; then
+    timeout --signal=TERM "$left" python3 "$here/calib.py" "$mode" --config "$config" --out "$out/$name" \
+      --set "threads_per_worker=$cores" --set "threads=$cores" || rc=$?
+    continue
+  fi
   timeout --signal=TERM "$left" python3 "$here/calib.py" run --config "$config" --out "$out/$name" \
     --set "workers={\"mode\":\"local\",\"count\":$w,\"base_port\":47100}" --set "threads_per_worker=$t" \
     --set "reference_workers=$w" --set "memory_per_worker_gb=$m" || rc=$?
