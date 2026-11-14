@@ -80,7 +80,7 @@ signing and `FRAMEDATACOPY`; wrapper, inclusion-list and block proof statements 
 resolved dependency.
 
 * **SPHINCS witness:** public key (32 bytes), signature (6176 bytes). As in EIP-8288, the
-  dependency key is the public key itself, root then public parameter. Both the key and the
+  dependency key is the public key itself, `PK.seed || PK.root`. Both the key and the
   signature over `data_hash` are checked.
 * **leanSTARK witness (`0x11`, a deviation, see below):** `kgen` (one byte, at most 11), the program's stacked
   bytecode table (`16 · 2^kgen` little-endian u64 words, zero padding included, as upstream's `bytecode_table`), then
