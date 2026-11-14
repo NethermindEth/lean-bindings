@@ -129,17 +129,22 @@ def fit(points: list[dict], key: str) -> tuple[float, float]:
     return my - slope * mx, slope
 
 
-def max_n(bench: Bench, scheme: str, ladder: list[dict]) -> tuple[int, list[dict]]:
+def max_n(bench: Bench, scheme: str, ladder: list[dict], bound: float = MAX_LOG_COMMITTED,
+          known: dict | None = None) -> tuple[int, list[dict]]:
     """The largest N that proves within MAX_LOG_COMMITTED and MAX_CLAIMS and that the aggregation guest accepts,
     found by single untimed probes started from the ladder's committed-witness slope."""
-    a, b = fit(ladder, "committed")
-    guess = max(1, min(MAX_CLAIMS, int((2 ** MAX_LOG_COMMITTED - a) / b))) if b > 0 else MAX_CLAIMS
+    if known:
+        a, b = 0.0, 0.0
+        guess = known["lo"] + 1
+    else:
+        a, b = fit(ladder, "committed")
+        guess = max(1, min(MAX_CLAIMS, int((2 ** bound - a) / b))) if b > 0 else MAX_CLAIMS
     probes = []
 
     def fits(n: int) -> bool:
         rec = bench.once(["prove", scheme, str(n), "1", "--agg"], f"{scheme}-probe-n{n}", gate=False)
         r = rec["result"] or {}
-        ok = rec["rc"] == 0 and r.get("log_committed", 99) <= MAX_LOG_COMMITTED and "agg_cycles" in r
+        ok = rec["rc"] == 0 and r.get("log_committed", 99) <= bound and "agg_cycles" in r
         probes.append({"n": n, "ok": ok, "rc": rec["rc"], "log_committed": r.get("log_committed"),
                        "peak_rss": r.get("peak_rss"), "prove_s": r.get("prove_s")})
         bench.log(f"  {scheme} probe n={n}: {'fits' if ok else 'does not fit'} (rc={rec['rc']} "
@@ -148,8 +153,10 @@ def max_n(bench: Bench, scheme: str, ladder: list[dict]) -> tuple[int, list[dict
 
     # The committed witness grows in power-of-two steps of the memory image, so many N share one size: bisect
     # (fits is monotone in N) rather than walk. lo always fits (0: none measured does); hi, once set, does not.
-    lo = max((p["n"] for p in ladder if p["status"] == "ok" and p["log_committed"] <= MAX_LOG_COMMITTED), default=0)
+    lo = max((p["n"] for p in ladder if p["status"] == "ok" and p["log_committed"] <= bound), default=0)
     hi = MAX_CLAIMS + 1
+    if known:
+        lo, hi = known["lo"], known.get("hi", MAX_CLAIMS + 1)
     # From the slope's guess, gallop up (doubling the step) until a probe fails or the claim cap fits, so no probe
     # lands far above the bound, where a lattice leaf would need several times the machine's memory.
     n, step = max(lo + 1, guess), max(1, guess // 8)
@@ -199,6 +206,19 @@ def run(cfg: dict, out: str, log) -> dict:
         s["test"] = {"rc": test["rc"], "ok": test["rc"] == 0}
         log(f"{scheme}: size {s['size']}, tests {'pass' if test['rc'] == 0 else 'FAIL'}")
         save()
+        known = cfg.get("known", {}).get(scheme)
+        bound = float(cfg.get("max_log_committed", MAX_LOG_COMMITTED))
+        res["max_log_committed"] = bound
+        for n in cfg.get("extra_n", {}).get(scheme, []):
+            s.setdefault("extra", []).append(bench.cell(scheme, n, cfg["reps"], agg=True))
+            save()
+        if known:
+            n, s["probes"] = max_n(bench, scheme, [], bound, known)
+            s["max_n"] = n
+            save()
+            s["at_max"] = bench.cell(scheme, n, cfg["reps"], agg=True)
+            save()
+            continue
         s["ladder"] = [bench.cell(scheme, n, cfg["reps"], agg=False) for n in ladders[scheme]]
         ok = [p for p in s["ladder"] if p["status"] == "ok"]
         save()
@@ -207,7 +227,7 @@ def run(cfg: dict, out: str, log) -> dict:
         for key in ("cycles", "prove_s", "peak_rss", "committed"):
             a, b = fit(ok, key)
             s[f"{key}_fixed"], s[f"{key}_per_sig"] = a, b
-        n, s["probes"] = max_n(bench, scheme, ok)
+        n, s["probes"] = max_n(bench, scheme, ok, bound)
         s["max_n"] = n
         # Memory alone: the N whose extrapolated peak RSS reaches the machine's usable memory.
         usable = host.memory()["total"] * 0.95
