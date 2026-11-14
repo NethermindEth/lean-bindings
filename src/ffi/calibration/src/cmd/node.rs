@@ -12,10 +12,10 @@
 //! calib-node cell merge SIGFILE C K                    one step merging C children of K signatures each
 //! calib-node cell mergebatch RETAIN LEAF...            one step merging one sponsored-leaf child per leaf
 //! calib-node cell finalize RETAIN LEAF...              one finalizing step over one sponsored-leaf child per leaf
-//! calib-node native REPS SIGFILE NSIGS SMALL MAX BATCH  native (host) verification, as a mempool node runs it: per
-//!                                                      leanSPHINCS signature, a direct leanSTARK leaf (small and
-//!                                                      maximum program), a batch leaf with its claims, and a mode-1
-//!                                                      aggregate of the small leaf and NSIGS signatures
+//! calib-node native REPS SIGFILE NSIGS SMALL MAX MULTI [SMALL...]  native (host) verification, as a mempool node
+//!                                                      runs it: per leanSPHINCS signature, direct leanSTARK leaves
+//!                                                      (small, maximum, a multi-claim leaf) verification-only and
+//!                                                      with the guest's hints, and mode-1 aggregates of growing size
 //! calib-node cell deep MODE RETAIN GROUP LEAF...        a two-level tree: per GROUP leaves, one sponsored-leaf child
 //!                                                      each merged into a group proof (untimed); then one timed merge
 //!                                                      (MODE merge) or finalizing step (MODE finalize) over the groups
@@ -404,47 +404,91 @@ fn native_item(items: &mut Vec<String>, name: &str, per: usize, bytes: usize, t:
     items.push(o.finish());
 }
 
+/// The plain leanSTARK verifier on a committed-key witness (`kgen ‖ root ‖ ood ‖ proof`), without building the
+/// aggregation guest's hints: what a mempool node needs to admit a dependency. Bench-only; it mirrors the library's
+/// own check and is cross-checked against it on every input.
+#[cfg(feature = "committed")]
+fn verify_only(statement: &[u8; 32], vk: &[u8; 32], witness: &[u8]) -> bool {
+    let Some((&kgen, rest)) = witness.split_first() else { return false };
+    let Some((root, rest)) = rest.split_first_chunk::<32>() else { return false };
+    let Some((ood, proof)) = rest.split_first_chunk::<32>() else { return false };
+    let Some(proof) = leanvm_core::cpu::Proof::from_bytes(proof) else { return false };
+    if kgen as usize > rec_aggregation::MAX_GENERIC_BYTECODE_LOG {
+        return false;
+    }
+    let Ok(bytecode) = verifier::Bytecode::committed(kgen as usize, *root, *ood) else { return false };
+    bytecode.fiat_shamir_iv() == *vk
+        && verifier::verify_execution(&bytecode, statement, &leanvm_core::cpu::scalar_proof(&proof)).is_ok()
+}
+
 fn native(args: &[String]) {
     let a = |i: usize| args.get(i).map(String::as_str).unwrap_or_else(|| usage());
     let reps = num(a(0)).max(3);
     let nsigs = num(a(2));
     let sigs = sigs_from(a(1), nsigs);
-    let small = inputs::read_leaf_file(a(3)).expect("the small leaf");
     let max = inputs::read_leaf_file(a(4)).expect("the maximum leaf");
-    let batch = inputs::read_leaf_file(a(5)).expect("the batch leaf");
+    let multi = inputs::read_leaf_file(a(5)).expect("the multi-claim leaf");
+    let small: Vec<Leaf> = std::iter::once(a(3))
+        .chain(args[6..].iter().map(String::as_str))
+        .map(|p| inputs::read_leaf_file(p).expect("a small leaf"))
+        .collect();
     let mut items = Vec::new();
 
     let t = timed(reps, || {
-        for (pk, msg, sig) in &sigs {
+        for (pk, msg, sig) in &sigs[..64.min(nsigs)] {
             signatures::lean_sphincs::verify(pk, msg, sig).expect("the signature verifies");
         }
     });
-    native_item(&mut items, "leansphincs_signature", nsigs, sigs[0].2.to_bytes().len(), t);
-    for (name, leaf) in [("leanstark_small", &small), ("leanstark_max", &max)] {
-        let t = timed(reps, || assert!(rec_aggregation::verify_generic(&leaf.claims[0], &leaf.vk, &leaf.witness)));
-        native_item(&mut items, name, 1, leaf.witness.len(), t);
-    }
-    #[cfg(feature = "batch")]
-    {
-        let t = timed(reps, || {
-            assert!(rec_aggregation::verify_batch_leaf(
-                rec_aggregation::Guest::Batched,
-                &batch.claims,
-                &batch.vk,
-                &batch.witness
-            ))
-        });
-        native_item(&mut items, &format!("batch_leaf_{}_claims", batch.claims.len()), 1, batch.witness.len(), t);
-    }
-    #[cfg(not(feature = "batch"))]
-    let _ = batch;
+    native_item(&mut items, "leansphincs_signature", 64.min(nsigs), sigs[0].2.to_bytes().len(), t);
 
+    let mut leaf_items = vec![("leanstark_small", &small[0]), ("leanstark_max", &max)];
+    let multi_name = format!("ordinary_leaf_{}_claims", multi.claims.len());
+    leaf_items.push((multi_name.as_str(), &multi));
+    for (name, leaf) in leaf_items {
+        #[cfg(feature = "committed")]
+        {
+            let statement = api::leaf_statement(&leaf.claims);
+            assert!(verify_only(&statement, &leaf.vk, &leaf.witness), "{name} verifies (verification only)");
+            let t = timed(reps, || assert!(verify_only(&statement, &leaf.vk, &leaf.witness)));
+            native_item(&mut items, &format!("{name}_verify_only"), 1, leaf.witness.len(), t);
+        }
+        // The library's check, which also builds the aggregation guest's hints: guest 0 for one claim, else the
+        // guest that admits the leaf's claims.
+        #[cfg(feature = "batch")]
+        let guest = if rec_aggregation::valid_batch_claims(rec_aggregation::Guest::Base, &leaf.claims) {
+            rec_aggregation::Guest::Base
+        } else {
+            rec_aggregation::Guest::Batched
+        };
+        #[cfg(feature = "batch")]
+        let (label, check) = (
+            format!("{name}_verify_and_hints_guest{}", guest as u8),
+            || rec_aggregation::verify_batch_leaf(guest, &leaf.claims, &leaf.vk, &leaf.witness),
+        );
+        #[cfg(not(feature = "batch"))]
+        let (label, check) = (
+            format!("{name}_verify_and_hints"),
+            || rec_aggregation::verify_generic(&leaf.claims[0], &leaf.vk, &leaf.witness),
+        );
+        if check() {
+            native_item(&mut items, &label, 1, leaf.witness.len(), timed(reps, || assert!(check())));
+        }
+    }
+
+    // Mode-1 aggregates of growing size: their verification is already verification-only (the deferred bytecode
+    // claim and the VM proof), so the per-dependency cost is how far one verification amortises.
     warm_up();
-    let (proof, _) = api::prove(GuestKind::Base, &[], vec![small], sigs, None).expect("the aggregate proves");
-    let bytes = api::proof_bytes(&proof);
-    let claims = proof.claims().clone();
-    let t = timed(reps, || api::verify_block(GuestKind::Base, false, &claims, &bytes).expect("the aggregate verifies"));
-    native_item(&mut items, &format!("aggregate_1_leaf_{nsigs}_sigs"), 1, bytes.len(), t);
+    let mut shapes: Vec<(usize, usize)> = [1, 16, 64, 256].iter().filter(|&&n| n <= nsigs).map(|&n| (0, n)).collect();
+    shapes.extend([1, 4, 16].iter().filter(|&&k| k <= small.len()).map(|&k| (k, 0)));
+    shapes.push((1, 64.min(nsigs)));
+    for (k, n) in shapes {
+        let (proof, _) = api::prove(GuestKind::Base, &[], small[..k].to_vec(), sigs[..n].to_vec(), None)
+            .expect("the aggregate proves");
+        let bytes = api::proof_bytes(&proof);
+        let claims = proof.claims().clone();
+        let t = timed(reps, || api::verify_block(GuestKind::Base, false, &claims, &bytes).expect("the aggregate verifies"));
+        native_item(&mut items, &format!("aggregate_{k}_leaves_{n}_sigs"), 1, bytes.len(), t);
+    }
 
     let mut o = Obj::default();
     o.str("status", "ok").num("reps", reps).raw("items", &array(items));

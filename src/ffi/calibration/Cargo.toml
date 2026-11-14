@@ -16,7 +16,7 @@ workspace = true
 # library revision that has it (`calib.py build` detects it).
 batch = []
 # Generic proofs keyed by a bytecode commitment: `Program::committed()` before proving a leaf.
-committed = []
+committed = ["dep:verifier"]
 
 [dependencies]
 rec_aggregation.workspace = true
@@ -25,6 +25,9 @@ primitives.workspace = true
 leanvm_core.workspace = true
 lean_compiler.workspace = true
 fiat_shamir.workspace = true
+# The plain leanSTARK verifier, for verification-only timings (calib-node native). Pinned to the workspace's leanVM
+# revision; a revision's `[patch]` of leanVM applies to it too.
+verifier = { git = "https://github.com/leanEthereum/leanVM", rev = "e4dcb8d5436c9bf76398d890c57c59613af12956", optional = true }
 libc = "0.2"
 tikv-jemallocator = "0.7"
 

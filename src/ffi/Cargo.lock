@@ -75,6 +75,7 @@ dependencies = [
  "rec_aggregation",
  "signatures 0.1.0",
  "tikv-jemallocator",
+ "verifier",
 ]
 
 [[package]]

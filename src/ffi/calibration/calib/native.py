@@ -1,7 +1,8 @@
 """Native (host, non-recursive) verification as a mempool node runs it, to price per-dependency mempool work.
 
-Per leanSPHINCS signature, a direct leanSTARK leaf (a small program and the largest this machine can prove), a
-256-claim batch leaf with its payment binding, and a mode-1 aggregate; each on one thread and on every thread, the
+Per leanSPHINCS signature; direct leanSTARK leaves (a small program, the largest this machine can prove, and an
+ordinary 256-claim leaf), each verification-only and with the aggregation guest's hints; and mode-1 aggregates of
+growing size, for the per-dependency amortisation. Each on one thread and on every thread, the
 median of `reps` timed runs after a warm-up, behind the quiet-machine gate. The largest leaf's trace is sized to this
 machine's memory (native verification depends only weakly on it) and stepped down to the verifier's bound.
 """
@@ -17,7 +18,7 @@ from . import host
 from .pipeline import TRACE_STEP, iters_for_trace, preflight
 from .runner import Runner, result_line
 
-SMALL_CODE_LOG, SMALL_TRACE_LOG, SIGS = 7, 18, 64
+SMALL_CODE_LOG, SMALL_TRACE_LOG, SIGS, SMALL_LEAVES = 7, 18, 256, 16
 
 
 def run(cfg: dict, out: str, log) -> dict:
@@ -53,16 +54,21 @@ def run(cfg: dict, out: str, log) -> dict:
                 res["notes"].append(f"largest leaf lowered to 2^{trace_log:g} ({'memory' if oom else 'verifier bound'})")
 
     sigs = runner.sigs(b, SIGS)
-    small, meta = runner.leaf(b, SMALL_CODE_LOG, iters_for_trace(SMALL_TRACE_LOG), rate, 1, 7000)
-    res.setdefault("leaves", {})[os.path.basename(small)] = meta
+    smalls = []
+    for i in range(SMALL_LEAVES):
+        p, meta = runner.leaf(b, SMALL_CODE_LOG, iters_for_trace(SMALL_TRACE_LOG), rate, 1, 7100 + i)
+        res.setdefault("leaves", {})[os.path.basename(p)] = meta
+        smalls.append(p)
     largest = biggest(1, 7001)
-    batch = biggest(bounds["claims"], 7002) if "batch" in b["features"] else largest
+    # An ordinary multi-claim leaf (no payment binding): its proof's statement is the claims' batch hash.
+    multi = biggest(bounds["claims"], 7002) if "batch" in b["features"] else largest
     res["trace_log_used"] = trace_log
     save()
     for threads in sorted({1, os.cpu_count() or 1}):
         g = runner.gate()
         p = subprocess.run([os.path.join(b["bin"], "calib-node"), "native", str(cfg.get("reps", 5)), sigs, str(SIGS),
-                            small, largest, batch], capture_output=True, text=True, env=runner.env(threads))
+                            smalls[0], largest, multi, *smalls[1:]], capture_output=True, text=True,
+                           env=runner.env(threads))
         r = result_line(p.stdout) or {"status": "failed", "error": p.stderr[-2000:]}
         res.setdefault("runs", []).append({"threads": threads, "gate": g, "result": r})
         log(f"native verification, {threads} threads: {r.get('status')}")
