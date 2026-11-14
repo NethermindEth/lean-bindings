@@ -3867,9 +3867,9 @@ def sp_wots_pk(adrs_a, kp, pp, msg):
 
 def verify_sig_lean_sphincs(signer):
     # `signer` is one 4-cell entry of the coverage table, an EIP-8288 dependency entry:
-    # the 32-byte data_hash (the message), then pkRoot, pkSeed.
-    pp = signer[GEN ** 3]
-    root = signer[GEN ** 2]
+    # the 32-byte data_hash (the message), then pkSeed, pkRoot.
+    pp = signer[GEN ** 2]
+    root = signer[GEN ** 3]
 
     # H_msg = keccak(0xFF..FF | R | pkSeed | pkRoot | M), 112 bytes in one block.
     r = hint_witness("sp_rand")

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Demerzel Solutions Limited
 // SPDX-License-Identifier: MIT
 
-//! Guest 0: EIP-8288's recursive guest and its host exactly as the ABI 12 package ships them, so a chain without batch pricing
+//! Guest 0: EIP-8288's recursive guest and its host exactly as the ABI 12 package 0.12.1 ships them, so a chain without batch pricing
 //! keeps that package's `AGGREGATED_VK`, limits and input encoding.
 
 use crate::{Dep, LEAN_SPHINCS, LEAN_STARK, LOG_INV_RATE, MAX_BYTES, MAX_DEPS, MAX_INPUT_BYTES};

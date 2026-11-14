@@ -66,13 +66,13 @@ pub(super) fn deps_digest_of(
     hash_to_scalars(&primitives::hash::hash(&preimage))
 }
 
-/// EIP-8288 entry order: `data_hash ‖ pkRoot ‖ pkSeed`, so the list digest is `get_deps_hash`.
+/// EIP-8288 entry order: `data_hash ‖ pkSeed ‖ pkRoot`, so the list digest is `get_deps_hash`.
 pub(super) fn lean_sphincs_claim_cells((message, pk): &LeanSphincsClaim) -> [F192; 4] {
     [
         pack_16_bytes(&message[..16]),
         pack_16_bytes(&message[16..]),
-        pack_16_bytes(&pk.root),
         pack_16_bytes(&pk.public_param),
+        pack_16_bytes(&pk.root),
     ]
 }
 

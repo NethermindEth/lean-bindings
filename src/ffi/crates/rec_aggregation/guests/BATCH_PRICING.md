@@ -11,8 +11,8 @@ The C ABI (version 16) selects the guest with a leading `u32` argument on `nlean
 `nlean_verify_leanstark`, `nlean_verify_recursive` and `nlean_prove_recursive`. The key a caller passes must be that guest's key. A consumer maps
 its fork's `AGGREGATED_VK` to a guest.
 
-- Guest 0 is EIP-8288's guest and host exactly as the ABI 12 package ships them, vendored unchanged as
-  `crates/rec_aggregation_base`. Its key (`f7cf7458…`), its limits (16 recursive inputs per step, 16 leanSTARK
+- Guest 0 is EIP-8288's guest and host exactly as the ABI 12 package 0.12.1 ships them (leanSPHINCS keys laid out
+  `PK.seed ‖ PK.root`), vendored unchanged as `crates/rec_aggregation_base`. Its key (`f6f37690…`), its limits (16 recursive inputs per step, 16 leanSTARK
   dependencies per list), its direct leanSTARK statement (the bare claim) and its aggregation input encoding are that
   package's, so a chain without batch pricing is unaffected by this crate.
 - Guest 1 compiles this crate's `lean_ethereum.py` (`Guest::Batched`): leaves of up to 256 claims and both new schemes.

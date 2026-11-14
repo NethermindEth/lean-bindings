@@ -15,8 +15,8 @@ public partial class NativeLibraryTests
     private const string Library = "nethermind_lean";
     private const uint ExpectedAbi = 16;
     // EIP-8288's guest (0), the ABI 12 package's unchanged, and the one with ethereum/EIPs#12664 batch pricing (1).
-    private const string ExpectedAggregatedVk = "f7cf74585d02043051f0575c23c6b441b0b08ac9e273f5e989c5984b8a4ac0e5";
-    private const string ExpectedBatchedAggregatedVk = "8085df136766c4745c98d4dc25307f654ae4e5abb1c43e60136c1e2b723295c4";
+    private const string ExpectedAggregatedVk = "f6f37690cf7241c9ea24392f349867acc1c8e06034e8ce149e2f11a25eec56f9";
+    private const string ExpectedBatchedAggregatedVk = "ed44310d2b59ac7308d964cb622e32dc966b1e2e9b6f201fcdc350b1bbd705ff";
     // Proof bytes, dependencies, inner proofs per step, NiceTry v2 witness bytes, aggregation input bytes, leanSTARK
     // dependencies per list (guest 0) or claims per batch leaf (guest 1), leanSTARK instructions.
     private static readonly uint[] ExpectedLimits = [8 * 1024 * 1024, 256, 16, 32 + 6176, 18 * 1024 * 1024, 16, 2048];

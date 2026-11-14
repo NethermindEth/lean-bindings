@@ -173,18 +173,12 @@ fn known_scheme(guest: Guest, dep: &Dep) -> bool {
             _ => false,
         }
 }
-/// EIP-8288 leanSPHINCS `verification_key_hash`: the key itself, root then public parameter.
+/// EIP-8288 leanSPHINCS `verification_key_hash`: the key itself, `PK.seed ‖ PK.root`.
 pub fn verification_key(pk: &LeanSphincsPublicKey) -> [u8; 32] {
-    let mut out = [0; 32];
-    out[..16].copy_from_slice(&pk.root);
-    out[16..].copy_from_slice(&pk.public_param);
-    out
+    pk.to_bytes()
 }
 fn public_key(vk: &[u8; 32]) -> LeanSphincsPublicKey {
-    LeanSphincsPublicKey {
-        root: vk[..16].try_into().unwrap(),
-        public_param: vk[16..].try_into().unwrap(),
-    }
+    LeanSphincsPublicKey::from_bytes(vk)
 }
 fn data(dep: &Dep) -> [u8; 32] {
     dep[32..64].try_into().unwrap()
@@ -1046,7 +1040,7 @@ mod tests {
         let base: Vec<u8> = (0..32)
             .map(|i| {
                 u8::from_str_radix(
-                    &"f7cf74585d02043051f0575c23c6b441b0b08ac9e273f5e989c5984b8a4ac0e5"
+                    &"f6f37690cf7241c9ea24392f349867acc1c8e06034e8ce149e2f11a25eec56f9"
                         [2 * i..2 * i + 2],
                     16,
                 )
@@ -1232,6 +1226,23 @@ mod tests {
             assert!(!verify_witness(&dep, &forged), "{name}");
             assert!(discarded(&forged).iter().all(Result::is_err), "{name}");
         }
+    }
+
+    /// EIP-8288 lays a leanSPHINCS key out as `PK.seed ‖ PK.root`; the former `PK.root ‖ PK.seed` names another key.
+    #[test]
+    fn sphincs_key_is_seed_then_root() {
+        let (dep, witness) = signed(1);
+        let (_, pk) = lean_sphincs::key_gen_from_seed([1; 32]);
+        assert_eq!(key(&dep), [pk.public_param, pk.root].concat()[..]);
+        assert!(verify_witness(&dep, &witness));
+        let mut swapped = dep;
+        swapped[64..80].copy_from_slice(&pk.root);
+        swapped[80..].copy_from_slice(&pk.public_param);
+        let swapped_witness = [&swapped[64..], &witness[32..]].concat();
+        assert!(!verify_witness(&swapped, &swapped_witness));
+        let swapped_input = input(&[(swapped, swapped_witness)], &[], &[]);
+        assert!(base::prove_aggregate(&hash_of(&[swapped]), &swapped_input).is_err());
+        assert!(prove_aggregate(BATCHED, &hash_of(&[swapped]), &swapped_input).is_err());
     }
 
     #[test]

@@ -103,7 +103,7 @@ impl EthereumClaims {
     }
 }
 
-/// EIP-8288 `get_deps_hash` with `DEPS_HASH` = Keccak-256. `S` hashes `data_hash ‖ pkRoot ‖ pkSeed` for
+/// EIP-8288 `get_deps_hash` with `DEPS_HASH` = Keccak-256. `S` hashes `data_hash ‖ pkSeed ‖ pkRoot` for
 /// each leanSPHINCS (`0x10`) dependency and `G` `data_hash ‖ vk` for each leanSTARK (`0x11`) one, each
 /// list in the order given; the digest is `S` without leanSTARK dependencies (the published
 /// `get_deps_hash`), else `keccak256(S ‖ G ‖ LEANSTARK_DEPS_DOMAIN)`. The caller canonicalizes (sorts,

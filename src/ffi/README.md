@@ -43,7 +43,7 @@ The C ABI is version 16, with Cdecl calls, 32-byte hashes/keys and `size_t` buff
 `nlean_limits`, `nlean_aggregated_vk`, `nlean_verify_leanstark`, `nlean_verify_recursive` and `nlean_prove_recursive` take a
 leading `u32` guest:
 0 for EIP-8288's, 1 for the one with ethereum/EIPs#12664 batch pricing (see below); any other value fails, and the key
-passed must be that guest's. Guest 0 is the ABI 12 package's guest and host unchanged (`crates/rec_aggregation_base`),
+passed must be that guest's. Guest 0 is the ABI 12 package 0.12.1's guest and host unchanged (`crates/rec_aggregation_base`),
 so its key, limits, direct leanSTARK statement (the bare claim) and aggregation input encoding are that package's.
 `nlean_limits` writes seven u32 values (proof bytes, dependencies, inner proofs per step,
 SPHINCS witness bytes, aggregation input bytes, then leanSTARK dependencies per list for guest 0 or claims per batch leaf
@@ -93,7 +93,7 @@ signing and `FRAMEDATACOPY`; wrapper, inclusion-list and block proof statements 
 resolved dependency.
 
 * **SPHINCS witness:** public key (32 bytes), signature (6176 bytes). As in EIP-8288, the
-  dependency key is the public key itself, root then public parameter. Both the key and the
+  dependency key is the public key itself, `PK.seed || PK.root`. Both the key and the
   signature over `data_hash` are checked.
 * **leanSTARK witness (`0x11`, a deviation, see below):** the format depends on the guest. Guest 0 (EIP-8288's,
   unchanged) takes `kgen` (one byte, at most 11), the program's stacked bytecode table (`16 · 2^kgen` little-endian

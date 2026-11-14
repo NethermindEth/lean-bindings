@@ -143,7 +143,7 @@ fn singles<'a>(deps: impl IntoIterator<Item = &'a RawGeneric>) -> Vec<BatchLeaf>
 fn independent_deps_hash(sphincs: &[LeanSphincsClaim], generic: &[GenericClaim]) -> [u8; 32] {
     let s_bytes: Vec<u8> = sphincs
         .iter()
-        .flat_map(|(m, pk)| m.iter().chain(&pk.root).chain(&pk.public_param).copied())
+        .flat_map(|(m, pk)| m.iter().chain(&pk.public_param).chain(&pk.root).copied())
         .collect();
     let s = primitives::hash::hash(&s_bytes);
     if generic.is_empty() {
@@ -225,7 +225,7 @@ fn pure_lean_sphincs_digest_is_unchanged() {
     assert_eq!(deps_hash(&claims, &[]), independent_deps_hash(&claims, &[]));
     let entries: Vec<u8> = claims
         .iter()
-        .flat_map(|(m, pk)| m.iter().chain(&pk.root).chain(&pk.public_param).copied())
+        .flat_map(|(m, pk)| m.iter().chain(&pk.public_param).chain(&pk.root).copied())
         .collect();
     assert_eq!(deps_hash(&claims, &[]), primitives::hash::hash(&entries));
 }
@@ -235,9 +235,7 @@ fn pure_lean_sphincs_digest_is_unchanged() {
 #[test]
 fn the_same_bytes_under_both_schemes_are_distinct() {
     let (message, pk) = sphincs(1).iter().map(|(pk, m, _)| (*m, *pk)).next().unwrap();
-    let mut key = [0; 32];
-    key[..16].copy_from_slice(&pk.root);
-    key[16..].copy_from_slice(&pk.public_param);
+    let key = pk.to_bytes();
     let as_sphincs = deps_hash(&[(message, pk)], &[]);
     let as_generic = deps_hash(&[], &[(message, key)]);
     let both = deps_hash(&[(message, pk)], &[(message, key)]);
@@ -536,9 +534,7 @@ fn the_guest_refuses_false_generic_claims() {
     let (data_hash, vk, witness) = preimage_dep(9);
     let signer = sphincs(1);
     let (message, pk) = (signer[0].1, signer[0].0);
-    let mut sphincs_bytes = [0; 32];
-    sphincs_bytes[..16].copy_from_slice(&pk.root);
-    sphincs_bytes[16..].copy_from_slice(&pk.public_param);
+    let sphincs_bytes = pk.to_bytes();
     let flip = |mut bytes: [u8; 32]| {
         bytes[0] ^= 1;
         bytes
@@ -668,10 +664,7 @@ fn a_committed_program_ignores_the_hinted_bytecode_value() {
 fn a_generic_claim_is_no_lean_sphincs_claim() {
     let (data_hash, vk, _) = preimage_dep(10);
     let mut signer = sphincs(1).remove(0);
-    signer.0 = LeanSphincsPublicKey {
-        root: vk[..16].try_into().unwrap(),
-        public_param: vk[16..].try_into().unwrap(),
-    };
+    signer.0 = LeanSphincsPublicKey::from_bytes(&vk);
     signer.1 = data_hash;
     assert_eq!(
         aggregate(Guest::Base, &[], vec![], vec![signer], &[], None, RATE).err(),
