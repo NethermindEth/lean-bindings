@@ -92,7 +92,11 @@ fn pow(base: u32, mut e: u64) -> u32 {
 }
 
 fn record(r: u32) -> [F192; 3] {
-    [count((r % LIMB) as usize), count((r / LIMB) as usize), count(r as usize)]
+    [
+        count((r % LIMB) as usize),
+        count((r / LIMB) as usize),
+        count(r as usize),
+    ]
 }
 
 /// FIPS 204 Decompose then UseHint.
@@ -173,13 +177,30 @@ fn constants() -> (Vec<F192>, Vec<(&'static str, usize)>) {
     }
     part("ROWS", rows_cells, 0);
     part("ZT", zetas().iter().flat_map(|&z| record(z)).collect(), 0);
-    part("UH", use_hint_table().iter().map(|&v| count(v as usize)).collect(), 0);
+    part(
+        "UH",
+        use_hint_table()
+            .iter()
+            .map(|&v| count(v as usize))
+            .collect(),
+        0,
+    );
     part("BT", (0..256u64).map(|v| F192::new(v, 0, 0)).collect(), 0);
-    let basis = |i: usize| if i < 64 { F192::new(1 << i, 0, 0) } else { F192::new(0, 1 << (i - 64), 0) };
+    let basis = |i: usize| {
+        if i < 64 {
+            F192::new(1 << i, 0, 0)
+        } else {
+            F192::new(0, 1 << (i - 64), 0)
+        }
+    };
     part("BB", (0..16).map(|k| basis(8 * k)).collect(), 0);
     part("BASIS", (0..128).map(basis).collect(), 0);
     part("PW", (0..24).map(|i| count(1 << i)).collect(), 0);
-    part("TG", (0..89).map(|t| count(t * GAMMA2 as usize)).collect(), 0);
+    part(
+        "TG",
+        (0..89).map(|t| count(t * GAMMA2 as usize)).collect(),
+        0,
+    );
     // codes g^0, g^1, g^2 = coefficients 0, 1, -1: their records' three cells
     let q1 = (Q - 1) as usize;
     part("CS", [0, 1, 0, 0, 0, 2046, 0, 1, q1].map(count).to_vec(), 0);
@@ -193,12 +214,18 @@ fn constants() -> (Vec<F192>, Vec<(&'static str, usize)>) {
     part("S256", (0..256).map(|v| count(256 * v)).collect(), 0);
     part("S65536", (0..256).map(|v| count(65536 * v)).collect(), 0);
     for (name, s) in [("F0", 1usize), ("F12", 1 << 12), ("F24", 1 << 24)] {
-        let f = (-4096i64..=8192).map(|y| count(s * ((y * y) / 4) as usize)).collect();
+        let f = (-4096i64..=8192)
+            .map(|y| count(s * ((y * y) / 4) as usize))
+            .collect();
         part(name, f, 4096);
     }
     part("P1", (0..2048).map(|k| count(4096 * k)).collect(), 0);
     part("QT0", (0..4096).map(|k| count(Q as usize * k)).collect(), 0);
-    part("QT1", (0..16384).map(|k| count(4096 * Q as usize * k)).collect(), 0);
+    part(
+        "QT1",
+        (0..16384).map(|k| count(4096 * Q as usize * k)).collect(),
+        0,
+    );
     if cells.len() % 2 == 1 {
         cells.push(F192::ZERO);
     }
@@ -232,7 +259,10 @@ struct Mq<'a>(&'a mut Hints);
 
 impl Mq<'_> {
     fn limbs(r: u64) -> Vec<F192> {
-        vec![count((r % LIMB as u64) as usize), count((r / LIMB as u64) as usize)]
+        vec![
+            count((r % LIMB as u64) as usize),
+            count((r / LIMB as u64) as usize),
+        ]
     }
 
     /// `red`: x < 2^49 reduced, its quotient in limbs.
@@ -262,7 +292,6 @@ impl Mq<'_> {
         }
         slots[8]
     }
-
 }
 
 /// FIPS 204 NTT^-1 (Algorithm 42).
@@ -272,7 +301,8 @@ fn intt(w: &[u32; 256]) -> [u32; 256] {
     for r in rows().iter().rev() {
         let (a, b) = (cur[r.j] as u64, cur[r.j + r.len] as u64);
         cur[r.j] = ((a + b) % Q as u64) as u32;
-        cur[r.j + r.len] = (z[r.inverse_zeta] as u64 * ((b + Q as u64 - a) % Q as u64) % Q as u64) as u32;
+        cur[r.j + r.len] =
+            (z[r.inverse_zeta] as u64 * ((b + Q as u64 - a) % Q as u64) % Q as u64) as u32;
     }
     cur.map(|v| (FINV as u64 * v as u64 % Q as u64) as u32)
 }
@@ -287,7 +317,9 @@ fn rej_ntt_poly(rho: &[u8], s: u8, r: u8) -> ([u32; 256], usize, usize, Vec<u8>)
     let mut out = [0u32; 256];
     let (mut n, mut c) = (0, 0);
     while n < 256 {
-        let v = stream[3 * c] as u32 | (stream[3 * c + 1] as u32) << 8 | ((stream[3 * c + 2] & 0x7f) as u32) << 16;
+        let v = stream[3 * c] as u32
+            | (stream[3 * c + 1] as u32) << 8
+            | ((stream[3 * c + 2] & 0x7f) as u32) << 16;
         if v < Q {
             out[n] = v;
             n += 1;
@@ -306,7 +338,10 @@ impl Scheme for MlDsa44 {
     }
 
     fn placeholders(ps: &mut BTreeMap<String, String>) {
-        ps.insert("CLAIM_TAG".into(), u128::from_le_bytes(*CLAIM_TAG).to_string());
+        ps.insert(
+            "CLAIM_TAG".into(),
+            u128::from_le_bytes(*CLAIM_TAG).to_string(),
+        );
         let (t, offsets) = constants();
         let d = table_digest(&t);
         ps.insert("TABLE_PAIRS".into(), (t.len() / 2).to_string());
@@ -356,10 +391,16 @@ impl Scheme for MlDsa44 {
         for item in Self::items(4) {
             let pk = ml_dsa_44::PublicKey::try_from_bytes(item.pk).expect("a key");
             assert!(pk.verify(&item.msg, &item.sig, &[]));
-            assert_eq!(recompute_ctilde(&item, &mut Hints::default()), item.sig[..32]);
+            assert_eq!(
+                recompute_ctilde(&item, &mut Hints::default()),
+                item.sig[..32]
+            );
             let forged = Self::forge(&item);
             assert!(!pk.verify(&forged.msg, &forged.sig, &[]));
-            assert_ne!(recompute_ctilde(&forged, &mut Hints::default()), forged.sig[..32]);
+            assert_ne!(
+                recompute_ctilde(&forged, &mut Hints::default()),
+                forged.sig[..32]
+            );
         }
         // The NTT and its inverse, row by row as the program runs them, multiply negacyclically.
         let mut h = Hints::default();
@@ -367,7 +408,8 @@ impl Scheme for MlDsa44 {
         let a: [u32; 256] = std::array::from_fn(|i| (i as u32 * 7919 + 13) % Q);
         let b: [u32; 256] = std::array::from_fn(|i| (i as u32 * 104729 + 5) % Q);
         let (fa, fb) = (mq.ntt(&a), mq.ntt(&b));
-        let prod: [u32; 256] = std::array::from_fn(|i| (fa[i] as u64 * fb[i] as u64 % Q as u64) as u32);
+        let prod: [u32; 256] =
+            std::array::from_fn(|i| (fa[i] as u64 * fb[i] as u64 % Q as u64) as u32);
         let mut want = [0i128; 256];
         for i in 0..256 {
             for j in 0..256 {
@@ -465,12 +507,20 @@ fn recompute_ctilde(item: &Item, hints: &mut Hints) -> [u8; 32] {
                 let v = v24 & 0x7f_ffff;
                 hints.push(
                     "rej_split",
-                    vec![count((v % LIMB) as usize), count((v / LIMB) as usize), bit(v24 >> 23 == 1)],
+                    vec![
+                        count((v % LIMB) as usize),
+                        count((v / LIMB) as usize),
+                        bit(v24 >> 23 == 1),
+                    ],
                 );
                 hints.push("rej_acc", vec![bit(v < Q)]);
                 if v < Q {
                     let r1 = (v >> 12) as usize;
-                    let wy = if r1 == 2046 { F192::ZERO } else { (count(r1) + count(2046)).inv() };
+                    let wy = if r1 == 2046 {
+                        F192::ZERO
+                    } else {
+                        (count(r1) + count(2046)).inv()
+                    };
                     hints.push("rej_wy", vec![wy]);
                 }
             }
@@ -483,9 +533,13 @@ fn recompute_ctilde(item: &Item, hints: &mut Hints) -> [u8; 32] {
     let poly = |v: &[u32]| -> [u32; 256] { v.try_into().unwrap() };
     let mut scratch = Hints::default();
     let mut native = Mq(&mut scratch);
-    let zh: Vec<[u32; 256]> = (0..4).map(|i| native.ntt(&poly(&z[256 * i..256 * (i + 1)]))).collect();
+    let zh: Vec<[u32; 256]> = (0..4)
+        .map(|i| native.ntt(&poly(&z[256 * i..256 * (i + 1)])))
+        .collect();
     let ch = native.ntt(&c);
-    let th: Vec<[u32; 256]> = (0..4).map(|i| native.ntt(&poly(&t1[256 * i..256 * (i + 1)]))).collect();
+    let th: Vec<[u32; 256]> = (0..4)
+        .map(|i| native.ntt(&poly(&t1[256 * i..256 * (i + 1)])))
+        .collect();
     let mut acc = vec![[0u64; 256]; 4];
     for (j, row) in acc.iter_mut().enumerate() {
         for (k, out) in row.iter_mut().enumerate() {
@@ -495,12 +549,20 @@ fn recompute_ctilde(item: &Item, hints: &mut Hints) -> [u8; 32] {
             }
         }
     }
-    let w: Vec<u32> = acc.iter().flat_map(|row| intt(&row.map(|x| (x % Q as u64) as u32))).collect();
+    let w: Vec<u32> = acc
+        .iter()
+        .flat_map(|row| intt(&row.map(|x| (x % Q as u64) as u32)))
+        .collect();
     for &wk in &w {
         hints.push("ml_w", Mq::limbs(wk as u64));
     }
     let mut mq = Mq(hints);
-    for p in z.chunks(256).chain([&c[..]]).chain(t1.chunks(256)).chain(w.chunks(256)) {
+    for p in z
+        .chunks(256)
+        .chain([&c[..]])
+        .chain(t1.chunks(256))
+        .chain(w.chunks(256))
+    {
         mq.ntt(&poly(p));
     }
     for row in &acc {
@@ -525,11 +587,26 @@ fn recompute_ctilde(item: &Item, hints: &mut Hints) -> [u8; 32] {
     for k in 0..1024 {
         let r = w[k];
         let (t, s) = (r / GAMMA2, r % GAMMA2);
-        let wz = if s == 0 { F192::ZERO } else { (count(s as usize) + F192::ONE).inv() };
-        let wy = if t == 88 { F192::ZERO } else { (count(t as usize) + count(88)).inv() };
+        let wz = if s == 0 {
+            F192::ZERO
+        } else {
+            (count(s as usize) + F192::ONE).inv()
+        };
+        let wy = if t == 88 {
+            F192::ZERO
+        } else {
+            (count(t as usize) + count(88)).inv()
+        };
         hints.push(
             "uh",
-            vec![count(t as usize), count((s & 0xffff) as usize), bit(s >> 16 == 1), bit(s == 0), wz, wy],
+            vec![
+                count(t as usize),
+                count((s & 0xffff) as usize),
+                bit(s >> 16 == 1),
+                bit(s == 0),
+                wz,
+                wy,
+            ],
         );
         let v = use_hint(h[k], r);
         for b in 0..6 {
