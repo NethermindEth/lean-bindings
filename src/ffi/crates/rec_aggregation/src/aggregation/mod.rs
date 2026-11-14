@@ -72,7 +72,7 @@ pub type GenericClaim = ([u8; 32], [u8; 32]);
 pub type RawGeneric = ([u8; 32], [u8; 32], Vec<u8>);
 
 /// One leanSPHINCS claim, an EIP-8288 dependency without its scheme word: `data_hash`, then
-/// the key (`pkRoot ‖ pkSeed`). The tuple's order is the EIP's bytewise order of the 64-byte entry.
+/// the key (`pkSeed ‖ pkRoot`). The tuple's order is the EIP's bytewise order of the 64-byte entry.
 pub type LeanSphincsClaim = (lean_sphincs::Message, LeanSphincsPublicKey);
 
 /// The most earlier aggregates one [`aggregate`] call can take, so the arity of
