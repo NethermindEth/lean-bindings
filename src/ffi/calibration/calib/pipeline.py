@@ -201,7 +201,9 @@ class Calibration:
         L, fan, C = cfg["sigs_per_node"], cfg["fanin"], cfg["bounds"]["claims"]
         mi = min(cfg["bounds"]["max_inner_proofs_per_step"], self.caps[self.base["label"]]["library_max_inner_proofs_per_step"])
         sigs = self.run.sigs(self.base, max(L, mi) * L)
-        leaves = [self.max_leaf(self.base, 1000 + i) for i in range(pre["step_leaves"])]
+        only = cfg.get("only_cells")
+        n_leaves = pre["step_leaves"] if not only or any(n.startswith("full-step") for n in only) else 1
+        leaves = [self.max_leaf(self.base, 1000 + i) for i in range(n_leaves)]
         cells = [(f"sigs-{n}", ["sigs", sigs, str(n)]) for n in sorted({max(1, L // 4), max(2, L // 2), L})]
         cells += [(f"merge-{c}x1", ["merge", sigs, str(c), "1"]) for c in sorted({2, fan, mi})]
         cells += [(f"merge-2x{L}", ["merge", sigs, "2", str(L)])]
@@ -214,8 +216,15 @@ class Calibration:
             for k in lad.get("code_logs", []):
                 path, _ = self.run.leaf(self.base, k, iters, rate, 1, 60000 + k)
                 cells += [(f"ladder-code-{k}", ["leaves", "base", "1", path])]
+        if only:
+            # A subset of cells (e.g. to relate machines), without constants or blocks.
+            cells = [c for c in cells if c[0] in only]
         self.log(f"cells on {self.base['label']}: {len(cells)} x {cfg['reps']} reps")
         res = self.run.cells(self.base, cells, cfg["reps"])
+        if only:
+            self.res["cells"] = res
+            self.save()
+            return
         if self.batch:
             bl = [self.max_leaf(self.batch, 5000 + i, C) for i in range(2)]
             mid = [n for n in (lad or {}).get("claims", []) if 1 < n < C]

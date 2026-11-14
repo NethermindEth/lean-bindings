@@ -95,7 +95,8 @@ def main():
         try:
             c.setup()
             c.cells()
-            c.calibrate()
+            if not cfg.get("only_cells"):
+                c.calibrate()
         finally:
             c.res["finished"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             c.save()

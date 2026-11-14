@@ -17,12 +17,13 @@
 #
 # --arch refuses to run on another architecture. --yield-to-manual-runs exits 0 without running when a manual
 # (workflow_dispatch) run of the repository's benchmark workflows is waiting for, or running on, LABEL; it reads
-# GH_TOKEN. It refuses (exit 4) with less than --min-free-gb (default 20) free for the output or docker's images, and
+# GH_TOKEN. --leanvm-revs REV[,REV] first runs upstream leanVM's README benchmarks at each revision
+# (ci/leanvm-readme-bench.sh). It refuses (exit 4) with less than --min-free-gb (default 20) free for the output or docker's images, and
 # removes an image it pulled. --lean-bindings-ref is recorded with the hardware; the caller checks that revision out.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
-scenarios=smoke out= timeout_min=170 workers= threads= mem= docker= arch= lb_ref= yield_repo= runner_label= min_free_gb=20
+scenarios=smoke out= timeout_min=170 workers= threads= mem= docker= arch= lb_ref= yield_repo= runner_label= min_free_gb=20 leanvm_revs=
 while [ $# -gt 0 ]; do
   case $1 in
     --scenarios) scenarios=$2; shift 2 ;;
@@ -33,6 +34,7 @@ while [ $# -gt 0 ]; do
     --yield-to-manual-runs) yield_repo=$2; shift 2 ;;
     --runner-label) runner_label=$2; shift 2 ;;
     --min-free-gb) min_free_gb=$2; shift 2 ;;
+    --leanvm-revs) leanvm_revs=$2; shift 2 ;;
     --workers) workers=$2; shift 2 ;;
     --threads) threads=$2; shift 2 ;;
     --memory-per-worker-gb) mem=$2; shift 2 ;;
@@ -80,7 +82,7 @@ if [ -n "$docker" ] || ! command -v cargo >/dev/null; then
     -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" "$image" bash -c \
     "apt-get update -qq >/dev/null && apt-get install -y -qq python3 procps >/dev/null; \
      ci/run-calibration.sh --scenarios '$scenarios' --out /out --timeout-minutes $timeout_min \
-       ${lb_ref:+--lean-bindings-ref '$lb_ref'} \
+       ${lb_ref:+--lean-bindings-ref '$lb_ref'} ${leanvm_revs:+--leanvm-revs '$leanvm_revs'} \
        ${workers:+--workers $workers} ${threads:+--threads $threads} ${mem:+--memory-per-worker-gb $mem}; \
      rc=\$?; chown -R \$HOST_UID:\$HOST_GID /out /repo/src/ffi/target 2>/dev/null; exit \$rc" && rc=0 || rc=$?
   exit $rc
@@ -97,6 +99,11 @@ fi
   echo "== lean-bindings ref"; echo "${lb_ref:-unspecified}"
 } > "$out/host.txt" 2>&1
 cat "$out/host.txt"
+
+if [ -n "$leanvm_revs" ]; then
+  # shellcheck disable=SC2086
+  "$here/ci/leanvm-readme-bench.sh" "$out" ${leanvm_revs//,/ } || echo "leanVM README benchmarks failed" >&2
+fi
 
 cores=$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 deadline=$(( $(date +%s) + timeout_min * 60 ))
