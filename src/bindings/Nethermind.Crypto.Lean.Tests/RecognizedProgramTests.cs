@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 
@@ -17,8 +18,8 @@ public partial class RecognizedProgramTests
     private const uint BatchedGuest = 1;
     private const uint SlhDsa = 3;
 
-    static RecognizedProgramTests() => NativeLibrary.SetDllImportResolver(typeof(RecognizedProgramTests).Assembly, static (name, assembly, searchPath) =>
-        NativeLibrary.Load(Path.Combine(AppContext.BaseDirectory, "runtimes", RuntimeInformation.RuntimeIdentifier, "native", $"lib{name}.so"), assembly, searchPath));
+    // An assembly takes one import resolver, which NativeLibraryTests sets.
+    static RecognizedProgramTests() => RuntimeHelpers.RunClassConstructor(typeof(NativeLibraryTests).TypeHandle);
 
     [LibraryImport(Library)]
     private static unsafe partial int nlean_recognized_key(uint profile, byte* output);
