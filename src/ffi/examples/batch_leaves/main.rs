@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 //! Proves a batch leaf of N claims (`batch_leaves [n]`, 1 to 16, default 4) with the `batch.py` template, then
-//! aggregates it through the native aggregation input into a finalized `stark_proof` over its N ethereum/EIPs#12664
-//! batch claims and the leaf's payment. The template's unrolled digest keeps it to 16 claims within the instruction
+//! aggregates it through the native aggregation input into a `stark_proof` over its N ethereum/EIPs#12664 leanSTARK
+//! dependencies. The template's unrolled digest keeps it to 16 claims within the instruction
 //! bound; a looping digest reaches the guest's 256.
 //! Signature leaves (ML-DSA, Falcon, SLH-DSA, ...) replace the template's hinted claims with verified ones.
 
@@ -11,8 +11,8 @@ use fiat_shamir::merkle::hash_to_scalars;
 use leanvm_core::cpu::{bytecode_table, prove};
 use nethermind_lean::{batch_hash, final_statement, prove_aggregate};
 use rec_aggregation::{
-    BATCH_DOMAIN, BATCHED_LEANSTARK_SCHEME, Guest, LEANSTARK_LEAF_PAYMENT_SCHEME,
-    generic_verification_key, generic_witness, verify_batch_leaf, verify_deps_hash,
+    BATCH_DOMAIN, Guest, LEAN_STARK_SCHEME, generic_verification_key, generic_witness,
+    verify_batch_leaf, verify_deps_hash,
 };
 
 /// The most claims the template takes.
@@ -62,18 +62,16 @@ fn main() {
         witness.len()
     );
 
-    let dependency = |scheme: u8, data: &[u8; 32]| {
-        let mut dependency = [0; 96];
-        dependency[31] = scheme;
-        dependency[32..64].copy_from_slice(data);
-        dependency[64..].copy_from_slice(&key);
-        dependency
-    };
-    let mut dependencies: Vec<[u8; 96]> = claims
+    let dependencies: Vec<[u8; 96]> = claims
         .iter()
-        .map(|claim| dependency(BATCHED_LEANSTARK_SCHEME, claim))
+        .map(|claim| {
+            let mut dependency = [0; 96];
+            dependency[31] = LEAN_STARK_SCHEME;
+            dependency[32..64].copy_from_slice(claim);
+            dependency[64..].copy_from_slice(&key);
+            dependency
+        })
         .collect();
-    dependencies.push(dependency(LEANSTARK_LEAF_PAYMENT_SCHEME, &statement));
     // The native aggregation input: no direct witnesses, children or discards, then one leaf with the dependencies
     // it establishes.
     let number = |n: usize| (n as u32).to_le_bytes();
@@ -92,7 +90,7 @@ fn main() {
         prove_aggregate(Guest::Batched, &deps_hash, &input).expect("the leaf aggregates");
     verify_deps_hash(Guest::Batched, &deps_hash, &stark_proof).expect("the aggregate verifies");
     println!(
-        "stark_proof over {n} batch claims and their payment: {} B, deps_hash {}",
+        "stark_proof over {n} claims: {} B, deps_hash {}",
         stark_proof.len(),
         hex(&deps_hash)
     );

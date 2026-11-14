@@ -41,8 +41,6 @@ pub struct EthereumClaims {
 pub struct EthereumProof {
     /// The aggregation program this is a proof of.
     pub(super) guest: Guest,
-    /// Whether this is a finalized statement (ethereum/EIPs#12664), which no parent takes as a child.
-    pub(super) finalized: bool,
     pub(super) claims: EthereumClaims,
     /// What this aggregate defers to whoever discharges it: its parent, in
     /// circuit, or [`Self::verify`], natively.
@@ -105,21 +103,12 @@ impl EthereumClaims {
     }
 }
 
-/// EIP-8288 `get_deps_hash` with `DEPS_HASH` = Keccak-256. `S` hashes `data_hash ‖ pkRoot ‖ pkSeed` for
-/// each leanSPHINCS (`0x10`) dependency and `G` `data_hash ‖ vk` for each leanSTARK (`0x11`) one, each
-/// list in the order given; the digest is `S` without leanSTARK dependencies (the published
-/// `get_deps_hash`), else `keccak256(S ‖ G ‖ LEANSTARK_DEPS_DOMAIN)`. The caller canonicalizes (sorts,
-/// deduplicates) each list.
+/// EIP-8288 `get_deps_hash` as ethereum/EIPs#12664 replaces it, with `DEPS_HASH` = Keccak-256: the hash of the
+/// dependencies' canonical 96-byte triples `scheme word ‖ data_hash ‖ key`, every leanSPHINCS (`0x10`) one
+/// (`data_hash ‖ pkSeed ‖ pkRoot`) then every leanSTARK (`0x11`) one (`data_hash ‖ vk`). The caller canonicalizes
+/// (sorts, deduplicates) each list.
 pub fn deps_hash(lean_sphincs: &[LeanSphincsClaim], generic: &[GenericClaim]) -> [u8; 32] {
-    cell_bytes(deps_digest_cells(lean_sphincs, generic, false))
-        .try_into()
-        .expect("two 16-byte cells")
-}
-
-/// A finalized statement (ethereum/EIPs#12664): `get_batch_final_hash(deps_hash(lean_sphincs, generic))`, `generic` the
-/// finalized leanSTARK list, a batch claim keyed by [`super::finalized_claim_key`].
-pub fn final_deps_hash(lean_sphincs: &[LeanSphincsClaim], generic: &[GenericClaim]) -> [u8; 32] {
-    cell_bytes(deps_digest_cells(lean_sphincs, generic, true))
+    cell_bytes(deps_digest_cells(lean_sphincs, generic))
         .try_into()
         .expect("two 16-byte cells")
 }
@@ -176,17 +165,12 @@ impl EthereumProof {
     /// The VM's public input for this aggregate: the digest of its claims and its deferred claim.
     pub(super) fn vm_public_input(&self) -> [F192; 2] {
         let da = verifier::da::digest(self.claims.da_commitment);
-        statement_digest(self.guest, &self.claims.generic, &self.claims.lean_sphincs, self.finalized, da, &self.defer)
+        statement_digest(self.guest, &self.claims.generic, &self.claims.lean_sphincs, da, &self.defer)
     }
 
     /// The aggregation program this is a proof of.
     pub fn guest(&self) -> Guest {
         self.guest
-    }
-
-    /// Whether this is a finalized statement, whose [`Self::claims`] are the finalized list.
-    pub fn finalized(&self) -> bool {
-        self.finalized
     }
 
     /// What this aggregate claims, which [`Self::verify`] checks.
@@ -215,7 +199,6 @@ impl EthereumProof {
         let proof = leanvm_core::cpu::Proof::from_bytes(proof).ok_or(AggregateVerifyError::MalformedEncoding)?;
         Ok(Self {
             guest,
-            finalized: false,
             claims,
             // The wire carries no value, only the point to derive it from.
             defer: DeferredClaim::recompute_scalar(guest, bytecode_point)?,

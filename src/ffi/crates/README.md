@@ -14,11 +14,11 @@ Changes against upstream, all EIP-8288 specific:
   Keccak-256, verifies NiceTry v2 signatures (scheme `0x10`) and leanVM execution proofs of programs up to 2^11
   instructions as EIP-8288 batch leaves (scheme `0x11`, `src/aggregation/generic.rs`), and merges or discards child
   aggregates. It compiles as two guests (`Guest`): EIP-8288's, with one-claim leaves, and one adding ethereum/EIPs#12664
-  batch pricing, with leaves of up to 256 claims that also establish sponsored batch claims (`0x12`) bound to their leaf
-  payment (`0x13`), and finalization. Leaves are keyed by a committed bytecode key;
+  batched generic proof dependencies, with leaves of up to 256 claims and the scheme-bearing 96-byte-triple dependency
+  digest. Leaves are keyed by `get_vk_hash` of a committed bytecode key;
   [`rec_aggregation/EIP8288-PROFILE.md`](rec_aggregation/EIP8288-PROFILE.md) specifies that key, the witness and the
   proof encoding as the proof-system profile the EIPs pin, and
-  [`rec_aggregation/guests/BATCH_PRICING.md`](rec_aggregation/guests/BATCH_PRICING.md) describes what the guest decides
+  [`rec_aggregation/guests/BATCHING.md`](rec_aggregation/guests/BATCHING.md) describes what the guest decides
   that the EIPs leave to the proof system. `rec_aggregation_base` is the ABI 12 package's EIP-8288 guest, unchanged.
 
 `crates/upstream.sh diff` prints every change against upstream at the pinned revision; `crates/upstream.sh update <rev>`

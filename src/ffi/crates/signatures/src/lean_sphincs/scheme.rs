@@ -9,13 +9,13 @@
 
 use super::*;
 
-/// `(pkRoot, pkSeed)`. Ordered lexicographically on [`Self::flatten`], which is
+/// `(pkSeed, pkRoot)`. Ordered lexicographically on [`Self::to_bytes`], which is
 /// how an aggregate sorts the claims on one message. The on-chain form is two
 /// `bytes32`, each value top-aligned (`v ‖ 0^16`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LeanSphincsPublicKey {
-    pub root: Digest,
     pub public_param: PublicParam,
+    pub root: Digest,
 }
 
 impl LeanSphincsPublicKey {
@@ -27,7 +27,7 @@ impl LeanSphincsPublicKey {
         &self.root
     }
 
-    /// `pkSeed | pkRoot`, upstream's claim order.
+    /// `pkSeed | pkRoot`, upstream's claim order and the EIP-8288 `verification_key_hash`.
     pub fn to_bytes(&self) -> [u8; PUB_KEY_SIZE] {
         let mut out = [0; PUB_KEY_SIZE];
         out[..N].copy_from_slice(&self.public_param);
@@ -252,8 +252,8 @@ mod tests {
         let json = include_str!("sphincs-v2-reference-0.json");
         let (pk_seed, pk_root) = (field(json, "pkSeed"), field(json, "pkRoot"));
         let pk = LeanSphincsPublicKey {
-            root: pk_root[..N].try_into().unwrap(),
             public_param: pk_seed[..N].try_into().unwrap(),
+            root: pk_root[..N].try_into().unwrap(),
         };
         let message: Message = field(json, "message").try_into().unwrap();
         let blob = field(json, "signature");
@@ -286,7 +286,7 @@ pub fn sign_with_seeds(
 ) -> (LeanSphincsPublicKey, LeanSphincsSignature) {
     let root = root_of(&public_param, &sk_seed);
     let signature = sign_with(&public_param, &root, &sk_seed, &sk_prf, message);
-    (LeanSphincsPublicKey { root, public_param }, signature)
+    (LeanSphincsPublicKey { public_param, root }, signature)
 }
 
 fn sign_with(

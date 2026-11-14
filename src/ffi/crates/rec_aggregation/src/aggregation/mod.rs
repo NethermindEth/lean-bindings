@@ -55,15 +55,14 @@ mod tests;
 
 pub use error::{AggregateVerifyError, AggregationError, SnarkProveError, SnarkVerifyError};
 pub use generic::{
-    BATCH_DOMAIN, BATCH_FINAL_TAG, BATCHED_LEANSTARK_SCHEME, LEANSTARK_DEPS_DOMAIN, LEANSTARK_LEAF_PAYMENT_SCHEME,
-    MAX_CLAIMS_PER_BATCH_LEAF, MAX_GENERIC_BYTECODE_LOG, batch_claim_key, batch_final_hash, batch_hash, finalized_claim_key,
-    generic_verification_key, generic_witness, payment_key, scheme_word, valid_batch_claims, verify_batch_leaf,
-    verify_generic,
+    BATCH_DOMAIN, LEAN_SPHINCS_SCHEME, LEAN_STARK_SCHEME, MAX_CLAIMS_PER_BATCH_LEAF, MAX_GENERIC_BYTECODE_LOG, VK_TAG,
+    batch_hash, generic_verification_key, generic_witness, scheme_word, valid_batch_claims, verify_batch_leaf,
+    verify_generic, vk_hash,
 };
 pub use guest::{Guest, unified_guest, warm_up};
-pub use node::{aggregate, aggregate_finalized, aggregate_finalized_with_stats, aggregate_with_stats};
+pub use node::{aggregate, aggregate_with_stats};
 pub use proof::{
-    EthereumClaims, EthereumProof, aggregated_vk, deps_hash, deps_public_input_bytes, final_deps_hash, verify_deps_hash,
+    EthereumClaims, EthereumProof, aggregated_vk, deps_hash, deps_public_input_bytes, verify_deps_hash,
 };
 use signatures::lean_sphincs;
 use signatures::lean_sphincs::LeanSphincsPublicKey;
@@ -85,7 +84,7 @@ pub fn singleton_leaf((data_hash, vk, witness): RawGeneric) -> BatchLeaf {
 }
 
 /// One leanSPHINCS claim, an EIP-8288 dependency without its scheme word: `data_hash`, then
-/// the key (`pkRoot ‖ pkSeed`). The tuple's order is the EIP's bytewise order of the 64-byte entry.
+/// the key (`pkSeed ‖ pkRoot`). The tuple's order is the EIP's bytewise order of the 64-byte entry.
 pub type LeanSphincsClaim = (lean_sphincs::Message, LeanSphincsPublicKey);
 
 /// The most earlier aggregates one [`aggregate`] call can take, so the arity of
@@ -95,7 +94,7 @@ pub const MAX_RECURSIONS: usize = 16;
 /// EIP-8288 `MAX_INNER_PROOFS_PER_STEP` (provisional, 16 in the EIP): the most batch leaves and earlier aggregates one
 /// [`aggregate`] call verifies together. Raw leanSPHINCS signatures do not count.
 ///
-/// Chosen with the leaf bounds, as ethereum/EIPs#12664 requires: under the committed bytecode key, a finalized step of
+/// Chosen with the leaf bounds, as ethereum/EIPs#12664 requires: under the committed bytecode key, a step of
 /// 16 maximum-resource leaves (2^11 instructions, 256 claims, distinct keys) commits 2^27.6 of the outer proof's 2^30
-/// witness bound, and 16 children 2^26.8 (`guests/BATCH_PRICING.md`).
+/// witness bound, and 16 children 2^26.8 (`guests/BATCHING.md`).
 pub const MAX_INNER_PROOFS_PER_STEP: usize = 16;

@@ -6,7 +6,7 @@ use super::hints::{FORGE, Forgery, Hints};
 use super::node::aggregate;
 use super::placeholders::placeholder_map;
 use super::proof::{EthereumClaims, EthereumProof, decode, encode};
-use super::statement::{CLAIM_GROUP, claim_list_digest, list_split};
+use super::statement::{CLAIM_GROUP, list_split};
 use fiat_shamir::merkle::hash_to_scalars;
 use lean_compiler::{compile, parse_with_replacements};
 use lean_da::{BLOB_SYMBOLS, CELL_SYMBOLS, CELLS_PER_ROW, CODEWORD_SYMBOLS, DA_LOG_K, DA_MAX_ROWS};
@@ -508,7 +508,7 @@ fn aggregate_overlapping_signers() {
     assert!(node.claims.lean_sphincs.windows(2).all(|w| w[0] < w[1]));
 }
 
-/// A child list walked by gaps (`child_claim_list_mono`) moves strictly forward. A
+/// A child list walked by gaps (`child_deps_mono`) moves strictly forward. A
 /// child may declare a claim twice, and a gap of `g^-1` would walk the copy back onto
 /// the slot it just covered, with the same coverage mark, so write-once memory alone
 /// would not see it: only the gap's `assert_gpow` does.
@@ -524,7 +524,9 @@ def main():
     table = HeapBuf(GEN ** 8)
     hint_witness(table[0:8], "claims")
     cover = HeapBuf(GEN ** 2)
-    d0, d1 = child_claim_list_digest(table, cover, GEN ** 3, GEN ** 2, n_c)
+    sub = HeapBuf(GEN ** 12)
+    child_deps(sub, table, cover, GEN ** 3, GEN ** 2, n_c, STARK_SCHEME_CELL)
+    d0, d1 = deps_list_digest(sub, n_c)
     public = GEN ** 0
     assert public[1] == d0
     assert public[GEN] == d1
@@ -545,7 +547,11 @@ def main():
         }
         let mut program = guest.clone();
         hints.install(&mut program);
-        program.execute(claim_list_digest(child.iter().copied()))
+        let bytes: Vec<u8> = child
+            .iter()
+            .flat_map(|claim| [&super::generic::scheme_word(0x11)[..], &super::cells::cell_bytes(*claim)].concat())
+            .collect();
+        program.execute(hash_to_scalars(&primitives::hash::hash(&bytes)))
     };
     assert!(run(&[claim(0), claim(1)], &[count(0), count(0)]).is_ok());
     let back = F192::from(g_pow(1).inv());
