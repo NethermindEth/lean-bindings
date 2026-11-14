@@ -12,6 +12,9 @@
 //! calib-node cell merge SIGFILE C K                    one step merging C children of K signatures each
 //! calib-node cell mergebatch RETAIN LEAF...            one step merging one sponsored-leaf child per leaf
 //! calib-node cell finalize RETAIN LEAF...              one finalizing step over one sponsored-leaf child per leaf
+//! calib-node cell deep MODE RETAIN GROUP LEAF...        a two-level tree: per GROUP leaves, one sponsored-leaf child
+//!                                                      each merged into a group proof (untimed); then one timed merge
+//!                                                      (MODE merge) or finalizing step (MODE finalize) over the groups
 //! ```
 //!
 //! A cell proves untimed inputs and an untimed one-signature warm-up step, then times exactly one step and prints
@@ -304,6 +307,67 @@ fn cell(args: &[String]) {
                         Some(&declare),
                     )
                 });
+            }
+        }
+        "deep" => {
+            if !api::BATCH {
+                skipped(
+                    "deep",
+                    "the batch-pricing guest is not in this library revision",
+                );
+            }
+            let (mode, retain, group) = (a(1), num(a(2)), num(a(3)));
+            let leaves = read_leaves(&rest(4));
+            warm_up();
+            let mut groups = Vec::new();
+            let mut sources = Vec::new();
+            let mut union = Vec::new();
+            for chunk in leaves.chunks(group) {
+                let mut children = Vec::new();
+                let mut declared = Vec::new();
+                for l in chunk {
+                    let declare = sponsored(std::slice::from_ref(l), retain);
+                    children.push(
+                        api::prove(GuestKind::Batched, &[], vec![l.clone()], vec![], Some(&declare))
+                            .expect("a leaf child")
+                            .0,
+                    );
+                    declared.extend(declare.generic);
+                    sources.push(api::batch::source(l));
+                }
+                declared.sort();
+                let declare = EthereumClaims {
+                    generic: declared.clone(),
+                    ..Default::default()
+                };
+                groups.push(
+                    api::prove(GuestKind::Batched, &children, vec![], vec![], Some(&declare))
+                        .expect("a group")
+                        .0,
+                );
+                union.extend(declared);
+            }
+            union.sort();
+            let declare = EthereumClaims {
+                generic: union,
+                ..Default::default()
+            };
+            let (g, records) = (groups.len(), declare.generic.len());
+            let name = format!("deep-{mode}-{g}x{group}x{retain}");
+            let extra = |o: &mut Obj| {
+                o.num("groups", g)
+                    .num("group", group)
+                    .num("retain", retain)
+                    .num("records", records);
+            };
+            match mode {
+                "merge" => report(&name, extra, || {
+                    api::prove(GuestKind::Batched, &groups, vec![], vec![], Some(&declare))
+                }),
+                "finalize" => report(&name, extra, || {
+                    api::finalize(&groups, vec![], vec![], &declare, &sources)
+                }),
+                _ => usage(),
             }
         }
         _ => usage(),

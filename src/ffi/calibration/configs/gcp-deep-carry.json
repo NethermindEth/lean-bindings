@@ -1,0 +1,23 @@
+{
+  "label": "GCE, claim carry and finalization through a two-level tree up to 16,384 dependencies, committed key with the batch guest (lean-bindings#6 @ a344762)",
+  "mode": "worst",
+  "lib_ref": "a344762eee45e9807db07e010d30e6fe5cc41962",
+  "bounds": {
+    "code_log": 11,
+    "trace_log": 29.5,
+    "inner_log_inv_rate": 1
+  },
+  "cells": false,
+  "batch_leaves": 0,
+  "deep": {
+    "groups": [1, 2, 4],
+    "retain": 255,
+    "trace_log": 22
+  },
+  "reps": 4,
+  "quiet": {
+    "max_load1": 4,
+    "timeout_s": 600
+  },
+  "threads_per_worker": 22
+}

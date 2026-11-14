@@ -73,6 +73,7 @@ then what the run did not cover. Each section ends with a table of its items and
 | **Calibration** | |
 | Native, generic, share and batch-claim charges from the same budgets | `calib/gasmath.py` `derive` from measured marginals |
 | Re-prove the blocks with the proposed schedule; all must fit | iterations: verify, raise the rate on a miss (`max_iterations`) |
+| Proposed: throughput budget and post-selection latency bound | `throughput_budget_s`, `utilisation`, `latency_budget_s` (see Budgets) |
 | Covers only measured limits, configurations and bounds | one calibration per entry in `gas_limits` |
 
 Not covered yet:
@@ -117,6 +118,9 @@ and repeat-then-exclude rules (`calib.py worst|pq-leaves --config C --out DIR`, 
 - `worst` (`configs/gcp-worst-cases.json`, `calib/worst.py`): the most expensive valid inputs the batch charges must
   cover. One maximum-resource leaf of 256 sponsored claims with its payment, a full step of 16 such leaves with one and
   with all claims retained, and the merge and finalizing steps over 16 sponsored-leaf children (4,112 records).
+  `deep` (`configs/gcp-deep-carry.json`) times the root merge and finalization of a two-level tree at 4,096, 8,192 and
+  16,384 dependencies, and `share_blocks` (`configs/gcp-share-blocks.json`) proves one worker's share of each
+  adversarial block at the #12664 charges.
 - `pq-leaves` (`configs/gcp-pq-leaves.json`, `calib/pq_leaves.py`): the post-quantum signature leaves of lean-bindings
   `examples/pq_leaves` at `pq_ref`. Per scheme: program size, the leaf's reference and negative tests, an N ladder for
   per-signature cycles, time and memory, the largest N within the committed-witness bound and 256 claims (probed), and
@@ -138,6 +142,9 @@ See `configs/reference.example.json`. The keys:
 | `bounds` | `code_log`, `trace_log`, `inner_log_inv_rate`, `claims`, `max_inner_proofs_per_step` |
 | `evm.imports` | EVM timings: `gas-benchmarks` results, an `expb` log, or a CSV `name,gas_used,ms` |
 | `tx` | `signature_gas`, `frames_per_tx` for the transaction accounting |
+| `throughput_budget_s`, `utilisation`, `latency_budget_s` | the two-budget scheme (below); without them, the single makespan budget `builder_budget_s` / `margin` |
+| `model_workers`, `reference_factor` | modelled constants for W identical workers, and scaled to a reference machine class (`{"name", "factor"}`, time on the reference / time here) |
+| `only_cells` | run just these cells, without constants or blocks (machine cross-calibration) |
 
 ### Remote workers
 
@@ -155,6 +162,29 @@ proofs from each other directly over TCP, so their addresses must be mutually re
 - Frames are bounded (64 KiB before authentication, 256 MiB after) and buffered only as they arrive; at most 64
   authenticated connections are served.
 - A worker fetches children only from the workers the coordinator listed.
+
+## Budgets
+
+By default one makespan budget prices everything: `rate = G / (W · B / margin)`, and a block passes when its measured
+makespan is within `B`. With `throughput_budget_s` set, two budgets replace it:
+
+- **Throughput** (per slot): a block's total proving work must fit `W · T · utilisation`, and the charges derive from it
+  (`rate = G / (W · T · utilisation)`). A block that misses raises the rate by its overshoot.
+- **Latency**: only post-selection aggregation is on the critical path. Every leaf is proved before selection
+  (pre-aggregated inputs); after the transaction set is fixed, the builder runs the final merges. From each block's
+  measured node times the suite takes the slowest node of each final level (the critical path when a level's merges
+  run in parallel) as `post-selection`, and adds the slowest leaf as `late arrival`: an inclusion-list or late
+  transaction proved after selection. Both must be within `latency_budget_s`.
+
+A block passes only when both hold (and memory). The report also gives the constants under the single makespan budget
+for comparison.
+
+## Machine cross-calibration
+
+`ci/leanvm-readme-bench.sh OUT REV...` runs every `cargo leanvm` command from upstream leanVM's README at each revision.
+Run with `ci/run-calibration.sh --leanvm-revs REV,REV --scenarios xcal`, it relates a machine to the README's published
+M4 Max figures and to three of this suite's cells (`configs/xcal.json`). The ratio of the README figures to a machine's
+times is the `reference_factor` that scales its constants to the M4 Max class.
 
 ## EVM execution
 

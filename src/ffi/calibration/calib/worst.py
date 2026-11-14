@@ -91,6 +91,9 @@ def run(cfg: dict, out: str, log) -> dict:
         log(f"worst-case cells on {b['label']}: {len(cells)} x {cfg['reps']} reps")
         res["cells"] = runner.cells(b, cells, cfg["reps"])
         save()
+    if cfg.get("deep"):
+        res["deep"] = deep(runner, b, cfg, log)
+        save()
     if cfg.get("share_blocks"):
         res["share_blocks"] = share_blocks(runner, b, leaves, cfg, trace_log, log)
     res["finished"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -124,3 +127,22 @@ def share_blocks(runner: Runner, b: dict, batch_leaves: list[str], cfg: dict, tr
             runs.append({k: v for k, v in r.items() if k not in ("node_records", "per_worker")} | {"rep": rep})
         out["runs"][name] = runs
     return out
+
+
+def deep(runner: Runner, b: dict, cfg: dict, log) -> dict:
+    """Claim carry and finalization through a two-level tree at up to MAX_DEPS_PER_BLOCK records: groups of 16 leaves
+    of 256 claims (255 retained, so each leaf adds 256 dependencies with its payment), each group merged into one
+    proof, then one timed merge and one timed finalizing step over 1, 2 and 4 groups (4,096, 8,192 and 16,384
+    dependencies). Carry cost is per record, so the leaves are small-trace programs, not maximum-resource ones."""
+    d = cfg["deep"]
+    groups = d.get("groups", [1, 2, 4])
+    retain = d.get("retain", CLAIMS - 1)
+    trace = float(d.get("trace_log", 22))
+    paths = [runner.leaf(b, cfg["bounds"]["code_log"], iters_for_trace(trace), cfg["bounds"]["inner_log_inv_rate"],
+                         CLAIMS, 90000 + i)[0] for i in range(STEP * max(groups))]
+    cells = []
+    for g in groups:
+        for mode in ("merge", "finalize"):
+            cells.append((f"deep-{mode}-{g}x{STEP}x{retain}", ["deep", mode, str(retain), str(STEP), *paths[:g * STEP]]))
+    log(f"deep carry cells: {len(cells)} x {cfg['reps']} reps")
+    return {"trace_log": trace, "retain": retain, "cells": runner.cells(b, cells, cfg["reps"])}
