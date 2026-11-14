@@ -1,13 +1,14 @@
 //! The constants baked into the guest.
 
-use super::MAX_RECURSIONS;
+use super::{MAX_INNER_PROOFS_PER_STEP, MAX_RECURSIONS};
 use super::cells::{dsl_u128, pack_16_bytes};
 use super::child::{
     KBC_SOURCE, MU_CAP, QUERY_WINDOW_BITS, QUERY_WINDOWS_CAP, STREAM_CAP, block_groups, block_sources, col_sources, col_groups, merkle_cap_depth, whir_shape,
 };
 use super::claim_pool::{ClaimSite, coord_difference, coord_kind, coord_scale, push_coord_terms, walk_claims};
 use super::deferred::RECURSION_AGG_LABEL;
-use super::generic::{LEANSTARK_DEPS_DOMAIN, MAX_GENERIC_BYTECODE_LOG, MAX_GENERIC_DEPENDENCIES};
+use super::generic::{BATCH_DOMAIN, LEAN_SPHINCS_SCHEME, LEAN_STARK_SCHEME, MAX_GENERIC_BYTECODE_LOG, VK_TAG, scheme_word};
+use super::guest::Guest;
 use super::statement::{BIG_GROUPS, CLAIM_GROUP, STATEMENT_HEADER};
 use fiat_shamir::merkle::hash_to_scalars;
 use lean_compiler::f192_literal;
@@ -163,7 +164,7 @@ struct OpeningShape {
 
 /// The recursion program's placeholder map depends on table structure and bytecode
 /// size, so one compiled guest serves every proof layout.
-pub(super) fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
+pub(super) fn placeholder_map(kbc: usize, guest: Guest) -> BTreeMap<String, String> {
     // Only block and coordinate structure is used here; dummy instructions and
     // table sizes let us derive it before the guest's bytecode exists.
     let stand_in = vec![leanvm_core::cpu::Op::Xor { a: 0, b: 0, c: 0 }; 1 << kbc];
@@ -192,7 +193,7 @@ pub(super) fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     opening_placeholders(&mut ps);
     bytecode_placeholders(kbc, nbcv, &mut ps);
     da_placeholders(&mut ps);
-    signature_placeholders(&mut ps);
+    signature_placeholders(guest, &mut ps);
     rep
 }
 
@@ -892,19 +893,43 @@ fn da_placeholders(ps: &mut impl FnMut(&str, String)) {
     );
 }
 
-/// The signature scheme, the leanSTARK caps and domains, and the coverage caps.
-fn signature_placeholders(ps: &mut impl FnMut(&str, String)) {
+/// The signature scheme, `guest`'s leanSTARK caps and domains, and the coverage caps.
+fn signature_placeholders(guest: Guest, ps: &mut impl FnMut(&str, String)) {
     ps("MAX_GENERIC_BYTECODE_LOG", MAX_GENERIC_BYTECODE_LOG.to_string());
-    ps("MAX_GENERIC_DEPENDENCIES", MAX_GENERIC_DEPENDENCIES.to_string());
-    ps("DEPS_DOMAIN_0", dsl_u128(pack_16_bytes(&LEANSTARK_DEPS_DOMAIN[..16])).to_string());
-    ps("DEPS_DOMAIN_1", dsl_u128(pack_16_bytes(&LEANSTARK_DEPS_DOMAIN[16..])).to_string());
-    // The leanVM tag ahead of a program's table in its digest: its first 8 bytes as a lane, its 9th byte.
-    let tag: &[u8; 9] = verifier::TAG.try_into().expect("a 9-byte tag");
-    ps("TAG_LANE0", u64::from_le_bytes(tag[..8].try_into().unwrap()).to_string());
-    ps("TAG_BYTE8", tag[8].to_string());
+    ps("MAX_CLAIMS_PER_BATCH_LEAF", guest.max_claims_per_leaf().to_string());
+    ps("BATCH_DOMAIN", dsl_u128(pack_16_bytes(&BATCH_DOMAIN)).to_string());
+    ps("LEAF_CHUNK", (2 * primitives::hash::RATE / 16).to_string());
+    ps("SPHINCS_SCHEME_CELL", dsl_u128(pack_16_bytes(&scheme_word(LEAN_SPHINCS_SCHEME)[16..])).to_string());
+    ps("STARK_SCHEME_CELL", dsl_u128(pack_16_bytes(&scheme_word(LEAN_STARK_SCHEME)[16..])).to_string());
+    let mut vk_tag = [0; 16];
+    vk_tag[..VK_TAG.len()].copy_from_slice(VK_TAG);
+    ps("VK_TAG", dsl_u128(pack_16_bytes(&vk_tag)).to_string());
+    // A committed program's key: its first cell, `verifier::COMMITTED_TAG ‖ u8 kgen`, for every kgen; and the
+    // commitment's rate, as the g-power `open_stacked` dispatches on.
+    let key_cells = (0..=MAX_GENERIC_BYTECODE_LOG).map(|kgen| {
+        let mut cell = [0u8; 16];
+        cell[..15].copy_from_slice(verifier::COMMITTED_TAG);
+        cell[15] = kgen as u8;
+        dsl_u128(pack_16_bytes(&cell))
+    });
+    ps("GEN_KEY_CELLS", literals(key_cells));
+    // The public input seeding its out-of-domain point's sponge: `verifier::COMMITTED_OOD_TAG ‖ u8 kgen`, then zero.
+    let ood_cells = (0..=MAX_GENERIC_BYTECODE_LOG).map(|kgen| {
+        let mut cell = [0u8; 16];
+        cell[..15].copy_from_slice(verifier::COMMITTED_OOD_TAG);
+        cell[15] = kgen as u8;
+        dsl_u128(pack_16_bytes(&cell))
+    });
+    ps("GEN_OOD_CELLS", literals(ood_cells));
+    ps("GEN_RATE_SEL", (verifier::COMMITTED_BYTECODE_LOG_INV_RATE - MIN_LOG_INV_RATE).to_string());
+    // The size arm of the commitment's opening: one stack size for every kgen under the cap.
+    let stack_log = verifier::committed_bytecode_stack_log(16 << MAX_GENERIC_BYTECODE_LOG);
+    assert_eq!(stack_log, verifier::MIN_STACKED_LOG, "every committed program opens in the least stack");
+    ps("GEN_STACK_LOG", stack_log.to_string());
     ps("CLAIM_GROUP", CLAIM_GROUP.to_string());
     ps("BIG_GROUPS", BIG_GROUPS.to_string());
     ps("MAX_RECURSIONS", MAX_RECURSIONS.to_string());
+    ps("MAX_INNER_PROOFS_PER_STEP", MAX_INNER_PROOFS_PER_STEP.to_string());
 
     // NiceTry SPHINCS- v2 (prototype).
     for (name, value) in [

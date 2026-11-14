@@ -1,11 +1,15 @@
 //! Shape and cost of fixed aggregation workloads, at log_inv_rate 1. `agg_bench sigs [n]` proves two disjoint
 //! leanSPHINCS leaves of `n` signatures and their 2-children merge; `agg_bench generic` proves leaves of leanSTARK
-//! dependencies (1 small, 1 of 2^11 instructions, 16 small, and 40 signatures + 4 small).
+//! dependencies (1 small, 1 of 2^11 instructions, 16 small, 40 signatures + 4 small, and one 16-claim batch leaf of
+//! 2^11 instructions).
 
 use lean_compiler::{compile, parse};
 use leanvm_core::cpu::{Program, bytecode_table, prove};
 use rec_aggregation::aggregation::unified_guest;
-use rec_aggregation::{EthereumProof, RawGeneric, aggregate_with_stats, generic_verification_key, generic_witness};
+use rec_aggregation::{
+    BATCH_DOMAIN, BatchLeaf, EthereumClaims, EthereumProof, MAX_CLAIMS_PER_BATCH_LEAF,
+    aggregate_with_stats, batch_hash, generic_verification_key, generic_witness,
+};
 use signatures::lean_sphincs;
 use std::time::Instant;
 
@@ -28,13 +32,13 @@ fn signers(n: usize) -> Vec<RawSphincs> {
         .collect()
 }
 
-/// Publishes `keccak256` of a hinted 64-byte preimage.
+/// Publishes `keccak256` of a hinted 48-byte preimage: the batch hash of one claim.
 const PREIMAGE: &str = "\
 def main():
-    pre = StackBuf(4)
+    pre = StackBuf(3)
     hint_witness(pre, \"pre\")
     c = StackBuf(2)
-    keccak(pre[0:2], pre[2:4], c)
+    keccak_cells([pre[0], pre[1], pre[2]], c)
     p = 1
     p[1] = c[0]
     p[GEN] = c[1]
@@ -43,8 +47,14 @@ def main():
 
 /// Accepts any canonical public input after 900 multiply-adds: 2^11 instructions.
 fn wide_source() -> String {
+    wide_source_of(900)
+}
+
+/// [`wide_source`] after `steps` multiply-adds: a distinct program, and so key, per count, all of 2^11 instructions
+/// from about 520 on.
+fn wide_source_of(steps: usize) -> String {
     let mut src = String::from("def main():\n    h = StackBuf(2)\n    hint_witness(h, \"pi\")\n    acc = h[0]\n");
-    src += &"    acc = acc * h[1] + h[0]\n".repeat(900);
+    src += &"    acc = acc * h[1] + h[0]\n".repeat(steps);
     src + "    p = 1\n    p[1] = h[0]\n    p[GEN] = h[1]\n    return\n"
 }
 
@@ -52,20 +62,22 @@ fn cells(digest: &[u8; 32]) -> [primitives::field::F192; 2] {
     fiat_shamir::merkle::hash_to_scalars(digest)
 }
 
-fn dependency(program: &Program, witness: (&str, Vec<primitives::field::F192>), data_hash: [u8; 32]) -> RawGeneric {
+/// A batch leaf of `claims`: the program proves `batch_hash(claims)` with its witness stream.
+fn dependency(program: &Program, witness: (&str, Vec<primitives::field::F192>), claims: Vec<[u8; 32]>) -> BatchLeaf {
     let table: Vec<u64> = bytecode_table(program.prog()).iter().map(|w| w.0).collect();
-    let mut program = program.clone();
+    let mut program = program.clone().committed();
     program.set_witness(witness.0, vec![witness.1]);
-    let (proof, _) = prove(&program, cells(&data_hash), RATE).expect("the dependency proves");
+    let (proof, _) = prove(&program, cells(&batch_hash(&claims)), RATE).expect("the dependency proves");
     let vk = generic_verification_key(&table).expect("within the cap");
-    (data_hash, vk, generic_witness(&table, &proof).expect("a witness"))
+    (claims, vk, generic_witness(&table, &proof).expect("a witness"))
 }
 
-fn preimage_deps(n: usize) -> Vec<RawGeneric> {
+fn preimage_deps(n: usize) -> Vec<BatchLeaf> {
     let program = compile(&parse(PREIMAGE).expect("parse"));
     (0..n)
         .map(|i| {
-            let pre = [i as u8 + 1; 64];
+            let claim = [i as u8 + 1; 32];
+            let pre = [&BATCH_DOMAIN[..], &claim].concat();
             let pre_cells = pre.chunks(16).map(|c| {
                 primitives::field::F192::new(
                     u64::from_le_bytes(c[..8].try_into().unwrap()),
@@ -73,7 +85,7 @@ fn preimage_deps(n: usize) -> Vec<RawGeneric> {
                     0,
                 )
             });
-            dependency(&program, ("pre", pre_cells.collect()), primitives::hash::hash(&pre))
+            dependency(&program, ("pre", pre_cells.collect()), vec![claim])
         })
         .collect()
 }
@@ -95,19 +107,22 @@ fn report(name: &str, run: impl FnOnce() -> (EthereumProof, leanvm_core::cpu::St
     proof
 }
 
+/// The superset guest, so the batch-leaf modes run too.
+const GUEST: rec_aggregation::Guest = rec_aggregation::Guest::Batched;
+
 fn main() {
     leanvm_core::init_prover();
     let mode = std::env::args().nth(1).unwrap_or_else(|| "sigs".into());
-    rec_aggregation::warm_up();
-    let guest = unified_guest();
-    let vk: String = rec_aggregation::aggregated_vk().iter().map(|b| format!("{b:02x}")).collect();
+    rec_aggregation::warm_up(GUEST);
+    let guest = unified_guest(GUEST);
+    let vk: String = rec_aggregation::aggregated_vk(GUEST).iter().map(|b| format!("{b:02x}")).collect();
     println!(
         "guest code_len {}, bytecode log {}, aggregated vk {vk}",
         guest.code_len(),
         guest.prog().len().trailing_zeros()
     );
-    let leaf = |deps: Vec<RawGeneric>, sigs: Vec<RawSphincs>| {
-        move || aggregate_with_stats(&[], deps, sigs, &[], None, RATE).expect("proves")
+    let leaf = |deps: Vec<BatchLeaf>, sigs: Vec<RawSphincs>| {
+        move || aggregate_with_stats(GUEST, &[], deps, sigs, &[], None, RATE).expect("proves")
     };
     match mode.as_str() {
         "sigs" => {
@@ -115,7 +130,17 @@ fn main() {
             let left = report(&format!("leaf {n} sigs"), leaf(vec![], signers(n)));
             let right = report(&format!("leaf {n} sigs (2nd)"), leaf(vec![], signers(n)));
             report("merge 2 children", || {
-                aggregate_with_stats(&[left, right], vec![], vec![], &[], None, RATE).expect("proves")
+                aggregate_with_stats(GUEST, &[left, right], vec![], vec![], &[], None, RATE).expect("proves")
+            });
+        }
+        "children" => {
+            // A step of `n` recursive inputs, each a one-signature node, as an arity bound must also fit.
+            let n: usize = std::env::args().nth(2).map_or(16, |a| a.parse().expect("n"));
+            let all = signers(n);
+            let children: Vec<EthereumProof> =
+                all.iter().map(|sig| leaf(vec![], vec![sig.clone()])().0).collect();
+            report(&format!("merge {n} children"), || {
+                aggregate_with_stats(GUEST, &children, vec![], vec![], &[], None, RATE).expect("proves")
             });
         }
         "generic" => {
@@ -124,16 +149,83 @@ fn main() {
             println!("small program {small} instructions, wide program {}", wide.prog().len());
             let deps = preimage_deps(16);
             report("leaf 1 small generic", leaf(deps[..1].to_vec(), vec![]));
-            let data_hash = [9; 32];
-            let wide_dep = dependency(&wide, ("pi", cells(&data_hash).to_vec()), data_hash);
-            report("leaf 1 generic of 2^11 instructions", leaf(vec![wide_dep], vec![]));
+            let wide_leaf = |claims: Vec<[u8; 32]>| {
+                let pi = cells(&batch_hash(&claims)).to_vec();
+                dependency(&wide, ("pi", pi), claims)
+            };
+            report("leaf 1 generic of 2^11 instructions", leaf(vec![wide_leaf(vec![[9; 32]])], vec![]));
             report("leaf 16 small generic", leaf(deps.clone(), vec![]));
             report(
                 "leaf 40 sigs + 4 small generic",
                 leaf(deps[..4].to_vec(), signers(40)),
             );
+            let claims = (1..=16).map(|i| [i; 32]).collect();
+            report("leaf 1 batch of 16 claims, 2^11 instructions", leaf(vec![wide_leaf(claims)], vec![]));
         }
-        _ => panic!("mode: sigs [n] | generic"),
+        "batch" => {
+            // ethereum/EIPs#12664 activation shapes at the near-cap program: one leaf of `size` claims (default the
+            // maximum) keeping every claim, and a step of `n` such leaves each keeping one claim.
+            let wide = compile(&parse(&wide_source()).expect("parse"));
+            let size: u16 = std::env::args().nth(3).map_or(MAX_CLAIMS_PER_BATCH_LEAF as u16, |a| a.parse().expect("size"));
+            let full = |seed: u8| -> Vec<[u8; 32]> {
+                (0..size)
+                    .map(|i| {
+                        let mut claim = [seed; 32];
+                        claim[30..].copy_from_slice(&i.to_be_bytes());
+                        claim
+                    })
+                    .collect()
+            };
+            let wide_leaf = |claims: Vec<[u8; 32]>| {
+                let pi = cells(&batch_hash(&claims)).to_vec();
+                dependency(&wide, ("pi", pi), claims)
+            };
+            let ordinary = |leaf: &BatchLeaf, kept: &[[u8; 32]]| -> Vec<([u8; 32], [u8; 32])> {
+                kept.iter().map(|c| (*c, leaf.1)).collect()
+            };
+            let declared = |mut generic: Vec<([u8; 32], [u8; 32])>| {
+                generic.sort();
+                EthereumClaims { generic, ..Default::default() }
+            };
+            let one = wide_leaf(full(1));
+            let all = declared(ordinary(&one, &one.0));
+            report(&format!("leaf of {size} claims, 2^11 instructions"), || {
+                aggregate_with_stats(GUEST, &[], vec![one.clone()], vec![], &[], Some(&all), RATE).expect("proves")
+            });
+            let n = std::env::args().nth(2).map_or(16, |a| a.parse().expect("n"));
+            // Distinct keys: each leaf's program is a different near-cap one.
+            let leaves: Vec<BatchLeaf> = (0..n)
+                .map(|i| {
+                    let program = compile(&parse(&wide_source_of(900 - i)).expect("parse"));
+                    assert_eq!(program.prog().len(), wide.prog().len(), "2^11 instructions");
+                    let claims = full(2 + i as u8);
+                    let pi = cells(&batch_hash(&claims)).to_vec();
+                    dependency(&program, ("pi", pi), claims)
+                })
+                .collect();
+            let kept = declared(leaves.iter().flat_map(|leaf| ordinary(leaf, &leaf.0[..1])).collect());
+            report(&format!("step of {n} leaves of {size} claims under distinct keys, one kept each"), || {
+                aggregate_with_stats(GUEST, &[], leaves.clone(), vec![], &[], Some(&kept), RATE).expect("proves")
+            });
+            // Half the step recursive: n/2 such leaves beside n/2 children, each child a proof of one more such leaf
+            // with every claim.
+            let half = n / 2;
+            let children: Vec<EthereumProof> = (0..half)
+                .map(|i| {
+                    let child_leaf = wide_leaf(full(100 + i as u8));
+                    let all = declared(ordinary(&child_leaf, &child_leaf.0));
+                    aggregate_with_stats(GUEST, &[], vec![child_leaf], vec![], &[], Some(&all), RATE).expect("proves").0
+                })
+                .collect();
+            let mixed: Vec<_> = leaves[..half].to_vec();
+            let mut kept: Vec<_> = mixed.iter().flat_map(|leaf| ordinary(leaf, &leaf.0[..1])).collect();
+            kept.extend(children.iter().flat_map(|child| child.claims().generic.iter().copied()));
+            let kept = declared(kept);
+            report(&format!("step of {half} leaves and {half} children of {size} claims"), || {
+                aggregate_with_stats(GUEST, &children, mixed.clone(), vec![], &[], Some(&kept), RATE).expect("proves")
+            });
+        }
+        _ => panic!("mode: sigs [n] | children [n] | generic | batch [n] [size]"),
     }
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     println!(

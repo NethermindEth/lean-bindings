@@ -5,17 +5,17 @@
 #[unsafe(no_mangle)]
 pub extern "C" fn nlean_abi_version() -> u32 {
     if std::env::var("NETHERMIND_LEAN_STARTUP_PROBE").as_deref() == Ok("abi") {
-        10
+        16
     } else {
-        12
+        17
     }
 }
 
 /// # Safety
 /// The non-null output must hold 32 bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nlean_aggregated_vk(out: *mut u8) -> i32 {
-    if out.is_null() {
+pub unsafe extern "C" fn nlean_aggregated_vk(guest: u32, out: *mut u8) -> i32 {
+    if out.is_null() || guest > 1 {
         return 0;
     }
     let mode = std::env::var("NETHERMIND_LEAN_STARTUP_PROBE");
@@ -28,7 +28,11 @@ pub unsafe extern "C" fn nlean_aggregated_vk(out: *mut u8) -> i32 {
             0x4a, 0x98, 0x11, 0x66,
         ]
     } else {
-        rec_aggregation::aggregated_vk()
+        nethermind_lean::abi_aggregated_vk(if guest == 0 {
+            rec_aggregation::Guest::Base
+        } else {
+            rec_aggregation::Guest::Batched
+        })
     };
     unsafe {
         std::ptr::copy_nonoverlapping(key.as_ptr(), out, key.len());
@@ -39,7 +43,7 @@ pub unsafe extern "C" fn nlean_aggregated_vk(out: *mut u8) -> i32 {
 /// # Safety
 /// The non-null output must hold seven u32 values.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nlean_limits(out: *mut u32, len: usize) -> i32 {
+pub unsafe extern "C" fn nlean_limits(_guest: u32, out: *mut u32, len: usize) -> i32 {
     if out.is_null() || len != 7 {
         return 0;
     }

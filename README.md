@@ -5,7 +5,7 @@
 
 Native EIP-8288 Lean backend for [Nethermind](https://github.com/NethermindEth/nethermind), packaged for NuGet as `Nethermind.Crypto.Lean`.
 
-The library, `libnethermind_lean.so`, is built from the Rust crate in [`src/ffi`](https://github.com/nethermindeth/lean-bindings/tree/main/src/ffi), a thin C ABI over an unmodified, pinned [leanVM](https://github.com/leanEthereum/leanVM) and the EIP-8288 aggregation guest in `src/ffi/crates` (vendored from the same revision; see its README). This repository is the source of that code: consumers take the packages, not the source.
+The library, `libnethermind_lean.so`, is built from the Rust crate in [`src/ffi`](https://github.com/nethermindeth/lean-bindings/tree/main/src/ffi), a thin C ABI over a pinned [leanVM](https://github.com/leanEthereum/leanVM) (patched, for now, with the committed bytecode key's core changes; see `src/ffi/README.md`) and the EIP-8288 aggregation guest in `src/ffi/crates` (vendored from the same revision; see its README). This repository is the source of that code: consumers take the packages, not the source.
 
 ## Package
 
@@ -29,7 +29,7 @@ The library, `libnethermind_lean.so`, is built from the Rust crate in [`src/ffi`
 ## Workflows
 
 - **Build Lean** (manual): builds `src/ffi` for each RID, twice, and fails unless both builds are byte-identical; generates `THIRD-PARTY-NOTICES`; runs the smoke test on the built libraries on x64 and arm64 hardware; optionally opens a pull request with them into the branch it runs on. That pull request is opened with `GITHUB_TOKEN`, which starts no workflows, so run **Test / Publish** on its branch manually.
-- **Test / Publish**: on pull requests and `main`, checks formatting, runs the Rust tests of the whole `src/ffi` workspace and the .NET tests against the committed library on x64 and arm64 hardware, and verifies a consumer gets the right library per RID. On a release or a manual run, publishes to NuGet (staging or production) through trusted publishing, only after all of these pass.
+- **Test / Publish**: on pull requests and `main`, checks formatting, runs the Rust tests of the whole `src/ffi` workspace and the .NET tests against the committed library on x64 and arm64 hardware, and verifies a consumer gets the right library per RID. On a release or a manual run, publishes to NuGet (staging or production) through trusted publishing, only after all of these pass. To try out a branch without committing its binaries, run it on that branch with `publish=Staging` and `build-run` set to a successful Build Lean run of the same commit: it publishes that run's binaries to staging as `<crate version>-<branch>.<run number>`. Build Lean keeps its artifacts for 7 days. NuGet.org takes only the binaries committed through a pull request to `main`.
 
 ## License
 

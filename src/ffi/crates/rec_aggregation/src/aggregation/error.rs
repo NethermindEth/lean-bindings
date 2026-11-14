@@ -52,11 +52,11 @@ pub enum AggregationError {
     /// A raw signature's randomness does not decode to a target-sum encoding,
     /// so there is no witness to build for it.
     MalformedRawSignature,
-    /// A raw leanSTARK dependency's witness does not parse, does not hash to its key, or its proof
-    /// does not verify ([`super::verify_generic`]).
+    /// A batch leaf's claim list is invalid, its witness does not parse or hash to its key, or its proof
+    /// does not verify ([`super::verify_batch_leaf`]).
     InvalidGenericWitness,
-    /// More than [`MAX_GENERIC_DEPENDENCIES`](super::MAX_GENERIC_DEPENDENCIES) leanSTARK claims in a list.
-    TooManyGeneric,
+    /// More than [`MAX_INNER_PROOFS_PER_STEP`](super::MAX_INNER_PROOFS_PER_STEP) batch leaves and children.
+    TooManyInnerProofs,
     /// More than [`MAX_RECURSIONS`](super::MAX_RECURSIONS) children.
     TooLarge,
     /// The payload has a partial row or exceeds [`DA_MAX_ROWS`].
@@ -102,7 +102,7 @@ impl std::fmt::Display for AggregationError {
             Self::NotCovered => write!(f, "a declared claim is not covered by the children and raw signatures"),
             Self::MalformedRawSignature => write!(f, "a raw signature does not decode to a target-sum encoding"),
             Self::InvalidGenericWitness => write!(f, "a raw leanSTARK dependency's witness does not verify"),
-            Self::TooManyGeneric => write!(f, "too many leanSTARK claims in a list"),
+            Self::TooManyInnerProofs => write!(f, "too many batch leaves and children"),
             Self::TooLarge => {
                 write!(f, "too many children")
             }

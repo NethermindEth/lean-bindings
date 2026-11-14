@@ -1,7 +1,9 @@
 # EIP-8288 native Lean integration
 
-This adapter proves on unmodified [leanEthereum/leanVM](https://github.com/leanEthereum/leanVM), pinned to
-`e4dcb8d5436c9bf76398d890c57c59613af12956` in `Cargo.toml`; `Cargo.lock` pins every other dependency. The EIP-8288
+This adapter proves on [leanEthereum/leanVM](https://github.com/leanEthereum/leanVM), pinned to
+`e4dcb8d5436c9bf76398d890c57c59613af12956` in `Cargo.toml`; `Cargo.lock` pins every other dependency. Until the
+committed bytecode key's core changes are upstream, a `[patch]` in `Cargo.toml` takes the core from those changes on
+top of the pin ([Marchhill/leanVM `feature/eip8288-bytecode-commitment`](https://github.com/Marchhill/leanVM/tree/feature/eip8288-bytecode-commitment)). The EIP-8288
 recursive guest and NiceTry v2 signatures live in `crates/`, vendored from the same revision with EIP-8288 changes on
 top (see `crates/README.md`). The guest verifies leanSPHINCS (NiceTry v2) signatures, generic leanVM execution proofs
 and its own child proofs. Upstream replacement belongs behind the existing `ILeanProofVerifier` interface and thin C
@@ -31,13 +33,21 @@ fails if the backend is unavailable. Verification fails closed; proving requires
 
 `cargo run --release --locked --example fixtures -- <directory>`, run from `src/ffi`, produces genuine test
 signatures and proofs and prints the pinned recursive verification key; `fixtures --sign-message <hex> <file>` signs
-one message, and `fixtures --prove-stark <hex> <file>` proves a leanSTARK dependency on it. **Build Lean** packages the vectors,
+one message, and `fixtures --prove-stark <hex> <file>` proves a leanSTARK dependency on it as guest 0 takes one, on the
+bare message. The vectors hold a direct leanSTARK proof for each guest: `stark-proof.bin` on the bare claim and
+`stark-claim-proof.bin` on the singleton batch leaf `[claim]`. `cargo run --release --locked --example batch_leaves [n]` proves an `n`-claim batch leaf with the
+`examples/batch_leaves/batch.py` template and aggregates its `n` leanSTARK dependencies. **Build Lean** packages the vectors,
 this tool and the `lean_startup_stub` example as opt-in test assets of `Nethermind.Crypto.Lean`.
 
-The C ABI is version 12, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
-`nlean_limits` writes seven u32 values (proof bytes, dependencies, recursive children,
-SPHINCS witness bytes, aggregation input bytes, leanSTARK claims per list, leanSTARK instructions); startup checks these against the managed protocol
-bounds before accepting work.
+The C ABI is version 17, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
+`nlean_limits`, `nlean_aggregated_vk`, `nlean_verify_leanstark`, `nlean_verify_recursive` and `nlean_prove_recursive` take a
+leading `u32` guest:
+0 for EIP-8288's, 1 for the one with ethereum/EIPs#12664 batched generic proof dependencies (see below); any other value fails, and the key
+passed must be that guest's. Guest 0 is the ABI 12 package 0.12.1's guest and host unchanged (`crates/rec_aggregation_base`),
+so its key, limits, direct leanSTARK statement (the bare claim) and aggregation input encoding are that package's.
+`nlean_limits` writes seven u32 values (proof bytes, dependencies, inner proofs per step,
+SPHINCS witness bytes, aggregation input bytes, then leanSTARK dependencies per list for guest 0 or claims per batch leaf
+for guest 1, then leanSTARK instructions); startup checks these against the managed protocol bounds before accepting work.
 Verification/proving return 1 on success, 0 on failure and -1 for a contained panic. After -1, `nlean_last_error(out, len)` on the same
 thread copies up to `len` bytes of the panic message and returns its full length. Callers initialize proof output
 pointers to null; successful proof allocations must be released once with `nlean_free`
@@ -53,7 +63,10 @@ All framing integers are unsigned 32-bit little-endian. The native backend bound
 individual witnesses to 8 MiB and aggregation input to 18 MiB; managed callers first apply
 the local 1.25 MiB pinned-prover bound (`Eip8288Constants.MaxAggregateProofBytes`, not an EIP-8288
 constant) to every aggregate proof. This is an input-buffer limit, not a process memory bound.
-Dependency lists are bounded to 256 and recursive children to 16. This format and the
+Dependency lists are bounded to 256, of either scheme. Direct leanSTARK witnesses (singleton leaves), batch leaves
+and recursive children together are bounded to EIP-8288's `MAX_INNER_PROOFS_PER_STEP` (16, provisional: under the committed
+bytecode key 16 maximum-resource leaves commit 2^27.6 of a step's 2^30 witness bound) per call, discarded and
+redundant ones included; leanSPHINCS witnesses do not count. This format and the
 pinned key are prototype protocol choices, pending finalized EIP-8288 encodings.
 
 The serialized mixed guest proof is the whole `stark_proof`; an empty dependency list has an
@@ -80,15 +93,38 @@ signing and `FRAMEDATACOPY`; wrapper, inclusion-list and block proof statements 
 resolved dependency.
 
 * **SPHINCS witness:** public key (32 bytes), signature (6176 bytes). As in EIP-8288, the
-  dependency key is the public key itself, root then public parameter. Both the key and the
+  dependency key is the public key itself, `PK.seed || PK.root`. Both the key and the
   signature over `data_hash` are checked.
-* **leanSTARK witness (`0x11`, a deviation, see below):** `kgen` (one byte, at most 11), the program's stacked
-  bytecode table (`16 · 2^kgen` little-endian u64 words, zero padding included, as upstream's `bytecode_table`), then
-  the upstream execution proof (`Proof::to_bytes`). The dependency key is upstream's program digest and Fiat-Shamir
-  IV, `keccak256("leanvm-v1" || table)`, so the key binds the program before the proof's first challenge.
-  `data_hash` is the program's 32-byte public input, packed into two 128-bit field cells. At most 2048 instructions.
+* **leanSTARK witness (`0x11`, a deviation, see below):** the format depends on the guest. Guest 0 (EIP-8288's,
+  unchanged) takes `kgen` (one byte, at most 11), the program's stacked bytecode table (`16 · 2^kgen` little-endian
+  u64 words, zero padding included, as upstream's `bytecode_table`), then the upstream execution proof
+  (`Proof::to_bytes`) of the bare claim; its key is upstream's program digest, `keccak256("leanvm-v1" || table)`.
+  Guest 1 takes `kgen`, `root` (32 bytes), `ood` (32 bytes), then the execution proof of the committed program on
+  the singleton statement `get_batch_hash([data_hash])`. `root` is the WHIR commitment to the program's stacked
+  bytecode table zero-padded to `2^16` words at rate 1/16, and `ood` the table's value at an out-of-domain point drawn
+  from `root`, as two 16-byte cells. Its key is ethereum/EIPs#12664 `get_vk_hash(program_commitment) =
+  keccak256("EIP8288:vk:v1" || program_commitment)` of the program's Fiat-Shamir IV, the program commitment
+  `keccak256("leanvm-commit-1" || kgen || root || ood)`, so the key binds one program before the proof's first
+  challenge; the proof sends the table's value at the bus's point and opens `root` there and at the out-of-domain
+  point, so verifying it costs the same whatever the program's size. The 32-byte public input is packed into two
+  128-bit field cells. At most 2048 instructions, counting the padded table. These bounds apply to every leaf, at
+  direct admission and in aggregation, even when all its claims are discarded.
+  [`crates/rec_aggregation/EIP8288-PROFILE.md`](crates/rec_aggregation/EIP8288-PROFILE.md) is guest 1's full profile.
 * **aggregation input:** direct count then `(96-byte dependency, witness blob)` pairs;
-  child count then `(dependency count/triples, proof blob)` pairs; discard count/triples.
+  child count then `(dependency count/triples, proof blob)` pairs; discard count/triples; then, for guest 1 and only
+  when nonempty, leaf count then `(32-byte key, claim count, 32-byte claims, dependency count/triples, leanSTARK
+  witness blob)` entries, the triples being the `(0x11, claim, key)` ones the leaf establishes. The proof is of `hash`,
+  the selected dependencies' `get_deps_hash`.
+* **leaf:** a leanSTARK witness whose public input is
+  `get_batch_hash(claims) = keccak256(b"EIP8288:batch:v1" || claims)`, EIP-8288's `get_claim_hash` for one claim, over
+  1 to `MAX_CLAIMS_PER_BATCH_LEAF` claims (1 for guest 0, 256 for guest 1, guest constants bound to their
+  `AGGREGATED_VK`), strictly increasing in byte-lexicographic order: the host and the guest check the order, the leaf
+  program need not. A leaf establishes `(0x11, claim, key)` for each of its claims (ethereum/EIPs#12664); a
+  mode-1 wrapper retains any subset of them. Mode-0 wrappers carry singleton proofs.
+* **guest 1's dependency digest (ethereum/EIPs#12664):** `get_deps_hash` is `keccak256` of the canonical sorted
+  96-byte triples `scheme word || data_hash || key`, scheme word included, for every list, block commitments included.
+  Only `0x10` and `0x11` are accepted, with 31 zero padding bytes; the former batch-pricing schemes `0x12` and `0x13`
+  are unknown to both guests.
 * **aggregate:** the EIP-8288 `stark_proof`, one mixed guest proof without dependencies
   or raw witnesses. It verifies against `deps_hash` and `AGGREGATED_VK`
   alone; a child's dependencies come from the aggregation input. Proving an empty list
@@ -102,7 +138,7 @@ Every supplied raw witness and child proof is authenticated even when another in
 covers the same claim. An unchanged verified statement can reuse its parent proof without
 executing another recursive proving step.
 
-### Deviation: leanSTARK enabled
+### Deviation: leanSTARK enabled (guest 0)
 
 EIP-8288 (EIPs#12475/#12590) reserves `LEANSTARK_SCHEME` (`0x11`) until `get_deps_hash` is
 defined for it. This implementation enables it anyway, as its one deliberate deviation from the
@@ -120,15 +156,12 @@ EIP, with the pinned guest's generic leanVM CPU proof as its leanSTARK profile:
 * Frames, wrappers and inclusion-list `proof_deps` accept `0x11`, charged
   `LEANSTARK_VERIFICATION_GAS`; any other scheme is rejected as before.
 * The guest checks every entry of the selected list and of each child list, discarded entries
-  included, against its run, and holds at most 16 leanSTARK entries per list. Like the
-  256-dependency bound it is part of the circuit's dependency-list limit: the builder never sends a
-  statement over it to the prover, a received mode-1 wrapper over it is invalid and an
-  inclusion-list proof over it imposes no obligation, both without penalty or verification.
+  included, against its run. Both schemes share the 256-dependency list bound; there is no separate leanSTARK cap.
 
-Startup checks ABI 12, the pinned key and the seven bounds together. New devnets require fresh
+Startup checks the ABI version, the pinned keys and the seven bounds together. New devnets require fresh
 chain and database namespaces.
 
-The latest companion specification has no block dependency quota: blocks are bounded by gas, mode-0 wrappers by `MAX_LEANSIG_DEPS_PER_WRAPPER`, `MAX_LEANSTARK_DEPS_PER_WRAPPER` and `MAX_WRAPPER_BYTES`, and mode-1 wrappers by `MAX_WRAPPER_BYTES` and the dependency-list limit of the circuit behind `AGGREGATED_VK`, which EIP-8288 fixes from benchmarks before activation. This prototype guest's limit is 256 dependencies, at most 16 of them leanSTARK; a received mode-1 wrapper over it is invalid and discarded before verification, without penalizing its sender. Blocks have no such limit in the draft, so this key cannot prove every block the draft permits and this prototype is not full-capacity conformance. Raising the bound changes the guest and so `AGGREGATED_VK`. Local inability to prove or retain a set is not an inclusion-list omission excuse. Full activation requires a verifier and proof format supporting every set the fork's gas rules permit, with the complete construction, including recursive merges and discards, benchmarked against the slot deadline.
+The latest companion specification has no block dependency quota: blocks are bounded by gas, mode-0 wrappers by `MAX_LEANSIG_DEPS_PER_WRAPPER`, `MAX_LEANSTARK_DEPS_PER_WRAPPER` and `MAX_WRAPPER_BYTES`, and mode-1 wrappers by `MAX_WRAPPER_BYTES` and the dependency-list limit of the circuit behind `AGGREGATED_VK`, which EIP-8288 fixes from benchmarks before activation. This prototype guest's limit is 256 dependencies; a received mode-1 wrapper over it is invalid and discarded before verification, without penalizing its sender. Blocks have no such limit in the draft, so this key cannot prove every block the draft permits and this prototype is not full-capacity conformance. Raising the bound changes the guest and so `AGGREGATED_VK`. Local inability to prove or retain a set is not an inclusion-list omission excuse. Full activation requires a verifier and proof format supporting every set the fork's gas rules permit, with the complete construction, including recursive merges and discards, benchmarked against the slot deadline.
 
 ## Proving resources
 

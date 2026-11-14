@@ -2,24 +2,26 @@
 
 use super::cells::{cell_bytes, count, pack_16_bytes};
 use super::deferred::DeferredClaim;
-use super::guest::unified_guest;
-use super::generic::{LEANSTARK_DEPS_DOMAIN, digest_cells};
+use super::guest::{Guest, unified_guest};
+use super::generic::{LEAN_SPHINCS_SCHEME, LEAN_STARK_SCHEME, digest_cells, scheme_word};
 use super::{GenericClaim, LeanSphincsClaim};
 use fiat_shamir::merkle::hash_to_scalars;
 use primitives::field::F192;
 
-/// Claims the guest hashes a loop frame: 68 cells, four whole block pairs.
+/// Dependencies the guest hashes a loop frame: 102 cells, six whole block pairs.
 pub(super) const CLAIM_GROUP: usize = 17;
-const _: () = assert!((CLAIM_GROUP * 64).is_multiple_of(2 * primitives::hash::RATE));
+const _: () = assert!((CLAIM_GROUP * DEPENDENCY_BYTES).is_multiple_of(2 * primitives::hash::RATE));
+/// EIP-8288's dependency triple: the scheme word, `data_hash`, then the key.
+const DEPENDENCY_BYTES: usize = 96;
 /// Groups of [`CLAIM_GROUP`] the guest's main list loop hashes a frame.
 pub(super) const BIG_GROUPS: usize = 8;
 const CLAIM_BIG: usize = CLAIM_GROUP * BIG_GROUPS;
 
-/// How the guest splits a list of `n` claims: the whole frames of [`CLAIM_BIG`], then
-/// the whole groups of [`CLAIM_GROUP`], then the claims after them. Its own product
+/// How the guest splits a list of `n` dependencies: the whole frames of [`CLAIM_BIG`], then
+/// the whole groups of [`CLAIM_GROUP`], then the dependencies after them. Its own product
 /// identity and range checks pin all three, so this only has to agree with them
-/// (`list_split` in the guest). A list is never empty here: both claim lists are
-/// guarded at the call, since the guest hashes an empty one without a split at all.
+/// (`list_split` in the guest). A list is never empty here: the guest hashes an empty one
+/// without a split at all, so the call is guarded.
 pub(super) fn list_split(n: usize) -> Vec<F192> {
     assert!(n > 0, "an empty list has no split");
     let rest = n % CLAIM_BIG;
@@ -30,13 +32,6 @@ pub(super) fn list_split(n: usize) -> Vec<F192> {
     ]
 }
 
-/// One scheme's declared claims, hashed plainly: 64 bytes a claim, its pubkey then
-/// the message it signed, and an empty list hashes the empty string. The guest
-/// computes this same digest [`CLAIM_GROUP`] claims at a time (`claim_list_digest`).
-pub(super) fn claim_list_digest(claims: impl IntoIterator<Item = [F192; 4]>) -> [F192; 2] {
-    hash_to_scalars(&primitives::hash::hash(&cell_bytes(claims.into_iter().flatten())))
-}
-
 /// EIP-8288 entry order: `data_hash ‖ vk`, as the guest's `verify_generic` reads its slot.
 pub(super) fn generic_claim_cells((data_hash, vk): &GenericClaim) -> [F192; 4] {
     let [d0, d1] = digest_cells(data_hash);
@@ -44,29 +39,33 @@ pub(super) fn generic_claim_cells((data_hash, vk): &GenericClaim) -> [F192; 4] {
     [d0, d1, k0, k1]
 }
 
-/// The EIP-8288 dependency digest of the two lists' digests: the leanSPHINCS one alone when there
-/// is no leanSTARK claim, else `keccak256(S ‖ G ‖ LEANSTARK_DEPS_DOMAIN)` (the guest's `deps_digest`).
-pub(super) fn deps_digest_of(lean_sphincs_digest: [F192; 2], generic_digest: [F192; 2], has_generic: bool) -> [F192; 2] {
-    if !has_generic {
-        return lean_sphincs_digest;
+/// EIP-8288 `get_deps_hash` as ethereum/EIPs#12664 replaces it: the hash of the dependencies' canonical 96-byte triples,
+/// scheme word included, leanSPHINCS (`0x10`) ones first as the triples sort, each list in the order given. An empty
+/// list hashes the empty string. The guest computes this same digest [`CLAIM_GROUP`] triples at a time
+/// (`deps_list_digest`).
+pub(super) fn deps_digest_cells(lean_sphincs: &[LeanSphincsClaim], generic: &[GenericClaim]) -> [F192; 2] {
+    let mut bytes = Vec::with_capacity(DEPENDENCY_BYTES * (lean_sphincs.len() + generic.len()));
+    let entries = (lean_sphincs.iter().map(|claim| (LEAN_SPHINCS_SCHEME, lean_sphincs_claim_cells(claim))))
+        .chain(generic.iter().map(|claim| (LEAN_STARK_SCHEME, generic_claim_cells(claim))));
+    for (scheme, cells) in entries {
+        bytes.extend(scheme_word(scheme));
+        bytes.extend(cell_bytes(cells));
     }
-    let mut preimage = cell_bytes(lean_sphincs_digest.into_iter().chain(generic_digest));
-    preimage.extend(LEANSTARK_DEPS_DOMAIN);
-    hash_to_scalars(&primitives::hash::hash(&preimage))
+    hash_to_scalars(&primitives::hash::hash(&bytes))
 }
 
-/// EIP-8288 entry order: `data_hash ‖ pkRoot ‖ pkSeed`, so the list digest is `get_deps_hash`.
+/// EIP-8288 entry order: `data_hash ‖ pkSeed ‖ pkRoot`, so the list digest is `get_deps_hash`.
 pub(super) fn lean_sphincs_claim_cells((message, pk): &LeanSphincsClaim) -> [F192; 4] {
     [
         pack_16_bytes(&message[..16]),
         pack_16_bytes(&message[16..]),
-        pack_16_bytes(&pk.root),
         pack_16_bytes(&pk.public_param),
+        pack_16_bytes(&pk.root),
     ]
 }
 
-/// The statement's fixed header, ahead of the deferred cells: the seed, the dependency digest of
-/// the two claim lists ([`deps_digest_of`]), and the DA digest ([`verifier::da::digest`]).
+/// The statement's fixed header, ahead of the deferred cells: the seed, the dependency digest
+/// ([`deps_digest_cells`]), and the DA digest ([`verifier::da::digest`]).
 /// Fed to the guest as `STMT_HEADER`, which pins where its deferred cells start;
 /// the header cells themselves are written out again there, and only the
 /// end-to-end statement check holds the two spellings together.
@@ -89,34 +88,27 @@ fn lane_hash(lanes: impl Iterator<Item = u64>) -> [F192; 2] {
 /// binds this bytecode and the proof system's version and so already separates the
 /// preimage from every other use of the hash here. The header is hashed as the
 /// canonical cells it already is (two lanes each, whence the assert, the guest being
-/// unable to hash a third), then all three lanes of each deferred cell. Each claim
-/// list's digest binds its own length through the hash's padding, so the pair binds
-/// both lists whole.
+/// unable to hash a third), then all three lanes of each deferred cell. The dependency
+/// digest binds its list's length through the hash's padding, and each triple's scheme word
+/// which scheme verified it.
 pub(super) fn statement_digest(
+    guest: Guest,
     generic: &[GenericClaim],
     lean_sphincs_signers: &[LeanSphincsClaim],
     da_digest: [u8; 32],
     defer: &DeferredClaim,
 ) -> [F192; 2] {
-    statement_digest_of(deps_digest_cells(lean_sphincs_signers, generic), da_digest, defer)
-}
-
-/// The dependency digest of the two lists as two cells.
-pub(super) fn deps_digest_cells(lean_sphincs: &[LeanSphincsClaim], generic: &[GenericClaim]) -> [F192; 2] {
-    deps_digest_of(
-        claim_list_digest(lean_sphincs.iter().map(lean_sphincs_claim_cells)),
-        claim_list_digest(generic.iter().map(generic_claim_cells)),
-        !generic.is_empty(),
-    )
+    statement_digest_of(guest, deps_digest_cells(lean_sphincs_signers, generic), da_digest, defer)
 }
 
 /// [`statement_digest`] from the dependency digest: all a holder of `deps_hash` alone needs.
 pub(super) fn statement_digest_of(
+    guest: Guest,
     deps_digest: [F192; 2],
     da_digest: [u8; 32],
     defer: &DeferredClaim,
 ) -> [F192; 2] {
-    let seed = leanvm_core::cpu::fs_seed(unified_guest());
+    let seed = leanvm_core::cpu::fs_seed(unified_guest(guest));
     let da_digest = hash_to_scalars(&da_digest);
     let header: [F192; STATEMENT_HEADER] = [
         seed[0],

@@ -15,8 +15,8 @@
     <Copyright>Demerzel Solutions Limited</Copyright>
     <SourceRevisionId Condition="'$(Commit)' != ''">$(Commit.Substring(0, 8))</SourceRevisionId>
     <!-- The src/ffi crate version; set by Build Lean. -->
-    <VersionPrefix>0.12.0</VersionPrefix>
-    <VersionSuffix></VersionSuffix>
+    <VersionPrefix>0.14.1</VersionPrefix>
+    <VersionSuffix>batchpricing</VersionSuffix>
   </PropertyGroup>
 
 </Project>

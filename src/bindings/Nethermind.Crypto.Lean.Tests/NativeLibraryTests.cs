@@ -13,11 +13,14 @@ namespace Nethermind.Crypto.Lean.Tests;
 public partial class NativeLibraryTests
 {
     private const string Library = "nethermind_lean";
-    private const uint ExpectedAbi = 12;
-    private const string ExpectedAggregatedVk = "f7cf74585d02043051f0575c23c6b441b0b08ac9e273f5e989c5984b8a4ac0e5";
-    // Proof bytes, dependencies, recursive children, NiceTry v2 witness bytes, aggregation input bytes, leanSTARK claims
-    // per list, leanSTARK instructions.
+    private const uint ExpectedAbi = 17;
+    // EIP-8288's guest (0), the ABI 12 package's unchanged, and the one with ethereum/EIPs#12664 batched generic proof dependencies (1).
+    private const string ExpectedAggregatedVk = "f6f37690cf7241c9ea24392f349867acc1c8e06034e8ce149e2f11a25eec56f9";
+    private const string ExpectedBatchedAggregatedVk = "3f87249262b6fc9c5776514d9d2ba8bca372ad169b22b39d426d416446fd5a5e";
+    // Proof bytes, dependencies, inner proofs per step, NiceTry v2 witness bytes, aggregation input bytes, leanSTARK
+    // dependencies per list (guest 0) or claims per batch leaf (guest 1), leanSTARK instructions.
     private static readonly uint[] ExpectedLimits = [8 * 1024 * 1024, 256, 16, 32 + 6176, 18 * 1024 * 1024, 16, 2048];
+    private static readonly uint[] ExpectedBatchedLimits = [8 * 1024 * 1024, 256, 16, 32 + 6176, 18 * 1024 * 1024, 256, 2048];
 
     // A project reference leaves the library under runtimes/<rid>/native; a package consumer gets it beside the binary.
     static NativeLibraryTests() => NativeLibrary.SetDllImportResolver(typeof(NativeLibraryTests).Assembly, static (name, assembly, searchPath) =>
@@ -27,16 +30,16 @@ public partial class NativeLibraryTests
     private static partial uint nlean_abi_version();
 
     [LibraryImport(Library)]
-    private static unsafe partial int nlean_aggregated_vk(byte* output);
+    private static unsafe partial int nlean_aggregated_vk(uint guest, byte* output);
 
     [LibraryImport(Library)]
-    private static unsafe partial int nlean_limits(uint* output, nuint length);
+    private static unsafe partial int nlean_limits(uint guest, uint* output, nuint length);
 
     [LibraryImport(Library)]
     private static unsafe partial int nlean_verify_leansphincs(byte* data, byte* vk, byte* witness, nuint length);
 
     [LibraryImport(Library)]
-    private static unsafe partial int nlean_verify_leanstark(byte* data, byte* vk, byte* witness, nuint length);
+    private static unsafe partial int nlean_verify_leanstark(uint guest, byte* data, byte* vk, byte* witness, nuint length);
 
     private static byte[] Vector(string name) => File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "lean-vectors", name));
 
@@ -44,37 +47,55 @@ public partial class NativeLibraryTests
     public async Task Should_match_abi_version() => await Assert.That(nlean_abi_version()).IsEqualTo(ExpectedAbi);
 
     [Test]
-    public async Task Should_match_aggregated_verification_key()
+    [Arguments(0u, ExpectedAggregatedVk, "aggregated-key.bin")]
+    [Arguments(1u, ExpectedBatchedAggregatedVk, "aggregated-batched-key.bin")]
+    public async Task Should_match_aggregated_verification_key(uint guest, string expected, string vector)
     {
-        (int result, byte[] vk) = GetAggregatedVk();
+        (int result, byte[] vk) = GetAggregatedVk(guest);
 
         await Assert.That(result).IsEqualTo(1);
-        await Assert.That(Convert.ToHexStringLower(vk)).IsEqualTo(ExpectedAggregatedVk);
+        await Assert.That(Convert.ToHexStringLower(vk)).IsEqualTo(expected);
         // The packaged vectors come from the same build.
-        await Assert.That(Convert.ToHexStringLower(Vector("aggregated-key.bin"))).IsEqualTo(ExpectedAggregatedVk);
+        await Assert.That(Convert.ToHexStringLower(Vector(vector))).IsEqualTo(expected);
     }
 
     [Test]
-    public async Task Should_match_limits()
+    public async Task Should_reject_an_unknown_guest() => await Assert.That(GetAggregatedVk(2).Result).IsEqualTo(0);
+
+    [Test]
+    [Arguments(0u)]
+    [Arguments(1u)]
+    public async Task Should_match_limits(uint guest)
     {
-        uint[] limits = new uint[ExpectedLimits.Length];
-        int result = GetLimits(limits);
+        uint[] expected = guest == 0 ? ExpectedLimits : ExpectedBatchedLimits;
+        uint[] limits = new uint[expected.Length];
+        int result = GetLimits(guest, limits);
 
         await Assert.That(result).IsEqualTo(1);
-        await Assert.That(limits).IsEquivalentTo(ExpectedLimits);
+        await Assert.That(limits).IsEquivalentTo(expected);
     }
 
     [Test]
-    [Arguments("sphincs-message.bin", "sphincs-key.bin", "sphincs-signature.bin", false)]
-    [Arguments("stark-message.bin", "stark-key.bin", "stark-proof.bin", true)]
-    public async Task Should_verify_vector_and_reject_a_flipped_byte(string message, string key, string witness, bool leanStark)
+    [Arguments("sphincs-message.bin", "sphincs-key.bin", "sphincs-signature.bin", false, 0u)]
+    [Arguments("stark-message.bin", "stark-key.bin", "stark-proof.bin", true, 0u)]
+    [Arguments("stark-message.bin", "stark-batched-key.bin", "stark-claim-proof.bin", true, 1u)]
+    public async Task Should_verify_vector_and_reject_a_flipped_byte(string message, string key, string witness, bool leanStark, uint guest)
     {
         byte[] data = Vector(message), vk = Vector(key), proof = Vector(witness);
 
-        await Assert.That(Verify(leanStark, data, vk, proof)).IsEqualTo(1);
+        await Assert.That(Verify(leanStark, data, vk, proof, guest)).IsEqualTo(1);
         proof[^1] ^= 1;
-        await Assert.That(Verify(leanStark, data, vk, proof)).IsEqualTo(0);
+        await Assert.That(Verify(leanStark, data, vk, proof, guest)).IsEqualTo(0);
     }
+
+    // Guest 0 takes a flat-keyed direct leanSTARK proof of the bare claim, guest 1 a committed-keyed one of
+    // get_claim_hash(claim); neither takes the other's.
+    [Test]
+    [Arguments("stark-key.bin", "stark-proof.bin", 1u)]
+    [Arguments("stark-batched-key.bin", "stark-claim-proof.bin", 0u)]
+    [Arguments("stark-batched-key.bin", "stark-claim-proof.bin", 2u)]
+    public async Task Should_reject_a_leanstark_vector_under_another_guest(string key, string witness, uint guest) =>
+        await Assert.That(Verify(true, Vector("stark-message.bin"), Vector(key), Vector(witness), guest)).IsEqualTo(0);
 
     [Test]
     [Arguments("--sign-message", false)]
@@ -103,27 +124,27 @@ public partial class NativeLibraryTests
         }
     }
 
-    private static unsafe int Verify(bool leanStark, byte[] data, byte[] vk, byte[] witness)
+    private static unsafe int Verify(bool leanStark, byte[] data, byte[] vk, byte[] witness, uint guest = 0)
     {
         fixed (byte* d = data)
         fixed (byte* k = vk)
         fixed (byte* w = witness)
             return leanStark
-                ? nlean_verify_leanstark(d, k, w, (nuint)witness.Length)
+                ? nlean_verify_leanstark(guest, d, k, w, (nuint)witness.Length)
                 : nlean_verify_leansphincs(d, k, w, (nuint)witness.Length);
     }
 
-    private static unsafe int GetLimits(uint[] limits)
+    private static unsafe int GetLimits(uint guest, uint[] limits)
     {
         fixed (uint* output = limits)
-            return nlean_limits(output, (nuint)limits.Length);
+            return nlean_limits(guest, output, (nuint)limits.Length);
     }
 
-    private static unsafe (int Result, byte[] Vk) GetAggregatedVk()
+    private static unsafe (int Result, byte[] Vk) GetAggregatedVk(uint guest)
     {
         byte[] vk = new byte[32];
 
         fixed (byte* output = vk)
-            return (nlean_aggregated_vk(output), vk);
+            return (nlean_aggregated_vk(guest, output), vk);
     }
 }
