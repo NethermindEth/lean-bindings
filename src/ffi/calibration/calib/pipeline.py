@@ -239,9 +239,10 @@ class Calibration:
         self.save()
 
     # ---- constants and verification -----------------------------------------------------------------------------
-    def constants(self, G: int, rate_factor: float = 1.0) -> dict:
+    def constants(self, G: int, rate_factor: float = 1.0, workers: int | None = None) -> dict:
         cfg = self.cfg
-        b = gasmath.Budget(G, cfg["builder_budget_s"], cfg["reference_workers"], cfg["margin"], cfg["fanin"], cfg["sigs_per_node"])
+        b = gasmath.Budget(G, cfg["builder_budget_s"], workers or cfg["reference_workers"], cfg["margin"], cfg["fanin"],
+                           cfg["sigs_per_node"])
         tx = gasmath.TxModel(**cfg.get("tx", {}))
         c = gasmath.derive(self.marg, b, depth=3)
         for _ in range(3):
@@ -363,4 +364,7 @@ class Calibration:
                 "constants": final["constants"], "pass": ok, "skipped_or_failed": skipped,
                 "verdict": ("PASS" if ok and not skipped else "PASS (partial: " + ", ".join(skipped) + " not measured)"
                             if ok else "FAIL")}
+            # Modelled: the same measured marginals under a budget for W identical workers of this machine.
+            self.res["gas_limits"][str(G)]["modelled_workers"] = {
+                str(w): self.constants(G, workers=w) for w in cfg.get("model_workers", [])}
             self.save()

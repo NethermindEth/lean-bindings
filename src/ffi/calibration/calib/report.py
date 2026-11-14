@@ -265,6 +265,16 @@ def render(res: dict) -> str:
             L.append("")
         f = g.get("final", {})
         L.append(f"**Verdict for {int(G):,} gas: {f.get('verdict')}**\n")
+        mw = g.get("modelled_workers") or {}
+        if mw:
+            L.append("Modelled: the same measured marginals for a budget of W identical workers of this machine "
+                     "(not verified by blocks).\n")
+            keys = ("LEANSPHINCS_VERIFICATION_GAS", "RECURSIVE_PROOF_SHARE_GAS", "LEANSTARK_VERIFICATION_GAS",
+                    "LEANSTARK_LEAF_PAYMENT_GAS", "LEANSTARK_CLAIM_GAS")
+            L.append("| W | " + " | ".join(f"`{k}`" for k in keys) + " |\n|---|" + "---|" * len(keys))
+            for w, c in mw.items():
+                L.append(f"| {w} | " + " | ".join(_f(round(c[k])) if c.get(k) is not None else "—" for k in keys) + " |")
+            L.append("")
 
     L.append("## Not covered by this run\n")
     for item in unmeasured(res):
