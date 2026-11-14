@@ -80,7 +80,7 @@ if [ -n "$docker" ] || ! command -v cargo >/dev/null; then
   docker run --rm --name "$name" --label lean-calibration=1 -v "$repo":/repo -v "$out":/out \
     -w /repo/src/ffi/calibration -e HOME=/out/.home -e CARGO_HOME=/usr/local/cargo \
     -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" "$image" bash -c \
-    "apt-get update -qq >/dev/null && apt-get install -y -qq python3 procps >/dev/null; \
+    "apt-get update -qq >/dev/null && apt-get install -y -qq python3 procps sysbench >/dev/null; \
      ci/run-calibration.sh --scenarios '$scenarios' --out /out --timeout-minutes $timeout_min \
        ${lb_ref:+--lean-bindings-ref '$lb_ref'} ${leanvm_revs:+--leanvm-revs '$leanvm_revs'} \
        ${workers:+--workers $workers} ${threads:+--threads $threads} ${mem:+--memory-per-worker-gb $mem}; \

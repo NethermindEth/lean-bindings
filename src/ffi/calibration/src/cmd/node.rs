@@ -16,6 +16,8 @@
 //!                                                      runs it: per leanSPHINCS signature, direct leanSTARK leaves
 //!                                                      (small, maximum, a multi-claim leaf) verification-only and
 //!                                                      with the guest's hints, and mode-1 aggregates of growing size
+//! calib-node native-block REPS RETAIN GROUP LEAF...     a validator's verification of a finalized block proof over
+//!                                                      the deep-cell tree of these leaves, with its dependency hash
 //! calib-node cell deep MODE RETAIN GROUP LEAF...        a two-level tree: per GROUP leaves, one sponsored-leaf child
 //!                                                      each merged into a group proof (untimed); then one timed merge
 //!                                                      (MODE merge) or finalizing step (MODE finalize) over the groups
@@ -190,6 +192,7 @@ fn main() {
         }
         "cell" => cell(&args[1..]),
         "native" => native(&args[1..]),
+        "native-block" => native_block(&args[1..]),
         _ => usage(),
     }
 }
@@ -324,39 +327,7 @@ fn cell(args: &[String]) {
             let (mode, retain, group) = (a(1), num(a(2)), num(a(3)));
             let leaves = read_leaves(&rest(4));
             warm_up();
-            let mut groups = Vec::new();
-            let mut sources = Vec::new();
-            let mut union = Vec::new();
-            for chunk in leaves.chunks(group) {
-                let mut children = Vec::new();
-                let mut declared = Vec::new();
-                for l in chunk {
-                    let declare = sponsored(std::slice::from_ref(l), retain);
-                    children.push(
-                        api::prove(GuestKind::Batched, &[], vec![l.clone()], vec![], Some(&declare))
-                            .expect("a leaf child")
-                            .0,
-                    );
-                    declared.extend(declare.generic);
-                    sources.push(api::batch::source(l));
-                }
-                declared.sort();
-                let declare = EthereumClaims {
-                    generic: declared.clone(),
-                    ..Default::default()
-                };
-                groups.push(
-                    api::prove(GuestKind::Batched, &children, vec![], vec![], Some(&declare))
-                        .expect("a group")
-                        .0,
-                );
-                union.extend(declared);
-            }
-            union.sort();
-            let declare = EthereumClaims {
-                generic: union,
-                ..Default::default()
-            };
+            let (groups, sources, declare) = deep_groups(&leaves, retain, group);
             let (g, records) = (groups.len(), declare.generic.len());
             let name = format!("deep-{mode}-{g}x{group}x{retain}");
             let extra = |o: &mut Obj| {
@@ -492,5 +463,75 @@ fn native(args: &[String]) {
 
     let mut o = Obj::default();
     o.str("status", "ok").num("reps", reps).raw("items", &array(items));
+    println!("RESULT {}", o.finish());
+}
+
+/// The two-level tree of the `deep` cells, proved untimed: per `group` leaves, one sponsored-leaf child each (the first
+/// `retain` claims and the payment) merged into a group proof. Returns the groups, the leaves' sources and the union of
+/// their declared claims.
+fn deep_groups(leaves: &[Leaf], retain: usize, group: usize) -> (Vec<EthereumProof>, Vec<([u8; 32], [u8; 32])>, EthereumClaims) {
+    let mut groups = Vec::new();
+    let mut sources = Vec::new();
+    let mut union = Vec::new();
+    for chunk in leaves.chunks(group) {
+        let mut children = Vec::new();
+        let mut declared = Vec::new();
+        for l in chunk {
+            let declare = sponsored(std::slice::from_ref(l), retain);
+            children.push(
+                api::prove(GuestKind::Batched, &[], vec![l.clone()], vec![], Some(&declare))
+                    .expect("a leaf child")
+                    .0,
+            );
+            declared.extend(declare.generic);
+            sources.push(api::batch::source(l));
+        }
+        declared.sort();
+        let declare = EthereumClaims {
+            generic: declared.clone(),
+            ..Default::default()
+        };
+        groups.push(
+            api::prove(GuestKind::Batched, &children, vec![], vec![], Some(&declare))
+                .expect("a group")
+                .0,
+        );
+        union.extend(declared);
+    }
+    union.sort();
+    let declare = EthereumClaims {
+        generic: union,
+        ..Default::default()
+    };
+    (groups, sources, declare)
+}
+
+/// A validator's check of a finalized block proof: the dependency hash over the block's finalized dependency list,
+/// then the proof against it (`api::verify_block`), timed whole and the hash alone.
+fn native_block(args: &[String]) {
+    if !api::BATCH {
+        skipped("native-block", "the batch-pricing guest is not in this library revision");
+    }
+    let a = |i: usize| args.get(i).map(String::as_str).unwrap_or_else(|| usage());
+    let (reps, retain, group) = (num(a(0)).max(3), num(a(1)), num(a(2)));
+    let leaves = read_leaves(args.get(3..).unwrap_or_default());
+    warm_up();
+    let (groups, sources, declare) = deep_groups(&leaves, retain, group);
+    let (proof, _) = api::finalize(&groups, vec![], vec![], &declare, &sources).expect("the block proof");
+    let bytes = api::proof_bytes(&proof);
+    let claims = proof.claims().clone();
+    let deps = claims.generic.len() + claims.lean_sphincs.len();
+    let mut items = Vec::new();
+    #[cfg(feature = "batch")]
+    {
+        let t = timed(reps, || {
+            std::hint::black_box(rec_aggregation::final_deps_hash(&claims.lean_sphincs, &claims.generic));
+        });
+        native_item(&mut items, &format!("block_{deps}_deps_hash"), 1, deps * 96, t);
+    }
+    let t = timed(reps, || api::verify_block(GuestKind::Batched, true, &claims, &bytes).expect("the block verifies"));
+    native_item(&mut items, &format!("block_{deps}_deps_verify"), 1, bytes.len(), t);
+    let mut o = Obj::default();
+    o.str("status", "ok").num("reps", reps).num("deps", deps).raw("items", &array(items));
     println!("RESULT {}", o.finish());
 }
