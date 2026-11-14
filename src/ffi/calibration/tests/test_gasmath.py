@@ -85,6 +85,14 @@ class GasMath(unittest.TestCase):
         self.assertEqual(g.fill(60_000_000, tx.tx_gas_cap, tx), (0, 0))
         self.assertEqual(g.fill(60_000_000, 1_000_000, tx, group=tx.max_deps_per_tx(1_000_000) + 1), (0, 0))
 
+    def test_no_sponsored_leaf_when_its_payment_exceeds_the_transaction_cap(self):
+        tx = g.TxModel()
+        c = {"LEANSPHINCS_VERIFICATION_GAS": 15_000, "RECURSIVE_PROOF_SHARE_GAS": 4_000, "LEANSTARK_CLAIM_GAS": 3_000,
+             "LEANSTARK_VERIFICATION_GAS": 26_800_000, "LEANSTARK_LEAF_PAYMENT_GAS": 26_804_000}
+        b = g.blocks(c, 60_000_000, tx, 256)
+        self.assertEqual(b["generic"]["generic"], 0)
+        self.assertNotIn("batch_one_claim", b)
+
     def test_scale_and_verdict(self):
         s = g.scale_block({"native": 3000, "generic": 1, "evm_gas": 1e6}, 0.1)
         self.assertEqual((s["native"], s["generic"], s["evm_gas"], s["scale"]), (300, 1, 1e5, 0.1))

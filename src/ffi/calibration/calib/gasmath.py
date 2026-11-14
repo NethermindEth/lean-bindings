@@ -169,6 +169,9 @@ def blocks(c: dict, gas_limit: int, tx: TxModel, claims_per_leaf: int, evm_fract
         claim = c["LEANSTARK_CLAIM_GAS"] + TRIPLE_DATA_GAS
         payment = c["LEANSTARK_LEAF_PAYMENT_GAS"] + TRIPLE_DATA_GAS
         # One retained claim per maximum-resource leaf, with its payment: two declarations a leaf, each its own tx.
+        if payment + tx.per_tx_overhead() > tx.tx_gas_cap:
+            # The payment declaration alone exceeds the EIP-7825 cap: no sponsored leaf is admissible.
+            return out
         per_leaf_one = claim + payment + tx.per_tx_overhead()
         out["batch_one_claim"] = {"batch_leaves": int(gas_limit // per_leaf_one), "retain": 1}
         # Full leaves: every claim in its own member transaction, as EIPs#12664 intends, plus the payment.

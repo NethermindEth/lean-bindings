@@ -306,6 +306,10 @@ class Calibration:
                     continue
                 v = gasmath.verdict(r["makespan_s"], cfg["builder_budget_s"], r["peak_rss_max_worker"], mem_pw)
                 verify_ms = r["root_verify_ms"]
+            elif evm_gas and row["evm"]["ms"] is None:
+                row.update(status="not measured: no EVM timings imported")
+                out.append(row)
+                continue
             elif evm_gas:
                 v = {"time_ok": True, "memory_ok": True, "pass": True, "headroom": math.inf}
                 verify_ms = 0.0
