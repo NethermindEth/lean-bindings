@@ -9,7 +9,7 @@
 
 use fiat_shamir::merkle::hash_to_scalars;
 use leanvm_core::cpu::{bytecode_table, prove};
-use nethermind_lean::{batch_hash, final_statement, prove_aggregate};
+use nethermind_lean::{batch_hash, commitment, prove_aggregate};
 use rec_aggregation::{
     BATCH_DOMAIN, Guest, LEAN_STARK_SCHEME, generic_verification_key, generic_witness,
     verify_batch_leaf, verify_deps_hash,
@@ -83,9 +83,7 @@ fn main() {
     input.extend(dependencies.iter().flatten());
     input.extend(number(witness.len()));
     input.extend(&witness);
-    // A list holding batch claims is proved finalized, over its canonical (sorted) order.
-    dependencies.sort();
-    let deps_hash = final_statement(&dependencies);
+    let deps_hash = commitment(&dependencies);
     let stark_proof =
         prove_aggregate(Guest::Batched, &deps_hash, &input).expect("the leaf aggregates");
     verify_deps_hash(Guest::Batched, &deps_hash, &stark_proof).expect("the aggregate verifies");

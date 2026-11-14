@@ -11,8 +11,8 @@ use fiat_shamir::merkle::hash_to_scalars;
 use leanvm_core::cpu::{Program, bytecode_table, prove};
 use primitives::field::{F192, g_pow};
 use rec_aggregation::{
-    BATCH_DOMAIN, EthereumClaims, Guest, MAX_CLAIMS_PER_BATCH_LEAF, aggregate_with_stats, batch_claim_key, batch_hash,
-    generic_verification_key, generic_witness, payment_key, verify_batch_leaf,
+    BATCH_DOMAIN, EthereumClaims, Guest, MAX_CLAIMS_PER_BATCH_LEAF, aggregate_with_stats, batch_hash, generic_verification_key,
+    generic_witness, verify_batch_leaf,
 };
 
 const LEAF: &str = include_str!("leaf.py");
@@ -328,8 +328,7 @@ pub fn test<S: Scheme>() {
 }
 
 /// Proves an `n`-signature leaf once untimed and `reps` times timed, one JSON line a run. With `aggregate`, each run
-/// also proves the aggregation step that verifies the leaf with every claim sponsored, as the calibration suite's
-/// batch-leaf cell does.
+/// also proves the aggregation step that verifies the leaf with every claim declared.
 pub fn prove_leaf<S: Scheme>(n: usize, reps: usize, aggregate: bool) {
     let started = Instant::now();
     let program = program::<S>();
@@ -367,17 +366,10 @@ pub fn prove_leaf<S: Scheme>(n: usize, reps: usize, aggregate: bool) {
     }
 }
 
-/// The step verifying `leaf` with all its claims and its payment declared: its proving time and cycles.
+/// The step verifying `leaf` with all its claims declared: its proving time and cycles.
 fn aggregation_step(leaf: &Leaf) -> (f64, usize) {
-    let source = batch_hash(&leaf.claims);
-    let mut generic: Vec<_> = leaf
-        .claims
-        .iter()
-        .map(|c| (*c, batch_claim_key(&leaf.key, &source)))
-        .collect();
-    generic.push((source, payment_key(&leaf.key)));
     let declare = EthereumClaims {
-        generic,
+        generic: leaf.claims.iter().map(|c| (*c, leaf.key)).collect(),
         lean_sphincs: vec![],
         da_commitment: None,
     };
