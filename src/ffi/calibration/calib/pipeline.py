@@ -102,10 +102,10 @@ def slope(cells: dict, small: str, large: str, dn: float) -> tuple[float | None,
     return max(0.0, by_cycles), "measured cycles x measured s/cycle (time slope within noise)"
 
 
-def marginals(cells: dict, cfg: dict) -> tuple[gasmath.Marginals, dict]:
+def marginals(cells: dict, cfg: dict, mi: int | None = None) -> tuple[gasmath.Marginals, dict]:
     L = cfg["sigs_per_node"]
     fan = cfg["fanin"]
-    mi = cfg["bounds"]["max_inner_proofs_per_step"]
+    mi = mi or cfg["bounds"]["max_inner_proofs_per_step"]
     C = cfg["bounds"]["claims"]
     labels = {}
     sig_pts = [(n, _cell_time(cells, f"sigs-{n}")) for n in sorted({max(1, L // 4), max(2, L // 2), L})]
@@ -167,6 +167,9 @@ class Calibration:
                     self.res.setdefault("skipped", []).append(
                         f"{k} build {b['label']} enforces MAX_INNER_PROOFS_PER_STEP = {lib} < {cfg['bounds']['max_inner_proofs_per_step']}: "
                         f"its blocks are planned within {lib}")
+                    if k == "base" and self.res["preflight"]["step_leaves"] > lib:
+                        self.res["preflight"]["step_leaves"] = lib
+                        self.res["preflight"]["notes"].append(f"full step limited to the library's {lib} inner proofs")
         self.res["capabilities"] = self.caps
         self.save()
 
@@ -195,7 +198,8 @@ class Calibration:
     # ---- cells --------------------------------------------------------------------------------------------------
     def cells(self):
         cfg, pre = self.cfg, self.res["preflight"]
-        L, fan, mi, C = cfg["sigs_per_node"], cfg["fanin"], cfg["bounds"]["max_inner_proofs_per_step"], cfg["bounds"]["claims"]
+        L, fan, C = cfg["sigs_per_node"], cfg["fanin"], cfg["bounds"]["claims"]
+        mi = min(cfg["bounds"]["max_inner_proofs_per_step"], self.caps[self.base["label"]]["library_max_inner_proofs_per_step"])
         sigs = self.run.sigs(self.base, max(L, mi) * L)
         leaves = [self.max_leaf(self.base, 1000 + i) for i in range(pre["step_leaves"])]
         cells = [(f"sigs-{n}", ["sigs", sigs, str(n)]) for n in sorted({max(1, L // 4), max(2, L // 2), L})]
@@ -229,7 +233,7 @@ class Calibration:
             self.log(f"batch cells on {self.batch['label']}: {len(bcells)} x {cfg['reps']} reps")
             res.update(self.run.cells(self.batch, bcells, cfg["reps"]))
         self.res["cells"] = res
-        m, labels = marginals(res, cfg)
+        m, labels = marginals(res, cfg, mi)
         self.marg = m
         self.res["marginals"] = {k: v for k, v in m.__dict__.items()}
         self.save()
