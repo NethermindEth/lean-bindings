@@ -142,6 +142,8 @@ fn recompute(item: &Item, hints: &mut Hints) -> [u8; N] {
         hints.push("sl_wots", cells(&layer[..LEN * N]));
         let mut tips = Vec::new();
         for (c, &d) in digits.iter().enumerate() {
+            let steps = 15 - d as usize;
+            hints.push("sl_chain_split", vec![count(steps / 2), F192::new((steps % 2) as u64, 0, 0)]);
             let mut v: [u8; N] = layer[c * N..(c + 1) * N].try_into().unwrap();
             for s in d..15 {
                 v = th(seed, &adrs(j as u32, tree, 0, leaf, c as u32, s), &[&v]);

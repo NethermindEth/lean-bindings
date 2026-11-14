@@ -97,26 +97,6 @@ def th(seed, ad_a, ad_b, m1, c4, c5):
     return o[0]
 
 
-@inline
-def th_inline(seed, ad_a, ad_b, m1, c4, c5):
-    # SHAKE256(seed || ADRS || m1 [|| c4]) to 16 bytes: F with (c4, c5) = (pad, 0), H with
-    # (m2, pad). One Keccak-f in overwrite mode over the padded state.
-    t = StackBuf(4)
-    t[0] = c4
-    t[1] = c5
-    t[2] = 0
-    t[3] = 0
-    c = StackBuf(5)
-    c[0] = LANE_LO_TOP
-    c[1] = 0
-    c[2] = 0
-    c[3] = 0
-    c[4] = 0
-    o = StackBuf(1)
-    keccak([seed, ad_a], [ad_b, m1], o, tail=t, cap=c)
-    return o[0]
-
-
 def shake_tl(buf, pairs_g):
     # SHAKE256 to 16 bytes of the padded cells at buf: pairs block pairs, then one block.
     chain = HeapBuf(KECCAK_STATE * 3)
@@ -168,12 +148,40 @@ def fors_tree(i, ctx, seed, a0, b_fors, sb, roots):
 
 
 def wots_chain(v, d, seed, ad_a, b_chain, bt):
-    # Chain steps d .. 14 from v.
-    cv = HeapBuf(16)
+    # Chain steps d .. 14 from v, two a loop frame: 15 - d = 2 h + o.
+    split = StackBuf(2)
+    hint_witness(split, "sl_chain_split")
+    h = split[0]
+    o = split[1]
+    assert o * o == o
+    assert log(h) < 8
+    assert h * h * (1 + o * (GEN + 1)) * d == GEN ** 15
+    cv = HeapBuf(9)
     cv[1] = v
-    for t in mul_range(1, GEN ** 15 / d):
-        cv[t * GEN] = th_inline(seed, ad_a, b_chain + bt[d * t] * W3_BYTE, cv[t], SHAKE_PAD, 0)
-    return cv[GEN ** 15 / d]
+    for t in mul_range(1, h):
+        s = d * t * t
+        pad = StackBuf(4)
+        pad[0] = SHAKE_PAD
+        pad[1] = 0
+        pad[2] = 0
+        pad[3] = 0
+        cap = StackBuf(5)
+        cap[0] = LANE_LO_TOP
+        cap[1] = 0
+        cap[2] = 0
+        cap[3] = 0
+        cap[4] = 0
+        x = StackBuf(1)
+        keccak([seed, ad_a], [b_chain + bt[s] * W3_BYTE, cv[t]], x, tail=pad, cap=cap)
+        y = StackBuf(1)
+        keccak([seed, ad_a], [b_chain + bt[s * GEN] * W3_BYTE, x[0]], y, tail=pad, cap=cap)
+        cv[t * GEN] = y[0]
+    out = StackBuf(1)
+    if o == 1:
+        out[0] = th(seed, ad_a, b_chain + bt[d * h * h] * W3_BYTE, cv[h], SHAKE_PAD, 0)
+    else:
+        out[0] = cv[h]
+    return out[0]
 
 
 def ht_layer(j, ctx, seed, gb, msg):
