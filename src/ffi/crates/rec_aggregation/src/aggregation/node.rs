@@ -1,6 +1,6 @@
 //! The entry points that prove one node of an aggregation tree.
 
-use super::cells::{cell_bytes, count, exponent_bytes};
+use super::cells::{count, exponent_bytes};
 use super::child::gen_verify;
 use super::coverage::plan_coverage;
 use super::deferred::{DeferredClaim, aggregate_deferred_claims, bytecode_sums, bytecode_value, scalar_bytecode};
@@ -8,12 +8,10 @@ use super::error::{AggregateVerifyError, AggregationError, SnarkProveError, Snar
 use super::guest::{Guest, unified_guest};
 #[cfg(test)]
 use super::hints::FORGE;
-use super::generic::{
-    batch_claim_key, batch_hash, digest_cells, finalized_claim_key, generic_hints, payment_key, valid_batch_claims,
-};
+use super::generic::{batch_hash, digest_cells, generic_hints, valid_batch_claims};
 use super::hints::{Hints, lean_sphincs_hints};
 use super::proof::{EthereumClaims, EthereumProof, check_signer_set};
-use super::statement::{deps_digest_cells, generic_claim_cells, lean_sphincs_claim_cells, list_split, statement_digest};
+use super::statement::{generic_claim_cells, lean_sphincs_claim_cells, list_split, statement_digest};
 use super::{BatchLeaf, GenericClaim, LeanSphincsClaim, MAX_INNER_PROOFS_PER_STEP, MAX_RECURSIONS};
 use fiat_shamir::merkle::hash_to_scalars;
 use lean_da::{BLOB_SYMBOLS, CELL_SYMBOLS, CELLS_PER_ROW, CODEWORD_SYMBOLS};
@@ -35,9 +33,8 @@ fn skip_leaf_checks() -> bool {
 /// - `children`: child proofs of `guest`; at most [`MAX_RECURSIONS`].
 /// - `leaves`: leaves `(claims, vk, witness)` ([`generic_witness`](super::generic_witness)), any order, of at most
 ///   [`Guest::max_claims_per_leaf`] claims; a direct dependency is a [`singleton_leaf`](super::singleton_leaf).
-///   Without `declare`, each claim establishes its leanSTARK (`0x11`) dependency; with it, a leaf establishes each
-///   declared claim it can, under [`Guest::Batched`] also a batched one ([`batched_key`]) with `min_batch` at most
-///   the leaf's claim count. Distinct leaves and children together are at most [`MAX_INNER_PROOFS_PER_STEP`].
+///   Each claim establishes its leanSTARK (`0x11`) dependency, every one without `declare` and each declared one
+///   with it. Distinct leaves and children together are at most [`MAX_INNER_PROOFS_PER_STEP`].
 /// - `raw_lean_sphincs`: list of `(public_key, message, signature)`, any order.
 /// - `blobs`: concatenated blobs, each containing [`BLOB_SYMBOLS`] little-endian `u64` symbols;
 ///   at most [`lean_da::DA_MAX_ROWS`] blobs. A node with blobs publishes their matrix's root, and none
@@ -82,37 +79,7 @@ pub fn aggregate_with_stats(
     declare: Option<&EthereumClaims>,
     log_inv_rate: usize,
 ) -> Result<(EthereumProof, leanvm_core::cpu::Stats), AggregationError> {
-    prove_node(guest, children, leaves, raw_lean_sphincs, blobs, declare, None, log_inv_rate)
-}
-
-/// [`aggregate`] of `declare`, then finalized (ethereum/EIPs#12664): the proof publishes `declare`'s list with each batch
-/// claim keyed by [`finalized_claim_key`](super::finalized_claim_key), once its leaf payment is in `declare`, under
-/// [`final_deps_hash`](super::final_deps_hash). A batch claim's source `(vk, leaf digest)` comes from `leaves` or
-/// `sources`, for one a child carries; it fails with [`AggregationError::UnpaidClaim`] when a payment is missing, two
-/// batch claims are one dependency, or `declare` has no leanSTARK claim.
-pub fn aggregate_finalized(
-    guest: Guest,
-    children: &[EthereumProof],
-    leaves: Vec<BatchLeaf>,
-    raw_lean_sphincs: Vec<(LeanSphincsPublicKey, lean_sphincs::Message, LeanSphincsSignature)>,
-    declare: &EthereumClaims,
-    sources: &[([u8; 32], [u8; 32])],
-    log_inv_rate: usize,
-) -> Result<EthereumProof, AggregationError> {
-    aggregate_finalized_with_stats(guest, children, leaves, raw_lean_sphincs, declare, sources, log_inv_rate).map(|(proof, _)| proof)
-}
-
-/// [`aggregate_finalized`], under the same contract, also returning the prover's statistics.
-pub fn aggregate_finalized_with_stats(
-    guest: Guest,
-    children: &[EthereumProof],
-    leaves: Vec<BatchLeaf>,
-    raw_lean_sphincs: Vec<(LeanSphincsPublicKey, lean_sphincs::Message, LeanSphincsSignature)>,
-    declare: &EthereumClaims,
-    sources: &[([u8; 32], [u8; 32])],
-    log_inv_rate: usize,
-) -> Result<(EthereumProof, leanvm_core::cpu::Stats), AggregationError> {
-    prove_node(guest, children, leaves, raw_lean_sphincs, &[], Some(declare), Some(sources), log_inv_rate)
+    prove_node(guest, children, leaves, raw_lean_sphincs, blobs, declare, log_inv_rate)
 }
 
 fn prove_node(
@@ -122,7 +89,6 @@ fn prove_node(
     raw_lean_sphincs: Vec<(LeanSphincsPublicKey, lean_sphincs::Message, LeanSphincsSignature)>,
     blobs: &[u64],
     declare: Option<&EthereumClaims>,
-    sources: Option<&[([u8; 32], [u8; 32])]>,
     log_inv_rate: usize,
 ) -> Result<(EthereumProof, leanvm_core::cpu::Stats), AggregationError> {
     let declared_root = declare.map(|claims| claims.da_commitment);
@@ -133,8 +99,7 @@ fn prove_node(
     if children.len() > MAX_RECURSIONS {
         return Err(AggregationError::TooLarge);
     }
-    // Test builds may hand the guest a finalized child, to see it refused there too.
-    if children.iter().any(|child| child.guest != guest || child.finalized && !skip_leaf_checks()) {
+    if children.iter().any(|child| child.guest != guest) {
         return Err(AggregationError::InvalidChild(AggregateVerifyError::MalformedClaim));
     }
     let direct = if blobs.is_empty() {
@@ -221,9 +186,9 @@ fn prove_node(
     drop(_span);
 
     let _span = tracing::info_span!("Build witness").entered();
-    let established = establishments(guest, &leaves, declare);
+    let established = establishments(&leaves, declare);
     let raw_generic_claims: Vec<GenericClaim> =
-        established.iter().flatten().map(|&(_, _, claim)| claim).collect();
+        established.iter().flatten().map(|&(_, claim)| claim).collect();
     let raw_lean_sphincs_claims: Vec<LeanSphincsClaim> = raw_lean_sphincs
         .iter()
         .map(|(pk, message, _)| (*message, *pk))
@@ -262,8 +227,8 @@ fn prove_node(
     );
     let fs_seed = leanvm_core::cpu::fs_seed(aggregator);
     hints.push("fs_seed", vec![fs_seed[0], fs_seed[1]]);
-    // Both lists in the guest's order, leanSTARK first: each one's split, its declared
-    // claims, then its duplicates.
+    // Both lists' declared claims in the guest's order, leanSTARK first, then the split of their
+    // dependency list, then the duplicates.
     let generic_cells: Vec<[F192; 4]> = cover.generic.signers.iter().map(generic_claim_cells).collect();
     let lean_sphincs_cells: Vec<[F192; 4]> = cover
         .lean_sphincs
@@ -271,13 +236,11 @@ fn prove_node(
         .iter()
         .map(lean_sphincs_claim_cells)
         .collect();
-    for cells in [&generic_cells, &lean_sphincs_cells] {
-        if !cells.is_empty() {
-            hints.push("signers_split", list_split(cells.len()));
-        }
-        for claim in cells {
-            hints.push("claims", claim.to_vec());
-        }
+    for claim in generic_cells.iter().chain(&lean_sphincs_cells) {
+        hints.push("claims", claim.to_vec());
+    }
+    if !generic_cells.is_empty() || !lean_sphincs_cells.is_empty() {
+        hints.push("signers_split", list_split(generic_cells.len() + lean_sphincs_cells.len()));
     }
     let dups = cover.generic.dups.iter().map(generic_claim_cells);
     for claim in dups.chain(cover.lean_sphincs.dups.iter().map(lean_sphincs_claim_cells)) {
@@ -297,12 +260,9 @@ fn prove_node(
             hints.push("batch_bytes", exponent_bytes(claim));
         }
         hints.push("leaf_establishes", vec![count(established.len())]);
-        for (&(kind, position, _), &offset) in established.iter().zip(offsets.by_ref()) {
+        for (&(position, _), &offset) in established.iter().zip(offsets.by_ref()) {
             hints.push("raw_index", vec![count(offset)]);
-            hints.push("dependency_kind", vec![count(kind.into())]);
-            if kind != PAYMENT {
-                hints.push("leaf_claim_index", vec![count(position)]);
-            }
+            hints.push("leaf_claim_index", vec![count(position)]);
         }
         let cells = 1 + 2 * claims.len();
         hints.push("leaf_digest_split", vec![count(cells / LEAF_CHUNK), count(cells % LEAF_CHUNK)]);
@@ -345,11 +305,12 @@ fn prove_node(
             "child_meta",
             vec![count(child.claims.generic.len()), count(child.claims.lean_sphincs.len())],
         );
-        for offsets in [&cover.generic.children[i], &cover.lean_sphincs.children[i]] {
+        // The guest collects the child's leanSPHINCS claims first, as its dependencies sort.
+        let (sphincs, generic) = (&cover.lean_sphincs.children[i], &cover.generic.children[i]);
+        for offsets in [sphincs, generic] {
             if offsets.is_empty() {
                 continue;
             }
-            hints.push("signers_split", list_split(offsets.len()));
             // Strictly increasing slots go as gaps (`child_claim_list_mono`).
             if offsets.is_sorted_by(|a, b| a < b) {
                 hints.push("child_mono", vec![count(1)]);
@@ -364,6 +325,9 @@ fn prove_node(
                     hints.push("child_claim_index", vec![count(offset)]);
                 }
             }
+        }
+        if !sphincs.is_empty() || !generic.is_empty() {
+            hints.push("signers_split", list_split(sphincs.len() + generic.len()));
         }
         hints.push("child_defer", child.defer.cells());
         hints.push("child_da", hash_to_scalars(&child_da[i]).to_vec());
@@ -423,24 +387,8 @@ fn prove_node(
         return Err(AggregationError::Empty);
     }
 
-    let published = match sources {
-        None => {
-            hints.push("final", vec![count(0)]);
-            cover.generic.signers
-        }
-        Some(sources) => {
-            let sources = leaves.iter().map(|(claims, vk, _)| (*vk, batch_hash(claims))).chain(sources.iter().copied());
-            finalize(&cover.generic.signers, sources, &mut hints)?
-        }
-    };
-    let finalized = sources.is_some();
-    if finalized {
-        // get_batch_final_hash's preimage takes the plain digest's bytes, re-cut in the guest.
-        let digest = deps_digest_cells(&cover.lean_sphincs.signers, &published, false);
-        hints.push("batch_bytes", exponent_bytes(&cell_bytes(digest)));
-    }
     let public_input =
-        statement_digest(guest, &published, &cover.lean_sphincs.signers, finalized, da, &defer);
+        statement_digest(guest, &cover.generic.signers, &cover.lean_sphincs.signers, da, &defer);
     let mut program = aggregator.clone();
     #[cfg(test)]
     if let Some(forge) = FORGE.with(|forge| forge.borrow_mut().take()) {
@@ -452,9 +400,8 @@ fn prove_node(
     Ok((
         EthereumProof {
             guest,
-            finalized,
             claims: EthereumClaims {
-                generic: published,
+                generic: cover.generic.signers,
                 lean_sphincs: cover.lean_sphincs.signers,
                 da_commitment: da_root,
             },
@@ -468,82 +415,19 @@ fn prove_node(
 /// A leaf's claims take a guest digest's cells a block pair (`leaf_digest`).
 const LEAF_CHUNK: usize = 2 * primitives::hash::RATE / 16;
 
-/// A dependency kind as the guest's `establish` takes it: `0x11`, `0x12`, `0x13`.
-const ORDINARY: u8 = 0;
-const BATCHED: u8 = 1;
-const PAYMENT: u8 = 2;
-
-/// Per leaf, the dependencies it establishes as `(kind, claim position, claim list entry)`: every claim under the leaf's key
-/// without `declare`, else each declared entry the leaf can establish, under [`Guest::Batched`] (or a test lifting the
-/// host's checks) also its batch claims, bound to it, and its payment.
-fn establishments(guest: Guest, leaves: &[BatchLeaf], declare: Option<&EthereumClaims>) -> Vec<Vec<(u8, usize, GenericClaim)>> {
+/// Per leaf, the dependencies it establishes as `(claim position, claim list entry)`: every claim under the leaf's key
+/// without `declare`, else each declared entry among them.
+fn establishments(leaves: &[BatchLeaf], declare: Option<&EthereumClaims>) -> Vec<Vec<(usize, GenericClaim)>> {
     leaves
         .iter()
-        .map(|(claims, vk, _)| {
-            let Some(declare) = declare else {
-                return claims.iter().enumerate().map(|(position, claim)| (ORDINARY, position, (*claim, *vk))).collect();
-            };
-            let batched = guest == Guest::Batched || skip_leaf_checks();
-            let digest = batch_hash(claims);
-            let (claim_key, payment) = (batch_claim_key(vk, &digest), (digest, payment_key(vk)));
-            declare
+        .map(|(claims, vk, _)| match declare {
+            None => claims.iter().enumerate().map(|(position, claim)| (position, (*claim, *vk))).collect(),
+            Some(declare) => declare
                 .generic
                 .iter()
-                .filter_map(|&entry| {
-                    if batched && entry == payment {
-                        return Some((PAYMENT, 0, entry));
-                    }
-                    let position = claims.binary_search(&entry.0).ok()?;
-                    match entry.1 {
-                        key if key == *vk => Some((ORDINARY, position, entry)),
-                        // A test lifting the host's checks hands the guest any other key as this leaf's batch claim.
-                        key if batched && (key == claim_key || skip_leaf_checks()) => Some((BATCHED, position, entry)),
-                        _ => None,
-                    }
-                })
-                .collect()
+                .filter(|(_, key)| key == vk)
+                .filter_map(|&entry| Some((claims.binary_search(&entry.0).ok()?, entry)))
+                .collect(),
         })
         .collect()
-}
-
-/// The finalized leanSTARK list of a node's `declared` one, and the guest's `finalize` hints: each batch claim, recognized by
-/// its source among `sources` `(vk, leaf digest)`, keyed by [`finalized_claim_key`] once its payment is declared.
-fn finalize(
-    declared: &[GenericClaim],
-    sources: impl Iterator<Item = ([u8; 32], [u8; 32])>,
-    hints: &mut Hints,
-) -> Result<Vec<GenericClaim>, AggregationError> {
-    let sources: std::collections::HashMap<[u8; 32], ([u8; 32], [u8; 32])> =
-        sources.map(|(vk, digest)| (batch_claim_key(&vk, &digest), (vk, digest))).collect();
-    let mut rows = Vec::with_capacity(declared.len());
-    for &(data, key) in declared {
-        rows.push(match sources.get(&key) {
-            Some(&(vk, digest)) => {
-                let payment = declared.binary_search(&(digest, payment_key(&vk))).map_err(|_| AggregationError::UnpaidClaim)?;
-                ((data, finalized_claim_key(&vk)), Some((vk, digest, payment)))
-            }
-            None => ((data, key), None),
-        });
-    }
-    let mut finalized: Vec<GenericClaim> = rows.iter().map(|(entry, _)| *entry).collect();
-    finalized.sort();
-    if finalized.is_empty() || finalized.windows(2).any(|w| w[0] == w[1]) {
-        return Err(AggregationError::UnpaidClaim);
-    }
-    hints.push("final", vec![count(1)]);
-    hints.push("signers_split", list_split(finalized.len()));
-    for entry in &finalized {
-        hints.push("claims", generic_claim_cells(entry).to_vec());
-    }
-    for (entry, source) in &rows {
-        hints.push("final_index", vec![count(finalized.binary_search(entry).expect("listed"))]);
-        hints.push("final_kind", vec![count(usize::from(source.is_some()))]);
-        if let Some((vk, digest, payment)) = source {
-            let [v0, v1] = digest_cells(vk);
-            let [d0, d1] = digest_cells(digest);
-            hints.push("final_source", vec![v0, v1, d0, d1]);
-            hints.push("final_payment_index", vec![count(*payment)]);
-        }
-    }
-    Ok(finalized)
 }

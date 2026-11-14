@@ -67,7 +67,7 @@ fn main() {
     save("stark-key.bin", &key);
     save("stark-message.bin", &data_hash);
     save("stark-proof.bin", &witness);
-    // Guest 1 keys a program by its committed bytecode key and takes a proof of `get_claim_hash(claim)`.
+    // Guest 1 keys a program by `get_vk_hash` of its committed bytecode key and takes a proof of `get_claim_hash(claim)`.
     let (claim_witness, batched_key) =
         prove_stark(Guest::Batched, ANY_INPUT_PROGRAM, &batch_hash(&[data_hash])).unwrap();
     assert_ne!(batched_key, key);
@@ -100,22 +100,23 @@ fn main() {
 
 /// Key-hash and key-opening consistency vectors (`crates/rec_aggregation/EIP8288-PROFILE.md`) for `stark-claim-proof.bin`'s
 /// guest 1 dependency, whose witness is `kgen ‖ root ‖ ood ‖ proof`: `stark-key-hash-vectors.txt` spells out the derivation of
-/// its `program_commitment` and EIP-8288 `get_vk_hash` of it, and each `stark-key-opening-wrong-*.bin` is a
-/// `program_commitment ‖ witness` pair with `ood` or the root tampered and the commitment recomputed over it, which
-/// verification must reject.
+/// its `program_commitment` and ethereum/EIPs#12664 `get_vk_hash` of it, the key, and each `stark-key-opening-wrong-*.bin`
+/// is a `key ‖ witness` pair with `ood` or the root tampered and the key recomputed over it, which verification must
+/// reject.
 fn save_commitment_vectors(save: &dyn Fn(&str, &[u8]), data_hash: &[u8; 32], key: &[u8; 32], witness: &[u8]) {
     let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let limbs = |e: verifier::E| format!("{:016x} {:016x} {:016x}", e.c0, e.c1, e.c2);
     let kgen = witness[0] as usize;
     let root: [u8; 32] = witness[1..33].try_into().unwrap();
     let ood: [u8; 32] = witness[33..65].try_into().unwrap();
-    assert_eq!(verifier::committed_key(kgen, &root, &ood), *key, "the key is the derivation below");
+    let commitment = verifier::committed_key(kgen, &root, &ood);
+    let vk_hash = keccak(&[&b"EIP8288:vk:v1"[..], &commitment[..]].concat());
+    assert_eq!(vk_hash, *key, "the key is the derivation below");
     let program = lean_compiler::compile(&lean_compiler::parse(ANY_INPUT_PROGRAM).unwrap());
     let table: Vec<u8> = leanvm_core::cpu::bytecode_table(program.prog())
         .iter()
         .flat_map(|word| word.0.to_le_bytes())
         .collect();
-    let vk_hash = keccak(&[&b"EIP8288:vk:v1"[..], &key[..]].concat());
     let mut text = format!(
         "# leanSTARK EIP-8288 profile v1. program_commitment = keccak256(\"leanvm-commit-1\" || u8 kgen || root || ood);\n\
          # ood_point = {} sponge challenges, IV root, public input \"leanvm-ood-pt-1\" || u8 kgen || 16 zero bytes;\n\
@@ -128,7 +129,7 @@ fn save_commitment_vectors(save: &dyn Fn(&str, &[u8]), data_hash: &[u8; 32], key
         hex(&table),
         hex(&root),
         hex(&ood),
-        hex(key),
+        hex(&commitment),
         hex(&vk_hash),
     );
     for (j, coordinate) in verifier::committed_ood_point(kgen, &root).into_iter().enumerate() {
@@ -140,7 +141,7 @@ fn save_commitment_vectors(save: &dyn Fn(&str, &[u8]), data_hash: &[u8; 32], key
         tampered[at] ^= 1;
         let root: [u8; 32] = tampered[1..33].try_into().unwrap();
         let ood: [u8; 32] = tampered[33..65].try_into().unwrap();
-        let tampered_key = verifier::committed_key(kgen, &root, &ood);
+        let tampered_key = rec_aggregation::vk_hash(&verifier::committed_key(kgen, &root, &ood));
         assert!(!rec_aggregation::verify_generic(data_hash, &tampered_key, &tampered), "{name} is rejected");
         save(name, &[&tampered_key[..], &tampered[..]].concat());
     }

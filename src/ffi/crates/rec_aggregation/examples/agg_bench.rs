@@ -7,8 +7,8 @@ use lean_compiler::{compile, parse};
 use leanvm_core::cpu::{Program, bytecode_table, prove};
 use rec_aggregation::aggregation::unified_guest;
 use rec_aggregation::{
-    BATCH_DOMAIN, BatchLeaf, EthereumClaims, EthereumProof, MAX_CLAIMS_PER_BATCH_LEAF, aggregate_finalized_with_stats,
-    aggregate_with_stats, batch_claim_key, batch_hash, generic_verification_key, generic_witness, payment_key,
+    BATCH_DOMAIN, BatchLeaf, EthereumClaims, EthereumProof, MAX_CLAIMS_PER_BATCH_LEAF,
+    aggregate_with_stats, batch_hash, generic_verification_key, generic_witness,
 };
 use signatures::lean_sphincs;
 use std::time::Instant;
@@ -164,8 +164,7 @@ fn main() {
         }
         "batch" => {
             // ethereum/EIPs#12664 activation shapes at the near-cap program: one leaf of `size` claims (default the
-            // maximum) with every claim sponsored and its payment, finalized, and a finalized step of `n` such leaves
-            // each keeping one claim and its payment.
+            // maximum) keeping every claim, and a step of `n` such leaves each keeping one claim.
             let wide = compile(&parse(&wide_source()).expect("parse"));
             let size: u16 = std::env::args().nth(3).map_or(MAX_CLAIMS_PER_BATCH_LEAF as u16, |a| a.parse().expect("size"));
             let full = |seed: u8| -> Vec<[u8; 32]> {
@@ -181,20 +180,17 @@ fn main() {
                 let pi = cells(&batch_hash(&claims)).to_vec();
                 dependency(&wide, ("pi", pi), claims)
             };
-            let sponsored = |leaf: &BatchLeaf, kept: &[[u8; 32]]| -> Vec<([u8; 32], [u8; 32])> {
-                let digest = batch_hash(&leaf.0);
-                let mut entries: Vec<_> = kept.iter().map(|c| (*c, batch_claim_key(&leaf.1, &digest))).collect();
-                entries.push((digest, payment_key(&leaf.1)));
-                entries
+            let ordinary = |leaf: &BatchLeaf, kept: &[[u8; 32]]| -> Vec<([u8; 32], [u8; 32])> {
+                kept.iter().map(|c| (*c, leaf.1)).collect()
             };
             let declared = |mut generic: Vec<([u8; 32], [u8; 32])>| {
                 generic.sort();
                 EthereumClaims { generic, ..Default::default() }
             };
             let one = wide_leaf(full(1));
-            let all = declared(sponsored(&one, &one.0));
-            report(&format!("final leaf of {size} sponsored claims, 2^11 instructions"), || {
-                aggregate_finalized_with_stats(GUEST, &[], vec![one.clone()], vec![], &all, &[], RATE).expect("proves")
+            let all = declared(ordinary(&one, &one.0));
+            report(&format!("leaf of {size} claims, 2^11 instructions"), || {
+                aggregate_with_stats(GUEST, &[], vec![one.clone()], vec![], &[], Some(&all), RATE).expect("proves")
             });
             let n = std::env::args().nth(2).map_or(16, |a| a.parse().expect("n"));
             // Distinct keys: each leaf's program is a different near-cap one.
@@ -207,26 +203,26 @@ fn main() {
                     dependency(&program, ("pi", pi), claims)
                 })
                 .collect();
-            let kept = declared(leaves.iter().flat_map(|leaf| sponsored(leaf, &leaf.0[..1])).collect());
-            report(&format!("final step of {n} leaves of {size} claims under distinct keys, one kept each"), || {
-                aggregate_finalized_with_stats(GUEST, &[], leaves.clone(), vec![], &kept, &[], RATE).expect("proves")
+            let kept = declared(leaves.iter().flat_map(|leaf| ordinary(leaf, &leaf.0[..1])).collect());
+            report(&format!("step of {n} leaves of {size} claims under distinct keys, one kept each"), || {
+                aggregate_with_stats(GUEST, &[], leaves.clone(), vec![], &[], Some(&kept), RATE).expect("proves")
             });
-            // Half the step recursive: n/2 such leaves beside n/2 children, each child an intermediate proof of one
-            // more such leaf with every claim and its payment.
+            // Half the step recursive: n/2 such leaves beside n/2 children, each child a proof of one more such leaf
+            // with every claim.
             let half = n / 2;
             let children: Vec<EthereumProof> = (0..half)
                 .map(|i| {
                     let child_leaf = wide_leaf(full(100 + i as u8));
-                    let all = declared(sponsored(&child_leaf, &child_leaf.0));
+                    let all = declared(ordinary(&child_leaf, &child_leaf.0));
                     aggregate_with_stats(GUEST, &[], vec![child_leaf], vec![], &[], Some(&all), RATE).expect("proves").0
                 })
                 .collect();
             let mixed: Vec<_> = leaves[..half].to_vec();
-            let mut kept: Vec<_> = mixed.iter().flat_map(|leaf| sponsored(leaf, &leaf.0[..1])).collect();
+            let mut kept: Vec<_> = mixed.iter().flat_map(|leaf| ordinary(leaf, &leaf.0[..1])).collect();
             kept.extend(children.iter().flat_map(|child| child.claims().generic.iter().copied()));
             let kept = declared(kept);
-            report(&format!("final step of {half} leaves and {half} children of {size} claims"), || {
-                aggregate_finalized_with_stats(GUEST, &children, mixed.clone(), vec![], &kept, &[], RATE).expect("proves")
+            report(&format!("step of {half} leaves and {half} children of {size} claims"), || {
+                aggregate_with_stats(GUEST, &children, mixed.clone(), vec![], &[], Some(&kept), RATE).expect("proves")
             });
         }
         _ => panic!("mode: sigs [n] | children [n] | generic | batch [n] [size]"),

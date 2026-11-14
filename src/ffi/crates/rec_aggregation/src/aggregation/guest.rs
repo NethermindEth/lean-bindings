@@ -12,8 +12,7 @@ pub enum Guest {
     /// EIP-8288: each leanSTARK (`0x11`) dependency is proved by a one-claim leaf.
     #[default]
     Base,
-    /// ethereum/EIPs#12664 on top of EIP-8288: leaves of up to [`MAX_CLAIMS_PER_BATCH_LEAF`] claims, which also
-    /// establish `BATCHED_LEANSTARK_SCHEME` (`0x12`) dependencies.
+    /// ethereum/EIPs#12664 on top of EIP-8288: leaves of up to [`MAX_CLAIMS_PER_BATCH_LEAF`] claims.
     Batched,
 }
 

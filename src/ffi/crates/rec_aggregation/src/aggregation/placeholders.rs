@@ -7,10 +7,7 @@ use super::child::{
 };
 use super::claim_pool::{ClaimSite, coord_difference, coord_kind, coord_scale, push_coord_terms, walk_claims};
 use super::deferred::RECURSION_AGG_LABEL;
-use super::generic::{
-    BATCH_DOMAIN, BATCH_FINAL_TAG, BATCHED_LEANSTARK_SCHEME, LEANSTARK_DEPS_DOMAIN, LEANSTARK_LEAF_PAYMENT_SCHEME,
-    MAX_GENERIC_BYTECODE_LOG, scheme_word,
-};
+use super::generic::{BATCH_DOMAIN, LEAN_SPHINCS_SCHEME, LEAN_STARK_SCHEME, MAX_GENERIC_BYTECODE_LOG, VK_TAG, scheme_word};
 use super::guest::Guest;
 use super::statement::{BIG_GROUPS, CLAIM_GROUP, STATEMENT_HEADER};
 use fiat_shamir::merkle::hash_to_scalars;
@@ -900,17 +897,13 @@ fn da_placeholders(ps: &mut impl FnMut(&str, String)) {
 fn signature_placeholders(guest: Guest, ps: &mut impl FnMut(&str, String)) {
     ps("MAX_GENERIC_BYTECODE_LOG", MAX_GENERIC_BYTECODE_LOG.to_string());
     ps("MAX_CLAIMS_PER_BATCH_LEAF", guest.max_claims_per_leaf().to_string());
-    ps("BATCHED_DEPENDENCIES", u8::from(guest == Guest::Batched).to_string());
     ps("BATCH_DOMAIN", dsl_u128(pack_16_bytes(&BATCH_DOMAIN)).to_string());
     ps("LEAF_CHUNK", (2 * primitives::hash::RATE / 16).to_string());
-    ps("BATCHED_SCHEME_CELL", dsl_u128(pack_16_bytes(&scheme_word(BATCHED_LEANSTARK_SCHEME)[16..])).to_string());
-    ps("PAYMENT_SCHEME_CELL", dsl_u128(pack_16_bytes(&scheme_word(LEANSTARK_LEAF_PAYMENT_SCHEME)[16..])).to_string());
-    ps("DEPS_DOMAIN_0", dsl_u128(pack_16_bytes(&LEANSTARK_DEPS_DOMAIN[..16])).to_string());
-    ps("DEPS_DOMAIN_1", dsl_u128(pack_16_bytes(&LEANSTARK_DEPS_DOMAIN[16..])).to_string());
-    ps("FINAL_TAG_0", dsl_u128(pack_16_bytes(&BATCH_FINAL_TAG[..16])).to_string());
-    let mut tag_tail = [0; 16];
-    tag_tail[..6].copy_from_slice(&BATCH_FINAL_TAG[16..]);
-    ps("FINAL_TAG_1", dsl_u128(pack_16_bytes(&tag_tail)).to_string());
+    ps("SPHINCS_SCHEME_CELL", dsl_u128(pack_16_bytes(&scheme_word(LEAN_SPHINCS_SCHEME)[16..])).to_string());
+    ps("STARK_SCHEME_CELL", dsl_u128(pack_16_bytes(&scheme_word(LEAN_STARK_SCHEME)[16..])).to_string());
+    let mut vk_tag = [0; 16];
+    vk_tag[..VK_TAG.len()].copy_from_slice(VK_TAG);
+    ps("VK_TAG", dsl_u128(pack_16_bytes(&vk_tag)).to_string());
     // A committed program's key: its first cell, `verifier::COMMITTED_TAG ‖ u8 kgen`, for every kgen; and the
     // commitment's rate, as the g-power `open_stacked` dispatches on.
     let key_cells = (0..=MAX_GENERIC_BYTECODE_LOG).map(|kgen| {
