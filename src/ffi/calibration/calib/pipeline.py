@@ -248,10 +248,22 @@ class Calibration:
         self.save()
 
     # ---- constants and verification -----------------------------------------------------------------------------
-    def constants(self, G: int, rate_factor: float = 1.0, workers: int | None = None) -> dict:
+    def two_budgets(self) -> bool:
+        return "throughput_budget_s" in self.cfg
+
+    def budget(self, G: int, workers: int | None = None, single: bool = False) -> gasmath.Budget:
+        """The throughput budget (T x utilisation per worker) in the two-budget scheme, else the single makespan budget
+        (B / margin per worker); `single` forces the latter for comparison."""
         cfg = self.cfg
-        b = gasmath.Budget(G, cfg["builder_budget_s"], workers or cfg["reference_workers"], cfg["margin"], cfg["fanin"],
-                           cfg["sigs_per_node"])
+        w = workers or cfg["reference_workers"]
+        if self.two_budgets() and not single:
+            return gasmath.Budget(G, cfg["throughput_budget_s"], w, 1 / cfg.get("utilisation", 2 / 3), cfg["fanin"],
+                                  cfg["sigs_per_node"])
+        return gasmath.Budget(G, cfg["builder_budget_s"], w, cfg["margin"], cfg["fanin"], cfg["sigs_per_node"])
+
+    def constants(self, G: int, rate_factor: float = 1.0, workers: int | None = None, single: bool = False) -> dict:
+        cfg = self.cfg
+        b = self.budget(G, workers, single)
         tx = gasmath.TxModel(**cfg.get("tx", {}))
         c = gasmath.derive(self.marg, b, depth=3)
         for _ in range(3):
@@ -314,7 +326,13 @@ class Calibration:
                     row.update(status="unquiet: measured under load, not counted")
                     out.append(row)
                     continue
-                v = gasmath.verdict(r["makespan_s"], cfg["builder_budget_s"], r["peak_rss_max_worker"], mem_pw)
+                if self.two_budgets():
+                    row["latency"] = lat = gasmath.latency(r.get("node_records", []))
+                    v = gasmath.two_budget_verdict(r["total_work_s"], r["workers"], cfg["throughput_budget_s"],
+                                                   cfg.get("utilisation", 2 / 3), lat, cfg["latency_budget_s"],
+                                                   r["peak_rss_max_worker"], mem_pw)
+                else:
+                    v = gasmath.verdict(r["makespan_s"], cfg["builder_budget_s"], r["peak_rss_max_worker"], mem_pw)
                 verify_ms = r["root_verify_ms"]
             elif evm_gas and row["evm"]["ms"] is None:
                 row.update(status="not measured: no EVM timings imported")
@@ -362,8 +380,12 @@ class Calibration:
                 failing = [r for r in rows if r.get("verdict") and not r["verdict"]["time_ok"]]
                 if not failing:
                     break
-                worst = max(r["measurement"]["makespan_s"] for r in failing)
-                factor = gasmath.recalibrate(factor, worst, cfg["builder_budget_s"]) * 1.02
+                if self.two_budgets():
+                    worst = max(r["measurement"]["total_work_s"] / r["measurement"]["workers"] for r in failing)
+                    factor = gasmath.recalibrate(factor, worst, cfg["throughput_budget_s"] * cfg.get("utilisation", 2 / 3)) * 1.02
+                else:
+                    worst = max(r["measurement"]["makespan_s"] for r in failing)
+                    factor = gasmath.recalibrate(factor, worst, cfg["builder_budget_s"]) * 1.02
             final = iters[-1]
             measured = [r for r in final["blocks"] if r.get("verdict")]
             ok = bool(measured) and all(r["verdict"]["pass"] for r in measured)
@@ -376,4 +398,9 @@ class Calibration:
             # Modelled: the same measured marginals under a budget for W identical workers of this machine.
             self.res["gas_limits"][str(G)]["modelled_workers"] = {
                 str(w): self.constants(G, workers=w) for w in cfg.get("model_workers", [])}
+            if self.two_budgets():
+                # For comparison: the same marginals under the single makespan budget (B, margin).
+                self.res["gas_limits"][str(G)]["single_budget"] = {
+                    str(w): self.constants(G, workers=w, single=True)
+                    for w in [cfg["reference_workers"], *cfg.get("model_workers", [])]}
             self.save()

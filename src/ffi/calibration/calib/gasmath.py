@@ -204,6 +204,36 @@ def verdict(makespan_s: float, budget_s: float, peak_rss: int, mem_per_worker: i
     }
 
 
+def latency(nodes: list[dict]) -> dict:
+    """Post-selection latency from a measured block's node records: the final merges after the transaction set is fixed,
+    with every leaf already proved (pre-aggregated inputs), and a late arrival whose slowest leaf is proved after
+    selection. Each level contributes its slowest node (fetch, decode and proving), so the sum bounds the critical path
+    from above when each level's merges run in parallel."""
+    by_depth: dict[int, float] = {}
+    for n in nodes:
+        t = n.get("fetch_s", 0.0) + n.get("decode_s", 0.0) + n["prove_s"]
+        by_depth[n["depth"]] = max(by_depth.get(n["depth"], 0.0), t)
+    post = sum(t for d, t in by_depth.items() if d >= 1)
+    return {"post_selection_s": post, "late_arrival_s": post + by_depth.get(0, 0.0), "final_levels": len(by_depth) - 1}
+
+
+def two_budget_verdict(total_work_s: float, workers: int, throughput_s: float, utilisation: float, lat: dict,
+                       latency_s: float, peak_rss: int, mem_per_worker: int) -> dict:
+    """Whether one measured block meets the throughput budget (total work within W x T x utilisation), the latency bound
+    (post-selection critical path, and a late arrival) and the per-worker memory budget."""
+    capacity = workers * throughput_s * utilisation
+    v = {
+        "throughput_ok": total_work_s <= capacity,
+        "latency_ok": lat["post_selection_s"] <= latency_s,
+        "late_arrival_ok": lat["late_arrival_s"] <= latency_s,
+        "memory_ok": peak_rss <= mem_per_worker,
+        "headroom": capacity / total_work_s if total_work_s > 0 else math.inf,
+    }
+    v["time_ok"] = v["throughput_ok"]
+    v["pass"] = all(v[k] for k in ("throughput_ok", "latency_ok", "late_arrival_ok", "memory_ok"))
+    return v
+
+
 def recalibrate(rate: float, worst_makespan_s: float, budget_s: float) -> float:
     """The rate scaled so the worst measured block would just meet the budget (makespan ~ admitted work)."""
     return rate * worst_makespan_s / budget_s

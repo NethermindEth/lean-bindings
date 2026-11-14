@@ -49,6 +49,8 @@ METHODOLOGY = {
         ("Native, generic, proof-share and batch-claim charges from the same budgets", "derived"),
         ("Block workloads repeated with the proposed schedule; all must fit", "verified"),
         ("Covers only the measured gas limits, configurations and bounds", "scope"),
+        ("Proposed: throughput budget, total work within W x T x utilisation", "throughput"),
+        ("Proposed: latency bound on post-selection aggregation, including a late arrival", "latency"),
     ],
 }
 
@@ -163,6 +165,14 @@ def _status(res: dict, key: str) -> str:
         return "derived from measured marginals and one budget (rate = G / (W·B/margin))"
     if key == "scope":
         return "configured gas limits only: " + ", ".join(f"{int(g):,}" for g in res["config"]["gas_limits"])
+    if key == "throughput":
+        c = res["config"]
+        return (f"configured: T = {c['throughput_budget_s']} s, utilisation {c.get('utilisation', 2 / 3):.2f}; charges derive from it"
+                if "throughput_budget_s" in c else "not configured (single makespan budget)")
+    if key == "latency":
+        c = res["config"]
+        return (f"configured: {c['latency_budget_s']} s; measured per block from node times (slowest node per final level)"
+                if "latency_budget_s" in c else "not configured (single makespan budget)")
     if key == "verified":
         v = [g.get("final", {}).get("verdict") for g in gl.values()]
         return "; ".join(str(x) for x in v) or "not run"
@@ -247,8 +257,9 @@ def render(res: dict) -> str:
                 L.append(f"| `{k}` | {'not measured' if v is None else f'{v:,.0f}'} |")
             L.append("")
             L.append("| block | composition | makespan s | critical path s | work s | depth | nodes | transfers MB | "
-                     "peak RSS/worker GB | EVM ms | validator ms | verdict | modelled: work/W, list schedule s |")
-            L.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+                     "peak RSS/worker GB | EVM ms | validator ms | post-selection s | late arrival s | verdict | "
+                     "modelled: work/W, list schedule s |")
+            L.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
             for b in it["blocks"]:
                 comp = ", ".join(f"{k} {v:,.0f}" if isinstance(v, (int, float)) else f"{k} {v}" for k, v in b["composition"].items())
                 r = b.get("measurement") or {}
@@ -260,21 +271,29 @@ def render(res: dict) -> str:
                          f"{_f(r.get('total_work_s'))} | {_f(r.get('depth'))} | {_f(r.get('nodes'))} | "
                          f"{_f((r.get('bytes_transfers', 0) + r.get('bytes_inputs', 0)) / 1e6 if r else None, 1)} | "
                          f"{_f(r.get('peak_rss_max_worker', 0) / GB if r else None, 2)} | "
-                         f"{_f(ev.get('ms'), 0)} ({ev.get('label')}) | {_f(b.get('validator_ms'), 0)} | {verdict} | "
+                         f"{_f(ev.get('ms'), 0)} ({ev.get('label')}) | {_f(b.get('validator_ms'), 0)} | "
+                         f"{_f((b.get('latency') or {}).get('post_selection_s'))} | {_f((b.get('latency') or {}).get('late_arrival_s'))} | {verdict} | "
                          f"{_f(mod.get('work_over_workers_s'))}, {_f(mod.get('list_schedule_no_transfer_s'))} |")
             L.append("")
         f = g.get("final", {})
         L.append(f"**Verdict for {int(G):,} gas: {f.get('verdict')}**\n")
-        mw = g.get("modelled_workers") or {}
+        ref = cfg.get("reference_factor")
+        mw = dict(g.get("modelled_workers") or {})
+        sb = dict(g.get("single_budget") or {})
+        if ref:
+            # Machine-seconds scale linearly to the reference class, and so does every charge.
+            for w, c in list(mw.items()):
+                mw[f"{w}, {ref['name']} class (x{ref['factor']:.3f})"] = _scaled(c, ref["factor"])
+            for w, c in list(sb.items()):
+                sb[f"{w}, {ref['name']} class (x{ref['factor']:.3f})"] = _scaled(c, ref["factor"])
+        if sb:
+            L.append("Single makespan budget for comparison (B = "
+                     f"{cfg['builder_budget_s']} s, margin {cfg['margin']}), same measured marginals (modelled):\n")
+            _constants_table(L, sb)
         if mw:
             L.append("Modelled: the same measured marginals for a budget of W identical workers of this machine "
                      "(not verified by blocks).\n")
-            keys = ("LEANSPHINCS_VERIFICATION_GAS", "RECURSIVE_PROOF_SHARE_GAS", "LEANSTARK_VERIFICATION_GAS",
-                    "LEANSTARK_LEAF_PAYMENT_GAS", "LEANSTARK_CLAIM_GAS")
-            L.append("| W | " + " | ".join(f"`{k}`" for k in keys) + " |\n|---|" + "---|" * len(keys))
-            for w, c in mw.items():
-                L.append(f"| {w} | " + " | ".join(_f(round(c[k])) if c.get(k) is not None else "—" for k in keys) + " |")
-            L.append("")
+            _constants_table(L, mw)
 
     L.append("## Not covered by this run\n")
     for item in unmeasured(res):
@@ -284,6 +303,21 @@ def render(res: dict) -> str:
 
 def c_quiet(res: dict) -> float:
     return res["config"].get("quiet", {}).get("max_load1", 5)
+
+
+GAS_KEYS = ("LEANSPHINCS_VERIFICATION_GAS", "RECURSIVE_PROOF_SHARE_GAS", "LEANSTARK_VERIFICATION_GAS",
+            "LEANSTARK_LEAF_PAYMENT_GAS", "LEANSTARK_CLAIM_GAS")
+
+
+def _scaled(c: dict, factor: float) -> dict:
+    return {k: (v * factor if k in GAS_KEYS and v is not None else v) for k, v in c.items()}
+
+
+def _constants_table(L: list[str], rows: dict):
+    L.append("| W | " + " | ".join(f"`{k}`" for k in GAS_KEYS) + " |\n|---|" + "---|" * len(GAS_KEYS))
+    for w, c in rows.items():
+        L.append(f"| {w} | " + " | ".join(_f(round(c[k])) if c.get(k) is not None else "—" for k in GAS_KEYS) + " |")
+    L.append("")
 
 
 def _items(L: list[str], res: dict, section: str):

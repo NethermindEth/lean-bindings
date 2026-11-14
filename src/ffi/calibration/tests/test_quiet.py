@@ -34,6 +34,25 @@ def calibration(results: list[dict]) -> pipeline.Calibration:
     return c
 
 
+class TwoBudgets(unittest.TestCase):
+    def test_rate_comes_from_the_throughput_budget_and_both_bounds_decide(self):
+        c = calibration([])
+        c.cfg.update(throughput_budget_s=12.0, utilisation=0.5, latency_budget_s=2.0, reference_workers=1, margin=1.5,
+                     fanin=4, sigs_per_node=64)
+        self.assertEqual(c.budget(60_000_000).machine_seconds, 6.0)
+        self.assertAlmostEqual(c.budget(60_000_000, single=True).machine_seconds, 4.0 / 1.5)
+        fast = dict(block_result(3.0, True), total_work_s=5.0, workers=1,
+                    node_records=[{"depth": 0, "prove_s": 0.3}, {"depth": 1, "prove_s": 0.8}])
+        slow_root = dict(fast, node_records=[{"depth": 0, "prove_s": 0.3}, {"depth": 1, "prove_s": 2.5}])
+        c.run = FakeRunner([fast, slow_root])
+        c.constants = lambda G, factor=1.0, workers=None, single=False: {"rate_factor": factor}
+        with mock.patch.object(pipeline.gasmath, "blocks", return_value={"native": {"native": 64}, "generic": {"generic": 2}}):
+            rows = c.verify(60_000_000, {}, 0, [])
+        self.assertEqual([r["verdict"]["pass"] for r in rows], [True, False])
+        self.assertFalse(rows[1]["verdict"]["latency_ok"])
+        self.assertTrue(rows[1]["verdict"]["throughput_ok"])
+
+
 class Quiet(unittest.TestCase):
     def test_gate_reports_while_it_waits_and_when_it_gives_up(self):
         logged = []

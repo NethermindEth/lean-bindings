@@ -93,6 +93,22 @@ class GasMath(unittest.TestCase):
         self.assertEqual(b["generic"]["generic"], 0)
         self.assertNotIn("batch_one_claim", b)
 
+    def test_latency_takes_the_slowest_node_of_each_final_level(self):
+        nodes = [{"depth": 0, "prove_s": 0.3}, {"depth": 0, "prove_s": 0.5}, {"depth": 1, "prove_s": 0.7, "fetch_s": 0.1},
+                 {"depth": 1, "prove_s": 0.6}, {"depth": 2, "prove_s": 0.4, "decode_s": 0.05}]
+        lat = g.latency(nodes)
+        self.assertAlmostEqual(lat["post_selection_s"], 0.8 + 0.45)
+        self.assertAlmostEqual(lat["late_arrival_s"], 0.8 + 0.45 + 0.5)
+        self.assertEqual(lat["final_levels"], 2)
+
+    def test_two_budget_verdict_needs_both(self):
+        lat = {"post_selection_s": 1.0, "late_arrival_s": 1.5}
+        ok = g.two_budget_verdict(15.0, 2, 12.0, 2 / 3, lat, 2.0, 1, 2)
+        self.assertTrue(ok["pass"])
+        self.assertFalse(g.two_budget_verdict(17.0, 2, 12.0, 2 / 3, lat, 2.0, 1, 2)["throughput_ok"])
+        late = g.two_budget_verdict(15.0, 2, 12.0, 2 / 3, lat, 1.2, 1, 2)
+        self.assertEqual((late["latency_ok"], late["late_arrival_ok"], late["pass"]), (True, False, False))
+
     def test_scale_and_verdict(self):
         s = g.scale_block({"native": 3000, "generic": 1, "evm_gas": 1e6}, 0.1)
         self.assertEqual((s["native"], s["generic"], s["evm_gas"], s["scale"]), (300, 1, 1e5, 0.1))
