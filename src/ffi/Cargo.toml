@@ -27,6 +27,12 @@ fiat_shamir.workspace = true
 
 [dev-dependencies]
 verifier.workspace = true
+# examples/pq_leaves only: peak RSS and the signature schemes' reference implementations.
+libc = "0.2"
+fips204 = { version = "0.4", default-features = false, features = ["default-rng", "ml-dsa-44"] }
+fips205 = { version = "0.4", default-features = false, features = ["default-rng", "slh_dsa_shake_128s"] }
+tide-fn-dsa = "0.4"
+sha3 = "0.10"
 
 [workspace]
 members = ["crates/*"]
