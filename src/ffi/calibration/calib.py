@@ -7,6 +7,7 @@
   calib.py report --out DIR                   re-render DIR/report.md from DIR/calibration.json
   calib.py worst --config CONFIG --out DIR    worst-case cells for the batch charges (calib/worst.py)
   calib.py pq-leaves --config CONFIG --out DIR  post-quantum signature leaves (calib/pq_leaves.py)
+  calib.py native --config CONFIG --out DIR     native (mempool) verification times (calib/native.py)
 """
 
 import argparse
@@ -17,7 +18,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from calib import build, host, pipeline, pq_leaves, report, worst  # noqa: E402
+from calib import build, host, native, pipeline, pq_leaves, report, worst  # noqa: E402
 
 
 def load(path: str) -> dict:
@@ -43,7 +44,7 @@ def main():
     b.add_argument("--features", help="comma-separated; default: detected from the revision")
     o = sub.add_parser("report")
     o.add_argument("--out", required=True)
-    for name in ("worst", "pq-leaves"):
+    for name in ("worst", "pq-leaves", "native"):
         w = sub.add_parser(name)
         w.add_argument("--config", required=True)
         w.add_argument("--out", required=True)
@@ -59,7 +60,7 @@ def main():
     elif a.cmd == "report":
         res = json.load(open(os.path.join(a.out, "calibration.json")))
         open(os.path.join(a.out, "report.md"), "w").write(report.render(res))
-    elif a.cmd in ("worst", "pq-leaves"):
+    elif a.cmd in ("worst", "pq-leaves", "native"):
         cfg = load(a.config)
         for kv in a.set:
             k, v = kv.split("=", 1)
@@ -74,7 +75,7 @@ def main():
             logf.write(line + "\n")
             logf.flush()
 
-        (worst if a.cmd == "worst" else pq_leaves).run(cfg, a.out, log)
+        {"worst": worst, "pq-leaves": pq_leaves, "native": native}[a.cmd].run(cfg, a.out, log)
     elif a.cmd == "run":
         cfg = load(a.config)
         for kv in a.set:

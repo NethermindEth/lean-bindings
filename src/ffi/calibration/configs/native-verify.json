@@ -1,0 +1,23 @@
+{
+  "label": "native (mempool) verification, lean-bindings#6 @ e87b7b0",
+  "mode": "native",
+  "key": "committed",
+  "lib_ref": "e87b7b01e652859e1fa9288cfeb8f6a1d032d61c",
+  "batch_lib_ref": "",
+  "reps": 5,
+  "bounds": {
+    "code_log": 11,
+    "trace_log": 29.5,
+    "inner_log_inv_rate": 1,
+    "claims": 256,
+    "max_inner_proofs_per_step": 16
+  },
+  "preflight": {
+    "mode": "scale",
+    "usable_fraction": 0.8
+  },
+  "quiet": {
+    "max_load1": 2,
+    "timeout_s": 600
+  }
+}

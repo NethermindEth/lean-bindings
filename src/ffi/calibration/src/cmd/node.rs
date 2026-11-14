@@ -12,6 +12,10 @@
 //! calib-node cell merge SIGFILE C K                    one step merging C children of K signatures each
 //! calib-node cell mergebatch RETAIN LEAF...            one step merging one sponsored-leaf child per leaf
 //! calib-node cell finalize RETAIN LEAF...              one finalizing step over one sponsored-leaf child per leaf
+//! calib-node native REPS SIGFILE NSIGS SMALL MAX BATCH  native (host) verification, as a mempool node runs it: per
+//!                                                      leanSPHINCS signature, a direct leanSTARK leaf (small and
+//!                                                      maximum program), a batch leaf with its claims, and a mode-1
+//!                                                      aggregate of the small leaf and NSIGS signatures
 //! calib-node cell deep MODE RETAIN GROUP LEAF...        a two-level tree: per GROUP leaves, one sponsored-leaf child
 //!                                                      each merged into a group proof (untimed); then one timed merge
 //!                                                      (MODE merge) or finalizing step (MODE finalize) over the groups
@@ -185,6 +189,7 @@ fn main() {
             inputs::write_sigs_file(a(1), &sigs).expect("writes the signatures");
         }
         "cell" => cell(&args[1..]),
+        "native" => native(&args[1..]),
         _ => usage(),
     }
 }
@@ -372,4 +377,76 @@ fn cell(args: &[String]) {
         }
         _ => usage(),
     }
+}
+
+/// Median, minimum and maximum milliseconds of `reps` timed runs of `f` after one untimed warm-up run.
+fn timed(reps: usize, mut f: impl FnMut()) -> (f64, f64, f64) {
+    f();
+    let mut ms: Vec<f64> = (0..reps)
+        .map(|_| {
+            let start = Instant::now();
+            f();
+            start.elapsed().as_secs_f64() * 1e3
+        })
+        .collect();
+    ms.sort_by(f64::total_cmp);
+    (ms[ms.len() / 2], ms[0], ms[ms.len() - 1])
+}
+
+fn native_item(items: &mut Vec<String>, name: &str, per: usize, bytes: usize, t: (f64, f64, f64)) {
+    let mut o = Obj::default();
+    o.str("item", name)
+        .num("per", per)
+        .float("median_ms", t.0 / per as f64)
+        .float("min_ms", t.1 / per as f64)
+        .float("max_ms", t.2 / per as f64)
+        .num("bytes", bytes);
+    items.push(o.finish());
+}
+
+fn native(args: &[String]) {
+    let a = |i: usize| args.get(i).map(String::as_str).unwrap_or_else(|| usage());
+    let reps = num(a(0)).max(3);
+    let nsigs = num(a(2));
+    let sigs = sigs_from(a(1), nsigs);
+    let small = inputs::read_leaf_file(a(3)).expect("the small leaf");
+    let max = inputs::read_leaf_file(a(4)).expect("the maximum leaf");
+    let batch = inputs::read_leaf_file(a(5)).expect("the batch leaf");
+    let mut items = Vec::new();
+
+    let t = timed(reps, || {
+        for (pk, msg, sig) in &sigs {
+            signatures::lean_sphincs::verify(pk, msg, sig).expect("the signature verifies");
+        }
+    });
+    native_item(&mut items, "leansphincs_signature", nsigs, sigs[0].2.to_bytes().len(), t);
+    for (name, leaf) in [("leanstark_small", &small), ("leanstark_max", &max)] {
+        let t = timed(reps, || assert!(rec_aggregation::verify_generic(&leaf.claims[0], &leaf.vk, &leaf.witness)));
+        native_item(&mut items, name, 1, leaf.witness.len(), t);
+    }
+    #[cfg(feature = "batch")]
+    {
+        let t = timed(reps, || {
+            assert!(rec_aggregation::verify_batch_leaf(
+                rec_aggregation::Guest::Batched,
+                &batch.claims,
+                &batch.vk,
+                &batch.witness
+            ))
+        });
+        native_item(&mut items, &format!("batch_leaf_{}_claims", batch.claims.len()), 1, batch.witness.len(), t);
+    }
+    #[cfg(not(feature = "batch"))]
+    let _ = batch;
+
+    warm_up();
+    let (proof, _) = api::prove(GuestKind::Base, &[], vec![small], sigs, None).expect("the aggregate proves");
+    let bytes = api::proof_bytes(&proof);
+    let claims = proof.claims().clone();
+    let t = timed(reps, || api::verify_block(GuestKind::Base, false, &claims, &bytes).expect("the aggregate verifies"));
+    native_item(&mut items, &format!("aggregate_1_leaf_{nsigs}_sigs"), 1, bytes.len(), t);
+
+    let mut o = Obj::default();
+    o.str("status", "ok").num("reps", reps).raw("items", &array(items));
+    println!("RESULT {}", o.finish());
 }
