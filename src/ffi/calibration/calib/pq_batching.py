@@ -30,7 +30,8 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def checkout(ref: str, out: str, log) -> tuple[str, str]:
-    src = os.path.join(out, "pq-src")
+    # Under corpus/, which the CI artifact leaves out, with the build's target directory.
+    src = os.path.join(out, "corpus", "pq-src")
     if not os.path.exists(os.path.join(src, ".git")):
         subprocess.run(["git", "clone", "-q", REPO_URL, src], check=True)
     subprocess.run(["git", "-C", src, "fetch", "-q", "origin", ref], check=False)
