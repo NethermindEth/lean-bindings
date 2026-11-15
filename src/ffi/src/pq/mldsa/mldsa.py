@@ -1,10 +1,12 @@
-# ML-DSA-44 (FIPS 204 pure ML-DSA, empty context) over a 32-byte message M.
+# ML-DSA-44 (FIPS 204 pure ML-DSA, empty context) over a message M of at most MAX_MESSAGE bytes.
 #
-# claim = keccak256(CLAIM_TAG || tr || m), tr = SHAKE256(pk, 64) and m the 48 bytes
-# 0x00 0x00 || M || 0^14: FIPS 204's M' = 0x00 0x00 || M, zero-filled to whole cells. The leaf
-# proves a signature on the bytes it absorbs into mu, tr || m with the SHAKE256 padding XORed
-# in at byte 98, so a claim whose m is in that form attests M; any other m names no message
-# an application would compute and attests nothing it would accept.
+# claim = keccak256(CLAIM_TAG || tr || keccak256(M')), tr = SHAKE256(pk, 64) and
+# M' = 0x00 0x00 || M, FIPS 204's message for pure ML-DSA with an empty context: 112 bytes,
+# which an account holding tr recomputes from M. The leaf hashes the same cells of M' into
+# mu = SHAKE256(tr || M', 64) and into keccak256(M'), so a claim attests the signed M': one
+# whose M' does not start 0x00 0x00 (a context, or pre-hashing) names no message an account
+# that prefixes M with 0x00 0x00 would compute. The cell M' ends in is hinted alone, its
+# bytes past M' checked zero, and each hash's padding added to it.
 #
 # The signature is a witness and only its acceptance is proven: c~ is recomputed from mu and
 # w1 and compared; z and the hint vector h are taken as coefficients, with
@@ -26,6 +28,7 @@ CLAIM_TAG = CLAIM_TAG_PLACEHOLDER
 TABLE_D0 = TABLE_D0_PLACEHOLDER
 TABLE_D1 = TABLE_D1_PLACEHOLDER
 TABLE_PAIRS = TABLE_PAIRS_PLACEHOLDER
+MAX_MESSAGE = MAX_MESSAGE_PLACEHOLDER
 SHAKE_PAD = 31
 ML_TAU = 39
 GAMMA2 = 95232
@@ -380,15 +383,39 @@ def verify_claim(ct):
     t1 = tr[GEN]
     t2 = tr[GEN ** 2]
     t3 = tr[GEN ** 3]
-    m = StackBuf(3)
-    hint_witness(m, "ml_msg")
-    claim = StackBuf(2)
-    keccak([CLAIM_TAG, t0], [t1, t2], claim, tail=[t3, m[0], m[1], m[2]])
 
-    # mu = SHAKE256(tr || M', 64) and SHAKE256(c~): one block each; lane 16 (cell 8) closes it.
+    # |M'| = 16 q + r, at most MAX_MESSAGE + 2; the hashes bound q, so 16 q + r does not wrap.
+    ml = StackBuf(2)
+    hint_witness(ml, "ml_len")
+    q = ml[0]
+    r = ml[1]
+    assert log(r) < 16
+    assert log(q ** 16 * r) < MAX_MESSAGE + 3
+
+    # tr || M': M''s whole cells hinted after tr, its last partial cell apart, with zeros past M'.
+    s1 = HeapBuf(LEAF_CHUNK * 5)
+    for c in unroll(0, 4):
+        s1[GEN ** c] = tr[GEN ** c]
+    hint_witness(s1[4:68], "ml_msg")
+    part = hint_witness("ml_part")
+    pb = HeapBuf(16)
+    cell_bytes(part, pb, pb * GEN ** 8, ct)
+    for k in mul_range(1, GEN ** 16 / r):
+        assert pb[r * k] == 1
+
+    # mu = SHAKE256(tr || M', 64), the first four cells of c~''s stream, and keccak256(M').
+    fb = HeapBuf(LEAF_CHUNK * 4)
+    padded_hash(s1, GEN ** 4 * q, r, part + SHAKE_PAD * ct[GEN ** CT_BB * r], fb)
+    s2 = HeapBuf(LEAF_CHUNK * 4)
+    for c in mul_range(1, q):
+        s2[c] = s1[GEN ** 4 * c]
+    h = HeapBuf(4)
+    padded_hash(s2, q, r, part + ct[GEN ** CT_BB * r], h)
+    claim = StackBuf(2)
+    keccak([CLAIM_TAG, t0], [t1, t2], claim, tail=[t3, h[1], h[GEN], 0], len=112)
+
+    # SHAKE256(c~): one block; lane 16 (cell 8) closes it.
     top = [LANE_LO_TOP, 0, 0, 0, 0]
-    mu = StackBuf(13)
-    keccak([t0, t1], [t2, t3], mu, tail=[m[0], m[1], m[2] + const(SHAKE_PAD * 65536), 0], cap=top)
     ctl = StackBuf(2)
     hint_witness(ctl, "ml_ctilde")
     ss = HeapBuf(13)
@@ -451,23 +478,10 @@ def verify_claim(ct):
         bb = wbits * k ** 6
         hint_decompose_bits_exponent(bb, v, 6)
         assert bits_val(bb, GEN ** 6, ct) == v
-    fb = HeapBuf(52)
-    for c in unroll(0, 4):
-        fb[GEN ** c] = mu[c]
     for c in mul_range(1, GEN ** 48):
         fb[GEN ** 4 * c] = pack_cell(wbits * c ** 128, ct)
-    fc = HeapBuf(13 * 4)
-    fs = absorb_pairs(fc, fb, GEN ** 3)
-    a = StackBuf(13)
-    a[0] = fs[1] + fb[GEN ** 51]
-    a[1] = fs[GEN] + SHAKE_PAD
-    for c in unroll(2, 8):
-        a[c] = fs[GEN ** c]
-    a[8] = fs[GEN ** 8] + LANE_LO_TOP
-    for c in unroll(9, 13):
-        a[c] = fs[GEN ** c]
-    fo = StackBuf(2)
-    keccak(a[0:2], a[2:4], fo, tail=a[4:8], cap=a)
-    assert fo[0] == ctl[0]
-    assert fo[1] == ctl[1]
+    fo = HeapBuf(4)
+    padded_hash(fb, GEN ** 52, 1, SHAKE_PAD, fo)
+    assert fo[1] == ctl[0]
+    assert fo[GEN] == ctl[1]
     return claim[0], claim[1]

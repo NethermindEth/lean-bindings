@@ -83,7 +83,7 @@ pub(super) fn sign_message(key: usize, msg: [u8; 32]) -> (Vec<u8>, Vec<u8>) {
 /// Equivalence vectors: honest signatures and the encodings and substitutions the native check must reject.
 pub(super) fn vector_inputs() -> Vec<super::RawCase> {
     let (a, b) = (signed(0, message(0)), signed(1, message(1)));
-    let case = |label, pk: &[u8], msg, sig: &[u8], valid| (label, pk.to_vec(), msg, sig.to_vec(), valid);
+    let case = |label, pk: &[u8], msg: [u8; 32], sig: &[u8], valid| (label, pk.to_vec(), msg.to_vec(), sig.to_vec(), valid);
     let mut cases = vec![
         case("honest", &a.pk, a.msg, &a.sig, true),
         case("honest, second key", &b.pk, b.msg, &b.sig, true),

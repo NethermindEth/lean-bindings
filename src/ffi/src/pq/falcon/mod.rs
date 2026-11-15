@@ -126,7 +126,7 @@ pub(super) fn vector_inputs() -> Vec<super::RawCase> {
     let mut honest = (0..).map(Falcon512::item).filter(|i| padded(&i.sig).is_some() && padded(&i.other).is_some());
     let (a, b) = (honest.next().unwrap(), honest.next().unwrap());
     let (sig, other) = (padded(&a.sig).unwrap(), padded(&a.other).unwrap());
-    let case = |label, pk: &[u8], msg, sig: &[u8], valid| (label, pk.to_vec(), msg, sig.to_vec(), valid);
+    let case = |label, pk: &[u8], msg: [u8; 32], sig: &[u8], valid| (label, pk.to_vec(), msg.to_vec(), sig.to_vec(), valid);
     let mut cases = vec![
         case("honest", &a.pk, a.msg, &sig, true),
         case("honest, second key", &b.pk, b.msg, &padded(&b.sig).unwrap(), true),

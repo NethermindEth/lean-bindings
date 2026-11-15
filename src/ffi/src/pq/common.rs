@@ -179,6 +179,13 @@ pub fn size(program: &Program) -> Size {
     }
 }
 
+/// The block split `padded_hash` (`leaf.py`) takes for a message whose padding starts at byte `r` of its cell `q`: the whole
+/// chunks (block pairs), the cell in the last, and whether that chunk's first block is the message's last.
+pub fn hash_split(q: usize, r: usize) -> Vec<F128> {
+    let t = q % 17;
+    vec![count(q / 17), count(t), F128::new(u64::from(16 * t + r < 136), 0)]
+}
+
 /// The items of a leaf, sorted by claim, with their claims and hint streams.
 pub fn witness<S: Scheme>(mut items: Vec<S::Item>) -> (Vec<Claim>, Hints) {
     assert!((1..=MAX_CLAIMS_PER_BATCH_LEAF).contains(&items.len()));
@@ -188,11 +195,6 @@ pub fn witness<S: Scheme>(mut items: Vec<S::Item>) -> (Vec<Claim>, Hints) {
     let mut hints = Hints::default();
     let n = items.len();
     hints.push("n_claims", vec![count(n)]);
-    let cells = 1 + 2 * n;
-    hints.push(
-        "leaf_digest_split",
-        vec![count(cells / 17), count(cells % 17), F128::new(u64::from(cells % 17 <= 8), 0)],
-    );
     S::setup_hints(&mut hints);
     for one in parallel(items.len(), |i| {
         let mut h = Hints::default();
@@ -203,6 +205,7 @@ pub fn witness<S: Scheme>(mut items: Vec<S::Item>) -> (Vec<Claim>, Hints) {
             hints.0.entry(name).or_default().extend(entries);
         }
     }
+    hints.push("hash_split", hash_split(1 + 2 * n, 0));
     (claims, hints)
 }
 
@@ -218,6 +221,18 @@ pub struct Leaf {
 pub fn prove_items<S: Scheme>(program: &Program, items: Vec<S::Item>, statement: Option<Claim>) -> Result<Leaf, String> {
     let (claims, hints) = witness::<S>(items);
     prove_witness(program, claims, &hints, statement)
+}
+
+/// Whether `program` executes on the leaf of `items`: a witness it cannot execute is one it cannot prove.
+#[cfg(test)]
+pub fn executes<S: Scheme>(program: &Program, items: Vec<S::Item>) -> bool {
+    let (claims, hints) = witness::<S>(items);
+    let mut program = program.clone();
+    for (name, entries) in &hints.0 {
+        program.set_witness(name, entries.clone());
+    }
+    let statement = hash_to_scalars(&batch_hash(&claims));
+    matches!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| program.execute(statement))), Ok(Ok(_)))
 }
 
 pub fn prove_witness(program: &Program, claims: Vec<Claim>, hints: &Hints, statement: Option<Claim>) -> Result<Leaf, String> {
