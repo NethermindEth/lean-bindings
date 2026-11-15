@@ -1,14 +1,12 @@
 //! Hint streams and the raw signatures' witnesses.
 
-use super::cells::{count, pack_16_bytes};
 use super::error::AggregationError;
+use lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
 use leanvm_core::cpu::Program;
-use primitives::field::F192;
-use signatures::lean_sphincs;
-use signatures::lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
+use primitives::field::F128;
 
 /// Named hint entries for a single sub-proof, ordered within each stream.
-pub(super) type SubHints = Vec<(&'static str, Vec<F192>)>;
+pub(super) type SubHints = Vec<(&'static str, Vec<F128>)>;
 
 /// An edit to a node's hints: how a test hands the guest a witness the honest host
 /// would not.
@@ -36,10 +34,10 @@ thread_local! {
 /// One `hint_witness` stream: a name and its entries, in the order the guest
 /// pops them.
 #[derive(Default)]
-pub(super) struct Hints(Vec<(String, Vec<Vec<F192>>)>);
+pub(super) struct Hints(Vec<(String, Vec<Vec<F128>>)>);
 
 impl Hints {
-    pub(super) fn push(&mut self, name: &str, entry: Vec<F192>) {
+    pub(super) fn push(&mut self, name: &str, entry: Vec<F128>) {
         match self.0.iter_mut().find(|(n, _)| n == name) {
             Some((_, entries)) => entries.push(entry),
             None => self.0.push((name.to_string(), vec![entry])),
@@ -48,7 +46,7 @@ impl Hints {
 
     /// Entry `i` of stream `name`, for a test to forge.
     #[cfg(test)]
-    pub(super) fn entry_mut(&mut self, name: &str, i: usize) -> &mut Vec<F192> {
+    pub(super) fn entry_mut(&mut self, name: &str, i: usize) -> &mut Vec<F128> {
         let (_, entries) = self.0.iter_mut().find(|(n, _)| n == name).expect("a hinted stream");
         &mut entries[i]
     }
@@ -69,35 +67,14 @@ impl Hints {
     }
 }
 
-/// One NiceTry SPHINCS- v2 signature's witness (prototype): the randomizer, each FORS
-/// tree's secret and path, then per layer the WOTS digits (in the exponent), the chain
-/// values they start from, and the key's path.
+/// One leanSPHINCS signature's witness: the hook the guest's `verify_sig_lean_sphincs` reads its streams through.
+///
+/// A stub until the guest verifies the NiceTry v2 scheme over the 128-bit field again: the guest refuses every raw
+/// leanSPHINCS signature, so this builds no witness and refuses it first.
 pub(super) fn lean_sphincs_hints(
-    pk: &LeanSphincsPublicKey,
-    sig: &LeanSphincsSignature,
-    message: &lean_sphincs::Message,
+    _pk: &LeanSphincsPublicKey,
+    _sig: &LeanSphincsSignature,
+    _message: &lean_sphincs::Message,
 ) -> Result<SubHints, AggregationError> {
-    let trace = lean_sphincs::verify_trace(pk, message, sig);
-    // Test builds only: the switch hands the guest an invalid signature, to see it fault there.
-    let unchecked = cfg!(feature = "forge") && std::env::var_os("EIP8288_NO_HOST_SIGCHECK").is_some();
-    if trace.signed[lean_sphincs::D] != pk.root && !unchecked {
-        return Err(AggregationError::MalformedRawSignature);
-    }
-    let mut hints: SubHints = vec![("sp_rand", vec![pack_16_bytes(&sig.randomizer)])];
-    for (secret, path) in sig.fors_secrets.iter().zip(&sig.fors_paths) {
-        hints.push(("sp_fors_secrets", vec![pack_16_bytes(secret)]));
-        for sibling in path {
-            hints.push(("sp_fors_paths", vec![pack_16_bytes(sibling)]));
-        }
-    }
-    for (layer, digits) in sig.layers.iter().zip(&trace.digits) {
-        for (start, &digit) in layer.chains.iter().zip(digits) {
-            hints.push(("sp_digits", vec![count(digit as usize)]));
-            hints.push(("sp_chain_starts", vec![pack_16_bytes(start)]));
-        }
-        for sibling in &layer.path {
-            hints.push(("sp_siblings", vec![pack_16_bytes(sibling)]));
-        }
-    }
-    Ok(hints)
+    Err(AggregationError::MalformedRawSignature)
 }
