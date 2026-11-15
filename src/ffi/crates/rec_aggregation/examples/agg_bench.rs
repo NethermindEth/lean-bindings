@@ -10,7 +10,7 @@ use rec_aggregation::{
     BATCH_DOMAIN, BatchLeaf, EthereumClaims, EthereumProof, MAX_CLAIMS_PER_BATCH_LEAF,
     aggregate_with_stats, batch_hash, generic_verification_key, generic_witness,
 };
-use signatures::lean_sphincs;
+
 use std::time::Instant;
 
 const RATE: usize = 1;
@@ -58,12 +58,12 @@ fn wide_source_of(steps: usize) -> String {
     src + "    p = 1\n    p[1] = h[0]\n    p[GEN] = h[1]\n    return\n"
 }
 
-fn cells(digest: &[u8; 32]) -> [primitives::field::F192; 2] {
+fn cells(digest: &[u8; 32]) -> [primitives::field::F128; 2] {
     fiat_shamir::merkle::hash_to_scalars(digest)
 }
 
 /// A batch leaf of `claims`: the program proves `batch_hash(claims)` with its witness stream.
-fn dependency(program: &Program, witness: (&str, Vec<primitives::field::F192>), claims: Vec<[u8; 32]>) -> BatchLeaf {
+fn dependency(program: &Program, witness: (&str, Vec<primitives::field::F128>), claims: Vec<[u8; 32]>) -> BatchLeaf {
     let table: Vec<u64> = bytecode_table(program.prog()).iter().map(|w| w.0).collect();
     let mut program = program.clone().committed();
     program.set_witness(witness.0, vec![witness.1]);
@@ -79,10 +79,9 @@ fn preimage_deps(n: usize) -> Vec<BatchLeaf> {
             let claim = [i as u8 + 1; 32];
             let pre = [&BATCH_DOMAIN[..], &claim].concat();
             let pre_cells = pre.chunks(16).map(|c| {
-                primitives::field::F192::new(
+                primitives::field::F128::new(
                     u64::from_le_bytes(c[..8].try_into().unwrap()),
                     u64::from_le_bytes(c[8..].try_into().unwrap()),
-                    0,
                 )
             });
             dependency(&program, ("pre", pre_cells.collect()), vec![claim])
@@ -111,7 +110,6 @@ fn report(name: &str, run: impl FnOnce() -> (EthereumProof, leanvm_core::cpu::St
 const GUEST: rec_aggregation::Guest = rec_aggregation::Guest::Batched;
 
 fn main() {
-    leanvm_core::init_prover();
     let mode = std::env::args().nth(1).unwrap_or_else(|| "sigs".into());
     rec_aggregation::warm_up(GUEST);
     let guest = unified_guest(GUEST);
