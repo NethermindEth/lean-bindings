@@ -10,7 +10,7 @@ use rec_aggregation::{
     BatchLeaf, EthereumClaims, EthereumProof, Guest, MAX_CLAIMS_PER_BATCH_LEAF,
     MAX_GENERIC_BYTECODE_LOG, MAX_INNER_PROOFS_PER_STEP, valid_batch_claims, verify_batch_leaf,
 };
-use signatures::lean_sphincs::{self, LeanSphincsPublicKey, LeanSphincsSignature};
+use lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};

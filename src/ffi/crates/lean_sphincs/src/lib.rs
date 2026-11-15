@@ -28,7 +28,7 @@ mod scheme;
 pub use scheme::*;
 
 /// `n`: hash value and Merkle node length, in bytes.
-pub const N: usize = crate::N;
+pub const N: usize = 16;
 pub type Digest = [u8; N];
 
 /// `pkSeed`, the public parameter every hash is keyed by.
