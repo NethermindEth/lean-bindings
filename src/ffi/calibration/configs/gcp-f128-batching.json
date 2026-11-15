@@ -1,0 +1,25 @@
+{
+  "label": "GCE, signatures per leaf against proving cost on leanVM F128 (lean-bindings #18 @ 6fd1904)",
+  "mode": "pq-batching",
+  "pq_ref": "6fd1904e7189bd8c66c62bd5970474effd6b8859",
+  "threads": 22,
+  "reps": 3,
+  "verify_inner": 9,
+  "quiet": {
+    "max_load1": 4,
+    "timeout_s": 600
+  },
+  "max_guess": {
+    "mldsa44": 7,
+    "falcon512": 30,
+    "slhdsa128s": 256
+  },
+  "leaf_cells": [
+    {"scheme": "mldsa44", "msg": 32, "n": [1, 2, 4, "max"], "verify": true},
+    {"scheme": "mldsa44", "msg": 69, "n": [1, 2, 4, "max"]},
+    {"scheme": "falcon512", "msg": 32, "n": [1, "max"], "verify": true},
+    {"scheme": "slhdsa128s", "msg": 32, "n": [1, "max"], "verify": true},
+    {"scheme": "mldsa44", "msg": 32, "key": "flat", "n": [1, "max"], "verify": true}
+  ],
+  "tree": {"scheme": "mldsa44", "msg": 32, "groups": 16, "per_leaf": 7, "reps": 3}
+}

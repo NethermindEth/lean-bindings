@@ -125,6 +125,12 @@ and repeat-then-exclude rules (`calib.py worst|pq-leaves --config C --out DIR`, 
   `examples/pq_leaves` at `pq_ref`. Per scheme: program size, the leaf's reference and negative tests, an N ladder for
   per-signature cycles, time and memory, the largest N within the committed-witness bound and 256 claims (probed), and
   the leaf at that N with the aggregation step that verifies it.
+- `pq-batching` (`configs/gcp-f128-batching.json`, `calib/pq_batching.py`): whether batching signatures into one leaf
+  lowers proving cost per signature. `pq_batching/pq_sweep.rs` is copied into `src/ffi/examples` of `pq_ref` and built
+  there. It measures leaves of 1..max N (the largest N found by probing) under the committed or flat key, the step
+  verifying each, native verification of leaves and one-leaf aggregates, steps of 16 single- and max-N leaves, and
+  whole trees of the same signatures as single-signature leaves and as max-N leaves on one worker (`tree`, and an
+  optional `block`).
 
 ## Configuration
 
