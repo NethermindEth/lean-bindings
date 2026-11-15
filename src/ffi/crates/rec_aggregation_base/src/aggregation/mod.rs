@@ -60,9 +60,10 @@ pub use generic::{
 };
 pub use guest::{unified_guest, warm_up};
 pub use node::{aggregate, aggregate_with_stats};
-pub use proof::{EthereumClaims, EthereumProof, aggregated_vk, deps_hash, deps_public_input_bytes, verify_deps_hash};
-use signatures::lean_sphincs;
-use signatures::lean_sphincs::LeanSphincsPublicKey;
+pub use proof::{
+    EthereumClaims, EthereumProof, aggregated_vk, deps_hash, deps_public_input_bytes, verify_deps_hash,
+};
+use lean_sphincs::LeanSphincsPublicKey;
 
 /// One leanSTARK (`0x11`) claim, an EIP-8288 dependency without its scheme word: `data_hash`,
 /// then the program's verification key ([`generic_verification_key`]), in the EIP's bytewise order.

@@ -20,7 +20,7 @@ Changes against upstream, all EIP-8288 specific:
   [`rec_aggregation/EIP8288-PROFILE.md`](rec_aggregation/EIP8288-PROFILE.md) specifies that key, the witness and the
   proof encoding as the proof-system profile the EIPs pin, and
   [`rec_aggregation/guests/BATCHING.md`](rec_aggregation/guests/BATCHING.md) describes what the guest decides
-  that the EIPs leave to the proof system. `rec_aggregation_base` is the ABI 12 package's EIP-8288 guest, unchanged.
+  that the EIPs leave to the proof system. `rec_aggregation_base` is the ABI 12 package's EIP-8288 guest (flat key, singleton leaves), ported to F128 with its semantics unchanged.
 
 `crates/upstream.sh diff` prints every change against upstream at the pinned revision; `crates/upstream.sh update <rev>`
 moves the crates and the pin to a newer upstream revision by three-way merge and lists what needs review. After an

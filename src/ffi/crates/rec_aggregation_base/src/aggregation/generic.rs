@@ -18,12 +18,11 @@
 //! [`leanvm_core::cpu::Proof::to_bytes`]'s encoding, of an execution of the table on the public input
 //! `data_hash` (two 16-byte halves).
 
-use super::cells::count;
-use super::cells::pack_16_bytes;
+use super::cells::{count, exponent_bytes, pack_16_bytes};
 use super::error::AggregationError;
 use super::hints::SubHints;
 use leanvm_core::cpu::{Proof, from_scalar, scalar_proof};
-use primitives::field::F192;
+use primitives::field::F128;
 
 /// The most instructions, as a log, of a leanSTARK dependency's program.
 pub const MAX_GENERIC_BYTECODE_LOG: usize = 11;
@@ -100,7 +99,7 @@ pub(super) fn parse_witness(witness: &[u8]) -> Option<GenericWitness> {
 }
 
 /// A digest as the two canonical cells the VM takes it in.
-pub(super) fn digest_cells(digest: &[u8; 32]) -> [F192; 2] {
+pub(super) fn digest_cells(digest: &[u8; 32]) -> [F128; 2] {
     [pack_16_bytes(&digest[..16]), pack_16_bytes(&digest[16..])]
 }
 
@@ -125,7 +124,7 @@ pub(super) fn check(
 /// (`gen_verify`'s fit check) cannot take is rejected here rather than when the block is proved.
 pub fn verify_generic(data_hash: &[u8; 32], vk: &[u8; 32], witness: &[u8]) -> bool {
     parse_witness(witness).is_some_and(|w| {
-        check(data_hash, vk, &w).is_some_and(|(bytecode, summary)| sub_hints(&w, &w, data_hash, &bytecode, &summary).is_ok())
+        check(data_hash, vk, &w).is_some_and(|(_, summary)| sub_hints(&w, &w, data_hash, &summary).is_ok())
     })
 }
 
@@ -137,22 +136,21 @@ pub(super) fn generic_hints(data_hash: &[u8; 32], vk: &[u8; 32], witness: &[u8])
     #[cfg(test)]
     if let Some((honest_hash, honest)) = super::hints::HONEST_GENERIC.with(|h| h.borrow().clone()) {
         let h = parse_witness(&honest).ok_or(AggregationError::InvalidGenericWitness)?;
-        let (bytecode, summary) =
+        let (_, summary) =
             check(&honest_hash, &program_digest(&h.table), &h).ok_or(AggregationError::InvalidGenericWitness)?;
-        return sub_hints(&w, &h, &honest_hash, &bytecode, &summary);
+        return sub_hints(&w, &h, &honest_hash, &summary);
     }
     let unchecked = cfg!(feature = "forge") && std::env::var_os("EIP8288_NO_HOST_SIGCHECK").is_some();
-    let (bytecode, summary) = match check(data_hash, vk, &w) {
-        Some(checked) => checked,
+    let summary = match check(data_hash, vk, &w) {
+        Some((_, summary)) => summary,
         None if unchecked => {
             let bytecode = verifier::Bytecode::new(&w.table);
-            let summary = verifier::replay_unchecked(&bytecode, data_hash, &scalar_proof(&w.proof))
-                .map_err(|_| AggregationError::InvalidGenericWitness)?;
-            (bytecode, summary)
+            verifier::replay_unchecked(&bytecode, data_hash, &scalar_proof(&w.proof))
+                .map_err(|_| AggregationError::InvalidGenericWitness)?
         }
         None => return Err(AggregationError::InvalidGenericWitness),
     };
-    sub_hints(&w, &w, data_hash, &bytecode, &summary)
+    sub_hints(&w, &w, data_hash, &summary)
 }
 
 /// The hints of `shown`'s size and table around the sub-proof hints of `proved`'s proof.
@@ -160,14 +158,9 @@ fn sub_hints(
     shown: &GenericWitness,
     proved: &GenericWitness,
     data_hash: &[u8; 32],
-    bytecode: &verifier::Bytecode,
     summary: &verifier::Summary,
 ) -> Result<SubHints, AggregationError> {
-    let value = from_scalar(
-        bytecode
-            .evaluate(&summary.bytecode_point)
-            .map_err(|_| AggregationError::InvalidGenericWitness)?,
-    );
+    let value = from_scalar(summary.bytecode_value);
     // The witness depends on the program's sizes only, so any program of its length stands in.
     let stand_in = leanvm_core::cpu::Program::assemble(
         vec![leanvm_core::cpu::Op::Xor { a: 0, b: 0, c: 0 }; 1 << proved.kgen],
@@ -178,10 +171,7 @@ fn sub_hints(
     let mut hints: SubHints = vec![("gen_kbc", vec![count(shown.kgen)])];
     hints.extend(sub);
     for row in shown.table.chunks(ROW_WORDS) {
-        hints.push((
-            "gen_bytes",
-            table_bytes(row).into_iter().map(|b| count(b.into())).collect(),
-        ));
+        hints.push(("gen_bytes", exponent_bytes(&table_bytes(row))));
     }
     Ok(hints)
 }
