@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use fiat_shamir::merkle::hash_to_scalars;
 use leanvm_core::cpu::{Program, bytecode_table, prove};
-use primitives::field::{F192, g_pow};
+use primitives::field::{F128, g_pow};
 use rec_aggregation::{BATCH_DOMAIN, MAX_CLAIMS_PER_BATCH_LEAF, batch_hash, generic_verification_key, generic_witness};
 
 const LEAF: &str = include_str!("leaf.py");
@@ -21,10 +21,10 @@ pub type Claim = [u8; 32];
 
 /// Named hint streams, each a sequence of entries in the order the program pops them.
 #[derive(Default, Clone)]
-pub struct Hints(pub BTreeMap<String, Vec<Vec<F192>>>);
+pub struct Hints(pub BTreeMap<String, Vec<Vec<F128>>>);
 
 impl Hints {
-    pub fn push(&mut self, name: &str, entry: Vec<F192>) {
+    pub fn push(&mut self, name: &str, entry: Vec<F128>) {
         self.0.entry(name.to_string()).or_default().push(entry);
     }
 }
@@ -95,23 +95,23 @@ pub fn items<S: Scheme>(n: usize) -> Vec<S::Item> {
 }
 
 /// `g^n`, a count as the program takes it.
-pub fn count(n: usize) -> F192 {
+pub fn count(n: usize) -> F128 {
     g_pow(n).into()
 }
 
 /// A field literal for a placeholder.
-pub fn f192_literal(f: F192) -> String {
-    format!("f192({}, {}, {})", f.c0, f.c1, f.c2)
+pub fn f128_literal(f: F128) -> String {
+    u128::from(f).to_string()
 }
 
 /// 16 bytes as one canonical cell: two little-endian 64-bit lanes.
-pub fn cell(bytes: &[u8]) -> F192 {
+pub fn cell(bytes: &[u8]) -> F128 {
     let lane = |o: usize| u64::from_le_bytes(bytes[o..o + 8].try_into().unwrap());
-    F192::new(lane(0), lane(8), 0)
+    F128::new(lane(0), lane(8))
 }
 
 /// Bytes, zero-padded to whole cells.
-pub fn cells(bytes: &[u8]) -> Vec<F192> {
+pub fn cells(bytes: &[u8]) -> Vec<F128> {
     bytes
         .chunks(16)
         .map(|c| {
@@ -191,7 +191,7 @@ pub fn witness<S: Scheme>(mut items: Vec<S::Item>) -> (Vec<Claim>, Hints) {
     let cells = 1 + 2 * n;
     hints.push(
         "leaf_digest_split",
-        vec![count(cells / 17), count(cells % 17), F192::new(u64::from(cells % 17 <= 8), 0, 0)],
+        vec![count(cells / 17), count(cells % 17), F128::new(u64::from(cells % 17 <= 8), 0)],
     );
     S::setup_hints(&mut hints);
     for one in parallel(items.len(), |i| {

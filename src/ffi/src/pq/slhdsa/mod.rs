@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use fips205::slh_dsa_shake_128s;
 use fips205::traits::{KeyGen, SerDes, Signer, Verifier};
-use primitives::field::F192;
+use primitives::field::F128;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 
 use super::common::{Claim, Hints, Scheme, cell, cells, count};
@@ -149,10 +149,10 @@ fn th(seed: &[u8], ad: &[u8; 32], msg: &[&[u8]]) -> [u8; N] {
 }
 
 /// The bits of `bytes`, most significant first in each byte, as the program's `sl_bits` entries take them.
-fn stream_bits(bytes: &[u8]) -> Vec<F192> {
+fn stream_bits(bytes: &[u8]) -> Vec<F128> {
     bytes
         .iter()
-        .flat_map(|&b| (0..8).rev().map(move |k| F192::new(u64::from((b >> k) & 1), 0, 0)))
+        .flat_map(|&b| (0..8).rev().map(move |k| F128::new(u64::from((b >> k) & 1), 0)))
         .collect()
 }
 
@@ -186,7 +186,7 @@ fn recompute(item: &Item, hints: &mut Hints) -> [u8; N] {
         let idx = (0..A).fold(0u32, |acc, b| acc << 1 | md_bit(A * i + b) as u32);
         let t = &fors[i * (A + 1) * N..(i + 1) * (A + 1) * N];
         hints.push("sl_fors", cells(t));
-        hints.push("sl_ibits", (0..4).map(|b| F192::new(((i >> b) & 1) as u64, 0, 0)).collect());
+        hints.push("sl_ibits", (0..4).map(|b| F128::new(((i >> b) & 1) as u64, 0)).collect());
         let base = (i as u32) << A;
         let mut node = th(seed, &adrs(0, idx_tree, 3, idx_leaf, 0, base + idx), &[&t[..N]]);
         for z in 1..=A {
@@ -210,7 +210,7 @@ fn recompute(item: &Item, hints: &mut Hints) -> [u8; N] {
         let mut tips = Vec::new();
         for (c, &d) in digits.iter().enumerate() {
             let steps = 15 - d as usize;
-            hints.push("sl_chain_split", vec![count(steps / 2), F192::new((steps % 2) as u64, 0, 0)]);
+            hints.push("sl_chain_split", vec![count(steps / 2), F128::new((steps % 2) as u64, 0)]);
             let mut v: [u8; N] = layer[c * N..(c + 1) * N].try_into().unwrap();
             for s in d..15 {
                 v = th(seed, &adrs(j as u32, tree, 0, leaf, c as u32, s), &[&v]);

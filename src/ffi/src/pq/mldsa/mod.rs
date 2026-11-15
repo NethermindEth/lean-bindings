@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 
 use fips204::ml_dsa_44;
 use fips204::traits::{KeyGen, SerDes, Signer, Verifier};
-use primitives::field::F192;
+use primitives::field::F128;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 
-use super::common::{Claim, Hints, Scheme, cells, count, f192_literal};
+use super::common::{Claim, Hints, Scheme, cells, count, f128_literal};
 
 const GUEST: &str = include_str!("mldsa.py");
 /// The claim's domain: one cell.
@@ -142,8 +142,8 @@ fn shake256(data: &[&[u8]], out: &mut [u8]) {
     h.finalize_xof().read(out);
 }
 
-fn bit(b: bool) -> F192 {
-    if b { F192::ONE } else { F192::ZERO }
+fn bit(b: bool) -> F128 {
+    if b { F128::ONE } else { F128::ZERO }
 }
 
 /// FIPS 204 `zetas[m] = 1753^brv8(m) mod q`.
@@ -163,7 +163,7 @@ fn pow(base: u32, mut e: u64) -> u32 {
     acc as u32
 }
 
-fn record(r: u32) -> [F192; 3] {
+fn record(r: u32) -> [F128; 3] {
     [
         count((r % LIMB) as usize),
         count((r / LIMB) as usize),
@@ -235,10 +235,10 @@ fn use_hint_table() -> Vec<u32> {
 }
 
 /// The hinted constant table and the offsets of its parts, in the order `mldsa.py` names them.
-fn constants() -> (Vec<F192>, Vec<(&'static str, usize)>) {
+fn constants() -> (Vec<F128>, Vec<(&'static str, usize)>) {
     let mut cells = Vec::new();
     let mut offsets = Vec::new();
-    let mut part = |name: &'static str, values: Vec<F192>, zero_at: usize| {
+    let mut part = |name: &'static str, values: Vec<F128>, zero_at: usize| {
         offsets.push((name, cells.len() + zero_at));
         cells.extend(values);
     };
@@ -257,12 +257,12 @@ fn constants() -> (Vec<F192>, Vec<(&'static str, usize)>) {
             .collect(),
         0,
     );
-    part("BT", (0..256u64).map(|v| F192::new(v, 0, 0)).collect(), 0);
+    part("BT", (0..256u64).map(|v| F128::new(v, 0)).collect(), 0);
     let basis = |i: usize| {
         if i < 64 {
-            F192::new(1 << i, 0, 0)
+            F128::new(1 << i, 0)
         } else {
-            F192::new(0, 1 << (i - 64), 0)
+            F128::new(0, 1 << (i - 64))
         }
     };
     part("BB", (0..16).map(|k| basis(8 * k)).collect(), 0);
@@ -299,14 +299,13 @@ fn constants() -> (Vec<F192>, Vec<(&'static str, usize)>) {
         0,
     );
     if cells.len() % 2 == 1 {
-        cells.push(F192::ZERO);
+        cells.push(F128::ZERO);
     }
     offsets.push(("SIZE", cells.len()));
     (cells, offsets)
 }
 
-fn cell_bytes(c: F192) -> [u8; 16] {
-    assert_eq!(c.c2, 0);
+fn cell_bytes(c: F128) -> [u8; 16] {
     let mut b = [0u8; 16];
     b[..8].copy_from_slice(&c.c0.to_le_bytes());
     b[8..].copy_from_slice(&c.c1.to_le_bytes());
@@ -314,7 +313,7 @@ fn cell_bytes(c: F192) -> [u8; 16] {
 }
 
 /// The Keccak chain `load_checked` recomputes over the table's pairs.
-fn table_digest(table: &[F192]) -> [F192; 2] {
+fn table_digest(table: &[F128]) -> [F128; 2] {
     let mut h = [0u8; 32];
     for pair in table.chunks(2) {
         let mut pre = h.to_vec();
@@ -330,7 +329,7 @@ fn table_digest(table: &[F192]) -> [F192; 2] {
 struct Mq<'a>(&'a mut Hints);
 
 impl Mq<'_> {
-    fn limbs(r: u64) -> Vec<F192> {
+    fn limbs(r: u64) -> Vec<F128> {
         vec![
             count((r % LIMB as u64) as usize),
             count((r / LIMB as u64) as usize),
@@ -417,8 +416,8 @@ impl Scheme for MlDsa44 {
         let (t, offsets) = constants();
         let d = table_digest(&t);
         ps.insert("TABLE_PAIRS".into(), (t.len() / 2).to_string());
-        ps.insert("TABLE_D0".into(), f192_literal(d[0]));
-        ps.insert("TABLE_D1".into(), f192_literal(d[1]));
+        ps.insert("TABLE_D0".into(), f128_literal(d[0]));
+        ps.insert("TABLE_D1".into(), f128_literal(d[1]));
         for (name, at) in offsets {
             ps.insert(format!("CT_{name}"), at.to_string());
         }
@@ -589,7 +588,7 @@ fn recompute_ctilde(item: &Item, hints: &mut Hints) -> [u8; 32] {
                 if v < Q {
                     let r1 = (v >> 12) as usize;
                     let wy = if r1 == 2046 {
-                        F192::ZERO
+                        F128::ZERO
                     } else {
                         (count(r1) + count(2046)).inv()
                     };
@@ -660,12 +659,12 @@ fn recompute_ctilde(item: &Item, hints: &mut Hints) -> [u8; 32] {
         let r = w[k];
         let (t, s) = (r / GAMMA2, r % GAMMA2);
         let wz = if s == 0 {
-            F192::ZERO
+            F128::ZERO
         } else {
-            (count(s as usize) + F192::ONE).inv()
+            (count(s as usize) + F128::ONE).inv()
         };
         let wy = if t == 88 {
-            F192::ZERO
+            F128::ZERO
         } else {
             (count(t as usize) + count(88)).inv()
         };
