@@ -80,7 +80,7 @@ Not yet:
 #12664 makes the leanSTARK verification key name a `program_commitment` that binds at most one complete program and
 layout even when chosen adversarially, supports sound openings of the program-table evaluations verification needs,
 and authenticates them inside recursion at cost sublinear in the padded program size. Guest 1 commits to a program by
-the committed bytecode key of `../EIP8288-PROFILE.md`: a WHIR commitment to the stacked table and an out-of-domain value
-drawn from it, opened by each proof at the bus's point and the out-of-domain point, at a cost independent of the
-program's size. The core changes it needs are patched in from Marchhill/leanVM `feature/eip8288-bytecode-commitment`
-until they are upstream. Guest 0 keeps the flat digest `keccak256("leanvm-v1" ‖ table)` unchanged.
+the committed bytecode key of `../EIP8288-PROFILE.md`: a WHIR commitment to the stacked table and its values at two
+out-of-domain points drawn from it, opened by each proof at the bus's point and the out-of-domain points, at a cost
+independent of the program's size. The core changes it needs are patched in from Marchhill/leanVM
+`feature/eip8288-bytecode-commitment-f128` until they are upstream. Guest 0 keeps the flat digest `keccak256("leanvm-v1" ‖ table)` unchanged.

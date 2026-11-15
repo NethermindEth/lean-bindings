@@ -15,14 +15,14 @@ All of these are fixed. No key overrides any of them.
 | parameter | value |
 |---|---|
 | base field `K` | `GF(2)[x]/(x^64 + x^4 + x^3 + x + 1)` |
-| extension `E` | `K[y]/(y^3 + y + 1)`; an element is `c0 + c1·y + c2·y²`, limbs `c0, c1, c2` |
+| extension `E` | `K[Y]/(Y^2 + x·Y + 1)`; an element is `c0 + c1·Y`, limbs `c0, c1` |
 | hash | Keccak-256, for keys, Merkle trees and the duplex sponge (Keccak-f[1600], rate lanes 0..16) |
 | program size | `2^kgen` instructions, `kgen ≤ 11` (`MAX_GENERIC_BYTECODE_LOG`); table `16·2^kgen` words |
 | bytecode commitment | the table zero-padded to a stack of `2^16` words (`MIN_STACKED_LOG`), one size for every `kgen` |
 | commitment rate | `1/16` (`COMMITTED_BYTECODE_LOG_INV_RATE = 4`) |
 | opening | WHIR, folds 6, 4, 4; queries 56, 32, 22; 17 grinding bits before each level's queries |
 | soundness target | 128-bit round-by-round, Johnson list decoding with η chosen per level (level 0: η ≈ 0.0032) |
-| out-of-domain samples on the commitment | 1 (§5) |
+| out-of-domain samples on the commitment | 2 (§5) |
 
 The execution proof itself uses upstream leanVM's parameters at the PCS rate it announces. The guest admits rates
 `2^-1 .. 2^-4`.
@@ -38,20 +38,18 @@ verification_key_hash = get_vk_hash(program_commitment)                         
 hinted and range-checked, three bytes on behind the 13-byte tag, so a wrong tag, a commitment of another width or the
 bare commitment as the key is rejected.
 
-- `COMMITTED_TAG = "leanvm-commit-1"` (15 bytes). With `kgen`, it fills one 16-byte cell. Its first bytes differ from
+- `COMMITTED_TAG = "leanvm-commit-2"` (15 bytes). With `kgen`, it fills one 16-byte cell. Its first bytes differ from
   upstream's table-digest tag `"leanvm-v1"`, so the two kinds of key never share a transcript.
 - `root` (32 bytes) is the Merkle root of the WHIR commitment to the stack: upstream `bytecode_table` words as `K`
   elements, zero past the table, encoded at rate 1/16. KeyGen is deterministic, so a table has exactly one honest
   `root`.
-- `ood_point ∈ E^16` comes from the root alone. A duplex sponge is seeded with IV `root` and public input
-  `OOD_TAG || u8 kgen || 0^16`, where `OOD_TAG = "leanvm-ood-pt-1"` (15 bytes). The sponge then draws 16 challenges,
-  each permuting with an empty rate and reading lanes 0..2 as `c0, c1, c2`. The value is not involved, so the point
-  is fixed before it.
-- `ood_value = T̃(ood_point)`, where `T̃` is the stack's multilinear extension in LSB-first variable order (stack
+- `ood_point_0, ood_point_1 ∈ E^16` come from the root alone. A duplex sponge is seeded with IV `root` and public
+  input `OOD_TAG || u8 kgen || 0^16`, where `OOD_TAG = "leanvm-ood-pt-2"` (15 bytes). The sponge then draws 32
+  challenges, the first 16 `ood_point_0` and the rest `ood_point_1`. The values are not involved, so the points are
+  fixed before them.
+- `ood_value_i = T̃(ood_point_i)`, where `T̃` is the stack's multilinear extension in LSB-first variable order (stack
   index bit `j` is coordinate `j`).
-- `ood` is two 16-byte cells `a ‖ b` with `ood_value = a + y²·b`, where a cell's bytes are two little-endian `u64`
-  limbs `c0, c1`. KeyGen writes `c0 ‖ c1 ‖ c2 ‖ 0^8`. Verifiers decode any pair as `a + y²·b`, so the native verifier
-  and the guest accept the same keys.
+- `ood` is two 16-byte cells, `ood_value_0` then `ood_value_1`, each the little-endian `u64` limbs `c0 ‖ c1`.
 - `program_commitment` is also the proof's Fiat-Shamir IV.
 
 ## 3. Witness and proof encoding
@@ -81,11 +79,12 @@ bare commitment as the key is rejected.
 3. After the execution's own opening, the proof opens `root` in one WHIR run over two claims, batched with powers of
    one challenge `λ`:
    - `eq((ζ[..kgen+4], α, 0, …, 0), ·) ↦ v`, the bus point with its high stack coordinates zero;
-   - `eq(ood_point, ·) ↦ ood_value`.
+   - `eq(ood_point_0, ·) ↦ ood_value_0` and `eq(ood_point_1, ·) ↦ ood_value_1`.
 
-   The target is `v + λ·ood_value`, and the terminal weight is the same combination of the two `eq` weights.
+   The target is `v + λ·ood_value_0 + λ²·ood_value_1`, and the terminal weight is the same combination of the three
+   `eq` weights.
 4. The guest mirrors this. It rehashes the hinted `kgen`, `root` and `ood` into the claim's key and verifies the
-   sub-proof in committed mode. It then derives `ood_point` with the same sponge and checks the opening with the same
+   sub-proof in committed mode. It then derives `ood_point_0` and `ood_point_1` with the same sponge and checks the opening with the same
    `open_stacked` arm as the execution opening, at the fixed 2^16 stack and rate 1/16. Its cost does not depend on
    `kgen`. KECCAK rejects a cell with a nonzero top limb, so `root` and `ood` cells are canonical.
 
@@ -96,11 +95,12 @@ EIP-8288 requires a key to bind at most one complete program and layout even whe
 - Level 0 of the opening is in the Johnson list-decoding regime. A `root` that no honest KeyGen produced can be
   within the decoding radius of a list of up to `L = 1/(2η√ρ)` codewords. Here `log₂ L ≈ 9.29` at rate 1/16, 2^16
   words, η ≈ 0.0032. Without more binding, such a root could open as either of two tables.
-- The key fixes `ood_value` at a point drawn from `root` after it is fixed. Two distinct 16-variate multilinears agree
-  at a uniformly random point of `E^16` with probability at most `μ/|E| = 16/2^192`. Over all pairs in the list, the
-  key leaves more than one candidate with probability at most `L²·μ/(2|E|)`.
-- For `s` samples this is the PCS's own `paper_ood_bits` bound, `s·(192 − log₂ μ) − (2·log₂ L − 1)`. One sample
-  gives `188 − 17.6 ≈ 170` bits, above the 128-bit target with margin for grinding roots.
+- The key fixes the table's values at two points drawn from `root` after it is fixed. Two distinct 16-variate
+  multilinears agree at a uniformly random point of `E^16` with probability at most `μ/|E| = 16/2^128`. Over all
+  pairs in the list, the key leaves more than one candidate with probability at most `L²·(μ/|E|)²/2`.
+- For `s` samples this is the PCS's own `paper_ood_bits` bound, `s·(128 − log₂ μ) − (2·log₂ L − 1)`. One sample
+  would give `124 − 17.6 ≈ 106` bits, short of the 128-bit target once roots are ground offline; two give about
+  `230` bits.
 - Given one candidate, WHIR's 128-bit RBR soundness makes `v` the evaluation of that table at a point drawn after the
   key. The bus argument then binds the execution to that table.
 - A different table gives a different codeword, so a different `root` (Merkle collision resistance) and a different
@@ -131,7 +131,7 @@ commitment.
 `examples/fixtures.rs` emits these into the fixture directory (packaged as `lean-vectors/`) for the accept-all
 program `ANY_INPUT_PROGRAM` with the claim `data_hash = 0x09…09`, proved on `get_claim_hash(data_hash)`:
 
-- `stark-key-hash-vectors.txt`: the table, `kgen`, `root`, every `ood_point` coordinate, `ood`, `program_commitment`
+- `stark-key-hash-vectors.txt`: the table, `kgen`, `root`, every `ood_point_i` coordinate, `ood`, `program_commitment`
   and `vk_hash`. An implementation checks that it derives each value from the one before.
 - `stark-batched-key.bin`, `stark-message.bin`, `stark-claim-proof.bin`: the honest key (`vk_hash`), claim and
   witness. These must verify. (`stark-key.bin` and `stark-proof.bin` are guest 0's flat-keyed pair.)

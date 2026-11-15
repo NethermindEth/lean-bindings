@@ -1,6 +1,6 @@
 //! Errors of aggregation and verification.
 
-use lean_da::{DA_LOG_K, DA_MAX_ROWS};
+use lean_da::{BLOB_SYMBOLS, DA_MAX_ROWS};
 use leanvm_core::cpu::ProveError;
 use pcs::whir::{MAX_LOG_INV_RATE, MIN_LOG_INV_RATE};
 
@@ -88,9 +88,11 @@ impl std::fmt::Display for AggregateVerifyError {
 
 impl std::error::Error for AggregateVerifyError {}
 
-impl From<lean_da::BlobSizeError> for AggregationError {
-    fn from(error: lean_da::BlobSizeError) -> Self {
-        Self::InvalidBlobSize { symbols: error.symbols }
+impl From<lean_da::BlobCountError> for AggregationError {
+    fn from(error: lean_da::BlobCountError) -> Self {
+        Self::InvalidBlobSize {
+            symbols: error.blobs * BLOB_SYMBOLS,
+        }
     }
 }
 
@@ -109,8 +111,7 @@ impl std::fmt::Display for AggregationError {
             Self::InvalidBlobSize { symbols } => {
                 write!(
                     f,
-                    "{symbols} blob symbols do not form 1..={DA_MAX_ROWS} rows of {} symbols",
-                    1 << DA_LOG_K
+                    "{symbols} blob symbols do not form 1..={DA_MAX_ROWS} rows of {BLOB_SYMBOLS} symbols"
                 )
             }
             Self::BlobNotCovered => write!(f, "the requested blob commitment is not carried by any child"),
