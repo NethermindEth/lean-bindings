@@ -4,6 +4,7 @@
 //! Pinned LeanVM verification and recursive aggregation of complete dependency sets.
 
 mod base;
+pub mod pq;
 
 use rec_aggregation::{
     BatchLeaf, EthereumClaims, EthereumProof, Guest, MAX_CLAIMS_PER_BATCH_LEAF,
@@ -520,7 +521,7 @@ fn checked(f: impl FnOnce() -> Result<bool, ()>) -> i32 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn nlean_abi_version() -> u32 {
-    17
+    18
 }
 /// Copies up to `len` bytes of the calling thread's last contained panic message into `out` and returns its full
 /// length; empty unless that thread's latest `checked` call returned -1.
@@ -685,8 +686,122 @@ pub unsafe extern "C" fn nlean_prove_recursive(
         Ok(true)
     })
 }
+/// A raw signature's input bound: ML-DSA-44's and Falcon-512's keys and signatures, and SLH-DSA-SHAKE-128s's 7,856-byte
+/// signature, fit with room to spare, under EIP-8437's 16 KiB raw-entry limit.
+const MAX_RAW_PART_BYTES: usize = 16 * 1024;
+/// Writes the EIP-8288 verification key hash of recognized program `profile` ([`pq::Profile`]: 1 ML-DSA-44, 2 Falcon-512,
+/// 3 SLH-DSA-SHAKE-128s).
+///
 /// # Safety
-/// The pointer and length must be the exact allocation returned by nlean_prove_recursive, freed once.
+/// `out` must reference 32 writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nlean_recognized_key(profile: u32, out: *mut u8) -> i32 {
+    if out.is_null() {
+        return 0;
+    }
+    checked(|| {
+        let key = pq::Profile::from_id(profile).ok_or(())?.key();
+        unsafe {
+            std::ptr::copy_nonoverlapping(key.as_ptr(), out, 32);
+        }
+        Ok(true)
+    })
+}
+/// Checks a raw signature over the 32-byte `msg` as recognized program `profile` would, natively, and writes its claim:
+/// 1 when both the scheme's reference verification and the leaf's host computation accept, 0 otherwise.
+///
+/// # Safety
+/// Input pointers must reference their declared lengths, `msg` 32 bytes; `claim` must reference 32 writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nlean_verify_raw(
+    profile: u32,
+    pk: *const u8,
+    pk_len: usize,
+    msg: *const u8,
+    sig: *const u8,
+    sig_len: usize,
+    claim: *mut u8,
+) -> i32 {
+    if claim.is_null() {
+        return 0;
+    }
+    checked(|| {
+        let profile = pq::Profile::from_id(profile).ok_or(())?;
+        let msg: [u8; 32] = unsafe { bytes(msg, 32)? }.try_into().map_err(|_| ())?;
+        let pk = unsafe { bytes_with_limit(pk, pk_len, MAX_RAW_PART_BYTES)? };
+        let sig = unsafe { bytes_with_limit(sig, sig_len, MAX_RAW_PART_BYTES)? };
+        let Some(found) = profile.verify(pk, &msg, sig) else {
+            return Ok(false);
+        };
+        unsafe {
+            std::ptr::copy_nonoverlapping(found.as_ptr(), claim, 32);
+        }
+        Ok(true)
+    })
+}
+/// Proves one leaf of recognized program `profile` over raw signatures and returns its witness, which the batched guest
+/// verifies under [`nlean_recognized_key`] against `get_batch_hash` of the signatures' sorted claims. The input is a u32
+/// count, then per signature a u32-length public key, the 32-byte message and a u32-length signature, little-endian.
+/// Every signature must pass [`nlean_verify_raw`]'s check and have a distinct claim.
+///
+/// # Safety
+/// Input pointers must reference their declared lengths; output pointers must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nlean_prove_raw_leaf(
+    profile: u32,
+    input: *const u8,
+    input_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    if out.is_null() || out_len.is_null() {
+        return 0;
+    }
+    checked(|| {
+        let profile = pq::Profile::from_id(profile).ok_or(())?;
+        let signatures = raw_signatures(unsafe { bytes_with_limit(input, input_len, MAX_INPUT_BYTES)? })?;
+        let _guard = begin_proof();
+        let leaf = profile.prove(&signatures)?;
+        let boxed = leaf.witness.into_boxed_slice();
+        let len = boxed.len();
+        let ptr = Box::into_raw(boxed) as *mut u8;
+        unsafe {
+            *out = ptr;
+            *out_len = len;
+        }
+        Ok(true)
+    })
+}
+fn raw_signatures(mut bytes: &[u8]) -> Result<Vec<pq::RawSignature<'_>>, ()> {
+    fn take<'a>(bytes: &mut &'a [u8], n: usize) -> Result<&'a [u8], ()> {
+        if n > bytes.len() {
+            return Err(());
+        }
+        let (head, tail) = bytes.split_at(n);
+        *bytes = tail;
+        Ok(head)
+    }
+    fn length(bytes: &mut &[u8]) -> Result<usize, ()> {
+        let n = u32::from_le_bytes(take(bytes, 4)?.try_into().map_err(|_| ())?) as usize;
+        if n > MAX_RAW_PART_BYTES { Err(()) } else { Ok(n) }
+    }
+    let count = u32::from_le_bytes(take(&mut bytes, 4)?.try_into().map_err(|_| ())?) as usize;
+    if count == 0 || count > MAX_CLAIMS_PER_BATCH_LEAF {
+        return Err(());
+    }
+    let mut signatures = Vec::with_capacity(count);
+    for _ in 0..count {
+        let n = length(&mut bytes)?;
+        let pk = take(&mut bytes, n)?;
+        let msg: [u8; 32] = take(&mut bytes, 32)?.try_into().map_err(|_| ())?;
+        let n = length(&mut bytes)?;
+        signatures.push((pk, msg, take(&mut bytes, n)?));
+    }
+    if bytes.is_empty() { Ok(signatures) } else { Err(()) }
+}
+/// # Safety
+/// The pointer and length must be the exact allocation returned by nlean_prove_recursive or nlean_prove_raw_leaf, freed
+/// once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn nlean_free(ptr: *mut u8, len: usize) {
     if !ptr.is_null() {
@@ -699,6 +814,66 @@ pub unsafe extern "C" fn nlean_free(ptr: *mut u8, len: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn raw_input(signatures: &[pq::RawSignature]) -> Vec<u8> {
+        let mut input = (signatures.len() as u32).to_le_bytes().to_vec();
+        for (pk, msg, sig) in signatures {
+            input.extend((pk.len() as u32).to_le_bytes());
+            input.extend(*pk);
+            input.extend(msg);
+            input.extend((sig.len() as u32).to_le_bytes());
+            input.extend(*sig);
+        }
+        input
+    }
+
+    #[test]
+    fn raw_signature_input_parses_exactly() {
+        let signature: pq::RawSignature = (&[1, 2, 3], [7; 32], &[4, 5]);
+        let input = raw_input(&[signature, signature]);
+        assert_eq!(raw_signatures(&input).unwrap(), vec![signature, signature]);
+        assert!(raw_signatures(&[&input[..], &[0]].concat()).is_err());
+        assert!(raw_signatures(&input[..input.len() - 1]).is_err());
+        assert!(raw_signatures(&raw_input(&[])).is_err());
+        let oversized = vec![0; MAX_RAW_PART_BYTES + 1];
+        assert!(raw_signatures(&raw_input(&[(&oversized, [0; 32], &[])])).is_err());
+    }
+
+    #[test]
+    fn recognized_program_abi_reaches_every_vector_verdict() {
+        for v in pq::vectors() {
+            let mut claim = [0; 32];
+            let verdict = unsafe {
+                nlean_verify_raw(v.profile as u32, v.pk.as_ptr(), v.pk.len(), v.msg.as_ptr(), v.sig.as_ptr(), v.sig.len(), claim.as_mut_ptr())
+            };
+            assert_eq!(verdict, i32::from(v.claim.is_some()), "{}: {}", v.profile.name(), v.label);
+            if let Some(expected) = v.claim {
+                assert_eq!(claim, expected);
+            }
+        }
+        let mut key = [0; 32];
+        for profile in pq::Profile::ALL {
+            assert_eq!(unsafe { nlean_recognized_key(profile as u32, key.as_mut_ptr()) }, 1);
+            assert_eq!(key, profile.key());
+        }
+        assert_eq!(unsafe { nlean_recognized_key(0, key.as_mut_ptr()) }, 0);
+        assert_eq!(unsafe { nlean_recognized_key(4, key.as_mut_ptr()) }, 0);
+    }
+
+    #[test]
+    fn a_one_signature_raw_leaf_is_a_direct_witness_of_its_dependency() {
+        let honest = pq::vectors().into_iter().find(|v| v.profile == pq::Profile::SlhDsa128s && v.claim.is_some()).unwrap();
+        let input = raw_input(&[(&honest.pk, honest.msg, &honest.sig)]);
+        let (mut out, mut len) = (std::ptr::null_mut(), 0);
+        assert_eq!(unsafe { nlean_prove_raw_leaf(3, input.as_ptr(), input.len(), &mut out, &mut len) }, 1);
+        let witness = unsafe { std::slice::from_raw_parts(out, len) }.to_vec();
+        unsafe { nlean_free(out, len) };
+        let dep = leanstark_dependency(&honest.claim.unwrap(), &pq::Profile::SlhDsa128s.key());
+        assert!(verify_witness(&dep, &witness));
+        let mut other = honest.claim.unwrap();
+        other[0] ^= 1;
+        assert!(!verify_witness(&leanstark_dependency(&other, &pq::Profile::SlhDsa128s.key()), &witness));
+    }
 
     const BASE: Guest = Guest::Base;
     const BATCHED: Guest = Guest::Batched;
@@ -814,7 +989,7 @@ mod tests {
 
     #[test]
     fn exported_abi_and_limits() {
-        assert_eq!(nlean_abi_version(), 17);
+        assert_eq!(nlean_abi_version(), 18);
         let mut limits = [0u32; 7];
         assert_eq!(unsafe { nlean_limits(1, limits.as_mut_ptr(), 7) }, 1);
         assert_eq!(limits[2], 16, "MAX_INNER_PROOFS_PER_STEP");

@@ -36,6 +36,8 @@ fn main() {
     let (sk, pk) = key_gen_from_seed([42; 32]);
     let message = [7; 32];
     let sig = sign(&sk, &message).unwrap();
+    // EIP-8437 mode 2: the recognized programs' keys and native/leaf equivalence vectors.
+    save("raw-vectors.json", nethermind_lean::pq::vectors_json().as_bytes());
     save("sphincs-key.bin", &verification_key(&pk));
     save("sphincs-message.bin", &message);
     save(

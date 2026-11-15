@@ -5,13 +5,13 @@ Generic leanVM programs that verify N signatures and publish ethereum/EIPs#12664
 the committed bytecode key and aggregates through guest 1 like any other batch leaf. The claim count is a hint, so one
 program, and so one key, serves every N from 1 to 256.
 
-These are application verifiers for measuring capacity and cost. They are examples: they are not consensus code and not
-part of the published package.
+The programs and their hosts live in `src/pq`, which the published package uses for EIP-8437 mode 2's native checks and
+leaf proving; they are not consensus code. This example measures their capacity and cost and runs the negative tests.
 
 | scheme | claim | program |
 | --- | --- | --- |
 | ML-DSA-44 (FIPS 204, pure, empty context) | `keccak256("EIP8288:mldsa44:" ‖ tr ‖ 0x0000 ‖ M ‖ 0^14)`, `tr = SHAKE256(pk, 64)` | 1,889 instructions |
-| Falcon-512 (round 3) | `keccak256("EIP8288:fn512:v1" ‖ M ‖ pk)` | 1,966 instructions |
+| Falcon-512 (round 3, PADDED 666-byte signatures natively) | `keccak256("EIP8288:fn512:v1" ‖ M ‖ pk)` | 1,966 instructions |
 | SLH-DSA-SHAKE-128s (FIPS 205, pure, empty context) | `keccak256("EIP8288:slh128s1" ‖ PK.seed ‖ PK.root ‖ M)` | 1,638 instructions |
 
 `M` is a 32-byte message. Every program pads to 2^11, the bound `MAX_GENERIC_BYTECODE_LOG` sets; the shared skeleton
@@ -32,6 +32,7 @@ cargo run --release --example pq_leaves -- size  mldsa44        # instructions a
 cargo run --release --example pq_leaves -- test  mldsa44        # reference vectors, then the negative tests
 cargo run --release --example pq_leaves -- prove mldsa44 2 3    # a 2-signature leaf, one warm-up and 3 timed runs
 cargo run --release --example pq_leaves -- prove mldsa44 2 3 --agg   # and the aggregation step verifying it
+cargo run --release --example pq_leaves -- vectors              # native/leaf equivalence vectors, as JSON
 ```
 
 Schemes are `mldsa44`, `falcon512`, `slhdsa128s`, and `null` (hinted claims, the skeleton alone).
@@ -46,6 +47,9 @@ recomputes. It then proves a 2-signature leaf and checks that:
 
 `prove` prints one JSON line per timed run with cycles, the committed witness, peak RSS and, with `--agg`, the cycles of
 the aggregation step.
+
+One-signature leaves on a 12-core Apple M-series laptop: ML-DSA-44 4.0 s and 9.5 GB peak RSS, Falcon-512 0.6 s and
+2.5 GB, SLH-DSA-SHAKE-128s 0.1 s and 0.27 GB.
 
 GCP measurements (per-signature slopes, the largest N within the 2^29.5 trace bound, the aggregation step) are run by
 the calibration suite (`calib.py pq-leaves`, lean-bindings#13). Its results are recorded in that PR.

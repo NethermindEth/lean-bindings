@@ -13,7 +13,7 @@ namespace Nethermind.Crypto.Lean.Tests;
 public partial class NativeLibraryTests
 {
     private const string Library = "nethermind_lean";
-    private const uint ExpectedAbi = 17;
+    private const uint ExpectedAbi = 18;
     // EIP-8288's guest (0), the ABI 12 package's unchanged, and the one with ethereum/EIPs#12664 batched generic proof dependencies (1).
     private const string ExpectedAggregatedVk = "f6f37690cf7241c9ea24392f349867acc1c8e06034e8ce149e2f11a25eec56f9";
     private const string ExpectedBatchedAggregatedVk = "3f87249262b6fc9c5776514d9d2ba8bca372ad169b22b39d426d416446fd5a5e";

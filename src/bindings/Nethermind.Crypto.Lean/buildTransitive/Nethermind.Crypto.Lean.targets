@@ -11,7 +11,7 @@
       <_LeanTestAssets>$(MSBuildThisFileDirectory)../testing</_LeanTestAssets>
     </PropertyGroup>
     <ItemGroup>
-      <_LeanTestAsset Include="$(_LeanTestAssets)/lean-vectors/*.bin" />
+      <_LeanTestAsset Include="$(_LeanTestAssets)/lean-vectors/*.bin;$(_LeanTestAssets)/lean-vectors/*.json" />
       <_LeanTestAsset Include="$(_LeanTestAssets)/runtimes/$(_LeanTestAssetsRid)/native/*" />
     </ItemGroup>
     <Error Condition="!Exists('$(_LeanTestAssets)/runtimes/$(_LeanTestAssetsRid)/native/fixtures')"
