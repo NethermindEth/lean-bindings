@@ -131,7 +131,7 @@ and repeat-then-exclude rules (`calib.py worst|pq-leaves --config C --out DIR`, 
   verifying each, native verification of leaves and one-leaf aggregates, steps of 16 single- and max-N leaves, and
   whole trees of the same signatures as single-signature leaves and as max-N leaves on one worker (`tree`, and an
   optional `block`). A tree or block takes a `key` (default `committed`) and an `arity`, the most inputs per step
-  (default 16; `max` probes the most a step proves, per input kind); a tree's `routes` can drop one of the two.
+  (default 16; `max` probes the most a step proves, per input kind); a tree's `routes` can drop one of the two. `sig_cells` time one step verifying n leanSPHINCS signatures directly.
 
 ## Configuration
 

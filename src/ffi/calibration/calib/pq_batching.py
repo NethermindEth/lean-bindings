@@ -345,6 +345,14 @@ def run(cfg: dict, out: str, log) -> dict:
                         res["verify"].append(v)
                         save()
 
+    for spec in cfg.get("sig_cells", []):
+        key = spec.get("key", "committed")
+        for n in spec["n"]:
+            c = sw.cell(["sigs", key, str(n)], f"sigs-{key}-{n}", reps)
+            c.update({"key": key, "n": n})
+            res.setdefault("sigs", []).append(c)
+            save()
+
     t = cfg.get("tree")
     if t:
         scheme, msg, key = t["scheme"], t.get("msg", 32), t.get("key", "committed")
@@ -411,6 +419,11 @@ def report(res: dict) -> str:
                              f"{m['median']:.1f} s ({m['min']:.1f}–{m['max']:.1f}), leaves {t['leaf_s']['median']:.1f} s, steps "
                              f"{t['step_s']['median']:.1f} s, peak {t['peak_rss_max'] / g:.1f} GB, reps {t['reps']}, "
                              f"key {t.get('key', 'committed')}, most inputs per step by level {t.get('arity')}")
+    for c in res.get("sigs", []):
+        if c.get("status") == "ok":
+            a = c["agg_s"]
+            lines.append(f"\nsigs-{c['n']} {c['key']}: {a['median']:.3f} s ({a['min']:.3f}–{a['max']:.3f}), "
+                         f"{c['cycles']['median']:,.0f} cycles, {c['peak_rss']['max'] / g:.1f} GB")
     for route, c in res.get("step16", {}).items():
         if c.get("status") == "ok":
             lines.append(f"\nstep16 {route}: {c['agg_s']['median']:.3f} s, {c['cycles']['median']:,.0f} cycles, "

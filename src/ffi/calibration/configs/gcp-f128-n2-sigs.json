@@ -1,0 +1,15 @@
+{
+  "label": "GCE n2-standard-8, one aggregation step verifying 64 and 256 leanSPHINCS signatures directly on leanVM F128 (lean-bindings #18 @ 6fd1904)",
+  "mode": "pq-batching",
+  "pq_ref": "6fd1904e7189bd8c66c62bd5970474effd6b8859",
+  "threads": 8,
+  "reps": 3,
+  "quiet": {
+    "max_load1": 2,
+    "timeout_s": 600
+  },
+  "sig_cells": [
+    {"key": "committed", "n": [64, 256]},
+    {"key": "flat", "n": [64, 256]}
+  ]
+}

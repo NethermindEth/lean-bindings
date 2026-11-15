@@ -10,6 +10,7 @@
 //! pq_sweep leaf   <scheme> <n> <msg_len> <offset> <committed|flat> [--save FILE] [--probe] [--cold]
 //! pq_sweep step   <committed|flat> <OUT|-> INPUT... [--cold]  one aggregation step over leaf and aggregate files
 //! pq_sweep verify FILE <reps>                                native verification of a leaf or an aggregate
+//! pq_sweep sigs   <committed|flat> <n> [--cold]             one step verifying n leanSPHINCS (0x10) signatures
 //! ```
 //!
 //! `leaf` signs `n` distinct messages under keys `offset..offset + n` and proves the leaf once untimed, then once
@@ -76,6 +77,7 @@ fn main() {
             step(Key::parse(&args[1]), &args[2], &inputs, cold)
         }
         Some("verify") => verify(&args[1], args[2].parse().expect("repetitions")),
+        Some("sigs") => sigs(Key::parse(&args[1]), args[2].parse().expect("n"), cold),
         _ => {
             eprintln!("usage: pq_sweep leaf|step|verify ...");
             std::process::exit(2);
@@ -387,6 +389,53 @@ fn step(key: Key, out: &str, inputs: &[String], cold: bool) {
         claims.len(),
         stats_json(&st),
         proof.len(),
+        peak_rss(),
+        std::env::var("LEANVM_NUM_THREADS").unwrap_or_else(|_| "all".into()),
+    );
+}
+
+/// One aggregation step verifying `n` leanSPHINCS signatures (`0x10`, direct witnesses, no leaves or children) under
+/// the base guest: `Guest::Base` for the committed key, `rec_aggregation_base` (guest 0) for the flat one.
+fn sigs(key: Key, n: usize, cold: bool) {
+    let raw = parallel(n, |i| {
+        let master = keccak(&[b"pq_sweep sk".as_slice(), &(i as u64).to_le_bytes()].concat());
+        let message = keccak(&[b"pq_sweep msg".as_slice(), &(i as u64).to_le_bytes()].concat());
+        let (sk, pk) = lean_sphincs::key_gen_from_seed(master);
+        (pk, message, lean_sphincs::sign(&sk, &message).expect("signs"))
+    });
+    let (s, st, bytes) = match key {
+        Key::Committed => {
+            rec_aggregation::warm_up(Guest::Base);
+            let run = || {
+                let t = Instant::now();
+                let (p, st) = rec_aggregation::aggregate_with_stats(Guest::Base, &[], vec![], raw.clone(), &[], None, LOG_INV_RATE)
+                    .expect("the step proves");
+                (t.elapsed().as_secs_f64(), st, p.proof_bytes().len())
+            };
+            if !cold {
+                run();
+            }
+            run()
+        }
+        Key::Flat => {
+            rec_aggregation_base::warm_up();
+            let run = || {
+                let t = Instant::now();
+                let (p, st) = rec_aggregation_base::aggregate_with_stats(&[], vec![], raw.clone(), &[], None, LOG_INV_RATE)
+                    .expect("the step proves");
+                (t.elapsed().as_secs_f64(), st, p.proof_bytes().len())
+            };
+            if !cold {
+                run();
+            }
+            run()
+        }
+    };
+    println!(
+        "{{\"sigs\":{n},\"warm\":{},\"key\":\"{}\",\"agg_s\":{s:.4},{},\"proof_bytes\":{bytes},\"peak_rss\":{},\"threads\":\"{}\"}}",
+        !cold,
+        if key == Key::Committed { "committed" } else { "flat" },
+        stats_json(&st),
         peak_rss(),
         std::env::var("LEANVM_NUM_THREADS").unwrap_or_else(|_| "all".into()),
     );
