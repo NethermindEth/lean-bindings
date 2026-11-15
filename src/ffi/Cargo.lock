@@ -432,7 +432,6 @@ dependencies = [
  "lean_compiler",
  "lean_da",
  "lean_sphincs",
- "lean_xmss",
  "leanvm_core",
  "parallel",
  "pcs",

@@ -433,6 +433,36 @@ CLAIM_BIG = CLAIM_GROUP * BIG_GROUPS
 # A child list's walk record: a coverage slot, then a table entry.
 WALK_REC = 2
 
+# -------------------------------------------------- leanSPHINCS (host-supplied)
+# NiceTry SPHINCS- v2 (prototype): standard FORS under a d-layer WOTS+ hypertree,
+# every hash keccak over 32-byte words (pp|0, the 32-byte ADRS, value|0).
+SP_K = SP_K_PLACEHOLDER               # FORS trees
+SP_A = SP_A_PLACEHOLDER               # FORS tree height
+SP_D = SP_D_PLACEHOLDER               # hypertree layers, layer 0 at the bottom
+SP_HP = SP_HP_PLACEHOLDER             # a layer's tree height, h'
+SP_H = SP_H_PLACEHOLDER               # total height, d h'
+SP_W = SP_W_PLACEHOLDER               # Winternitz parameter, 16
+SP_LEN1 = SP_LEN1_PLACEHOLDER         # message digits
+SP_LEN2 = SP_LEN2_PLACEHOLDER         # checksum digits
+SP_L = SP_LEN1 + SP_LEN2              # chains
+SP_MAX_CSUM = SP_MAX_CSUM_PLACEHOLDER  # len1 (w - 1): digit sum plus checksum
+SP_CHAIN_STEPS = SP_W - 1
+SP_HT_OFF = SP_K * SP_A
+SP_BIT_LANES = 3
+SP_BIT_CELLS = SP_BIT_LANES * BASE_FIELD_BITS
+# Digest bit b (the digest a big-endian 256-bit integer) as an index into the bit
+# run of its last three lanes.
+SP_BIT_INDEX = SP_BIT_INDEX_PLACEHOLDER
+SP_ONES = 340282366920938463463374607431768211455  # 2^128 - 1
+# ADRS cell bytes: a cell's byte b holds its bits 8b..8b+7.
+SP_BYTE3 = 2 ** 24
+SP_BYTE11 = 2 ** 88
+SP_BYTE15 = 2 ** 120
+SP_WOTS_PK = 1
+SP_TREE = 2
+SP_FORS_TREE = 3
+SP_FORS_ROOTS = 4
+
 # --------------------------------------------------------------- node capacities
 # The coverage table's slots, both schemes' declared claims and their duplicates, are
 # bounded by the memory itself: each count is a g-power address (`assert_gpow`), so its
@@ -3832,18 +3862,174 @@ def leaf_digest_last(state, blk, k: Const):
     return digest[0], digest[1]
 
 
-# ========================= leanSPHINCS signature verification =========================
-# A stub: the NiceTry SPHINCS- v2 verifier is not yet ported to the 128-bit field, so `main`
-# admits no raw leanSPHINCS signature. A port replaces this function and its host hook,
-# `lean_sphincs_hints`, and lifts the assert in `main`.
+# ================= NiceTry SPHINCS- v2 signature verification (prototype) ================
+
+
+@inline
+def sp_bind_lane(bits, off: Const, value):
+    # One 64-bit lane's advice bits, each pinned boolean (a second write of its cell,
+    # one MUL), tied back to the lane and copied into the shared run at `off`.
+    lane_bits = StackBuf(BASE_FIELD_BITS)
+    hint_decompose_bits(lane_bits, value, BASE_FIELD_BITS)
+    acc = 0
+    for i in unroll(0, BASE_FIELD_BITS):
+        b = lane_bits[i]
+        lane_bits[i] = b * b
+        bits[off + i] = b
+        acc += b * COORD_BASIS[i]
+    assert acc == value
+    return
+
+
+@inline
+def sp_field(bits, off: Const, n: Const, lsb_byte: Const):
+    # The integer digest bits [off, off+n) spell, as the big-endian ADRS field
+    # whose least significant byte is cell byte lsb_byte: value bit j lands on
+    # cell bit 8 (lsb_byte - j/8) + j mod 8. One multiply-add a bit.
+    acc = 0
+    for j in unroll(0, n):
+        acc += bits[SP_BIT_INDEX[off + j]] * COORD_BASIS[8 * (lsb_byte - j // 8) + j % 8]
+    return acc
+
+
+@inline
+def sp_index(v: Const):
+    # A compile-time word3 (tree index or hash address) below 2^16, big-endian at
+    # cell bytes 14 and 15.
+    return const((v % 256) * SP_BYTE15 + (v // 256) * 2 ** 112)
+
+
+def sp_walk(value, adrs_a, adrs_b, pp, k: Const):
+    # Chain steps k..w-2 from position k: value' = F(pp, ADRS(hash address s), value),
+    # keccak(pp | 0 | ADRS | value | 0), 96 bytes.
+    word = value
+    for s in unroll(k, SP_CHAIN_STEPS):
+        out = StackBuf(1)
+        keccak([pp, 0], [adrs_a, adrs_b + const(s * SP_BYTE15)], out, tail=[word, 0, 0, 0], len=96)
+        word = out[0]
+    return word, k
+
+
+@inline
+def sp_tl_word(pp, a0, a1, run, j: Const):
+    # Word j of a T_l input: pp | 0 | ADRS | value_0 | 0 | value_1 | 0 | ...
+    w = 0
+    if const(j == 0):
+        w = pp
+    if const(j == 2):
+        w = a0
+    if const(j == 3):
+        w = a1
+    if const(j // 4 != 0):
+        if const(j % 2 == 0):
+            w = run[(j - 4) // 2]
+    return w
+
+
+def sp_wots_pk(adrs_a, kp, pp, msg):
+    # One layer's WOTS+ verification: `msg`'s len1 base-16 digits and the len2 digits
+    # of their checksum, the chains walked from the revealed values, and the key they
+    # compress to.
+    tips = StackBuf(SP_L)
+    exponent = 1
+    acc = 0
+    for i in unroll(0, SP_LEN1):
+        digit = hint_witness("sp_digits")
+        assert log(digit) < SP_W
+        chain_start = hint_witness("sp_chain_starts")
+        adrs_b = kp + const(i * SP_BYTE11)
+        tips[i], e = match(log(digit), range(0, SP_W), lambda k: sp_walk(chain_start, adrs_a, adrs_b, pp, k))
+        exponent = exponent * digit
+        acc += e * COORD_BASIS[8 * (i // 2) + 4 * (1 - i % 2)]
+    assert acc == msg
+    for j in unroll(0, SP_LEN2):
+        digit = hint_witness("sp_digits")
+        assert log(digit) < SP_W
+        chain_start = hint_witness("sp_chain_starts")
+        adrs_b = kp + const((SP_LEN1 + j) * SP_BYTE11)
+        tips[SP_LEN1 + j], e = match(log(digit), range(0, SP_W), lambda k: sp_walk(chain_start, adrs_a, adrs_b, pp, k))
+        exponent = exponent * digit ** (SP_W ** (SP_LEN2 - 1 - j))
+    assert exponent == GEN ** SP_MAX_CSUM
+
+    # The WOTS key: keccak(pp | ADRS(WOTS_PK) | 35 tips), 1184 bytes.
+    key = StackBuf(1)
+    pk_b = kp + const(SP_WOTS_PK * SP_BYTE3)
+    keccak_cells([sp_tl_word(pp, adrs_a, pk_b, tips, j) for j in unroll(0, 4 + 2 * SP_L)], key)
+    return key[0]
 
 
 def verify_sig_lean_sphincs(signer):
-    # `signer` is one 4-cell entry of the coverage table, an EIP-8288 dependency entry: the
-    # 32-byte data_hash (the message), then pkSeed, pkRoot. Never satisfiable: x + 1 != x.
-    assert signer[1] + 1 == signer[1]
-    return
+    # `signer` is one 4-cell entry of the coverage table, an EIP-8288 dependency entry:
+    # the 32-byte data_hash (the message), then pkSeed, pkRoot.
+    pp = signer[GEN ** 2]
+    root = signer[GEN ** 3]
 
+    # H_msg = keccak(0xFF..FF | R | pkSeed | pkRoot | M), 112 bytes in one block.
+    r = hint_witness("sp_rand")
+    digest = StackBuf(2)
+    keccak([SP_ONES, SP_ONES], [r, pp], digest, tail=[root, signer[1], signer[GEN], 0], len=112)
+
+    # Every index below is a bit field of that digest, so its last 24 bytes are
+    # advice-decomposed here and bound lane by lane.
+    bits = StackBuf(SP_BIT_CELLS)
+    lo = StackBuf(1)
+    hint_f128_limbs(lo, digest[0])
+    hi = (digest[0] + lo[0]) * Y_INV
+    assert_in_k(lo[0], hi)
+    tail = StackBuf(1)
+    hint_f128_limbs(tail, digest[1])
+    tail_hi = (digest[1] + tail[0]) * Y_INV
+    assert_in_k(tail[0], tail_hi)
+    lanes = [hi, tail[0], tail_hi]
+    for lane in unroll(0, SP_BIT_LANES):
+        sp_bind_lane(bits, lane * BASE_FIELD_BITS, lanes[lane])
+
+    # ---- FORS: one opened leaf per tree ----
+    fors_a = sp_field(bits, SP_HT_OFF + SP_HP, SP_H - SP_HP, 15)
+    fors_kp = sp_field(bits, SP_HT_OFF, SP_HP, 7)
+    fors_b = fors_kp + const(SP_FORS_TREE * SP_BYTE3)
+    roots = StackBuf(SP_K)
+    for i in unroll(0, SP_K):
+        secret = hint_witness("sp_fors_secrets")
+        placed = sp_field(bits, i * SP_A, SP_A, 15)
+        leaf = StackBuf(1)
+        keccak([pp, 0], [fors_a, fors_b + placed + sp_index(i * 2 ** SP_A)], leaf, tail=[secret, 0, 0, 0], len=96)
+        node = leaf[0]
+        b0 = bits[SP_BIT_INDEX[i * SP_A]]
+        b8 = bits[SP_BIT_INDEX[i * SP_A + SP_A - 1]]
+        shifted = (placed + b0 * COORD_BASIS[120] + b8 * COORD_BASIS[112]) / GEN + b8 * COORD_BASIS[127]
+        for z in unroll(1, SP_A + 1):
+            sibling = hint_witness("sp_fors_paths")
+            m = bits[SP_BIT_INDEX[i * SP_A + z - 1]] * (node + sibling)
+            adrs_b = fors_b + shifted + const(z * SP_BYTE11 + (i * 2 ** (SP_A - z)) % 256 * SP_BYTE15 + (i * 2 ** (SP_A - z)) // 256 * 2 ** 112)
+            parent = StackBuf(1)
+            keccak([pp, 0], [fors_a, adrs_b], parent, tail=[node + m, 0, sibling + m, 0])
+            node = parent[0]
+            if const(z != SP_A):
+                shifted = (shifted + bits[SP_BIT_INDEX[i * SP_A + z]] * COORD_BASIS[120]) / GEN
+        roots[i] = node
+    # The FORS key: keccak(pp | ADRS(FORS_ROOTS) | 19 roots), 672 bytes.
+    fors_key = StackBuf(1)
+    roots_b = fors_kp + const(SP_FORS_ROOTS * SP_BYTE3)
+    keccak_cells([sp_tl_word(pp, fors_a, roots_b, roots, j) for j in unroll(0, 4 + 2 * SP_K)], fors_key)
+    signed = fors_key[0]
+
+    # ---- the hypertree, bottom layer first ----
+    for layer in unroll(0, SP_D):
+        leaf_off = SP_HT_OFF + layer * SP_HP
+        adrs_a = const(layer * SP_BYTE3) + sp_field(bits, leaf_off + SP_HP, SP_H - (layer + 1) * SP_HP, 15)
+        kp = sp_field(bits, leaf_off, SP_HP, 7)
+        node = sp_wots_pk(adrs_a, kp, pp, signed)
+        for z in unroll(1, SP_HP + 1):
+            sibling = hint_witness("sp_siblings")
+            m = bits[SP_BIT_INDEX[leaf_off + z - 1]] * (node + sibling)
+            adrs_b = const(SP_TREE * SP_BYTE3 + z * SP_BYTE11) + sp_field(bits, leaf_off + z, SP_HP - z, 15)
+            parent = StackBuf(1)
+            keccak([pp, 0], [adrs_a, adrs_b], parent, tail=[node + m, 0, sibling + m, 0])
+            node = parent[0]
+        signed = node
+    assert signed == root
+    return
 
 # ========================== statements and the claim lists ==========================
 

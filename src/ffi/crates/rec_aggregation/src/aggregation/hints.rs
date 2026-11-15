@@ -1,5 +1,6 @@
 //! Hint streams and the raw signatures' witnesses.
 
+use super::cells::{count, pack_16_bytes};
 use super::error::AggregationError;
 use lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
 use leanvm_core::cpu::Program;
@@ -67,14 +68,35 @@ impl Hints {
     }
 }
 
-/// One leanSPHINCS signature's witness: the hook the guest's `verify_sig_lean_sphincs` reads its streams through.
-///
-/// A stub until the guest verifies the NiceTry v2 scheme over the 128-bit field again: the guest refuses every raw
-/// leanSPHINCS signature, so this builds no witness and refuses it first.
+/// One NiceTry SPHINCS- v2 signature's witness (prototype): the randomizer, each FORS
+/// tree's secret and path, then per layer the WOTS digits (in the exponent), the chain
+/// values they start from, and the key's path.
 pub(super) fn lean_sphincs_hints(
-    _pk: &LeanSphincsPublicKey,
-    _sig: &LeanSphincsSignature,
-    _message: &lean_sphincs::Message,
+    pk: &LeanSphincsPublicKey,
+    sig: &LeanSphincsSignature,
+    message: &lean_sphincs::Message,
 ) -> Result<SubHints, AggregationError> {
-    Err(AggregationError::MalformedRawSignature)
+    let trace = lean_sphincs::verify_trace(pk, message, sig);
+    // Test builds only: the switch hands the guest an invalid signature, to see it fault there.
+    let unchecked = cfg!(feature = "forge") && std::env::var_os("EIP8288_NO_HOST_SIGCHECK").is_some();
+    if trace.signed[lean_sphincs::D] != pk.root && !unchecked {
+        return Err(AggregationError::MalformedRawSignature);
+    }
+    let mut hints: SubHints = vec![("sp_rand", vec![pack_16_bytes(&sig.randomizer)])];
+    for (secret, path) in sig.fors_secrets.iter().zip(&sig.fors_paths) {
+        hints.push(("sp_fors_secrets", vec![pack_16_bytes(secret)]));
+        for sibling in path {
+            hints.push(("sp_fors_paths", vec![pack_16_bytes(sibling)]));
+        }
+    }
+    for (layer, digits) in sig.layers.iter().zip(&trace.digits) {
+        for (start, &digit) in layer.chains.iter().zip(digits) {
+            hints.push(("sp_digits", vec![count(digit as usize)]));
+            hints.push(("sp_chain_starts", vec![pack_16_bytes(start)]));
+        }
+        for sibling in &layer.path {
+            hints.push(("sp_siblings", vec![pack_16_bytes(sibling)]));
+        }
+    }
+    Ok(hints)
 }

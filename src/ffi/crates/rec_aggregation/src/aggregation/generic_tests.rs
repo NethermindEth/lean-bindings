@@ -201,7 +201,6 @@ fn generic_only_leaf() {
 }
 
 #[test]
-#[ignore = "raw leanSPHINCS signatures: the guest's verifier is a stub until NiceTry v2 is ported to F128"]
 fn mixed_leaf_with_a_near_cap_program() {
     let deps = [preimage_dep(3), wide_dep([9; 32])];
     let proof = aggregate(Guest::Base, &[], singles(&deps), sphincs(2), &[], None, RATE).expect("proves");
@@ -237,7 +236,6 @@ fn the_same_bytes_under_both_schemes_are_distinct() {
 }
 
 #[test]
-#[ignore = "raw leanSPHINCS signatures: the guest's verifier is a stub until NiceTry v2 is ported to F128"]
 fn recursion_mixes_schemes_dedups_and_discards() {
     let (a, b) = (preimage_dep(4), preimage_dep(5));
     let signers = sphincs(2);

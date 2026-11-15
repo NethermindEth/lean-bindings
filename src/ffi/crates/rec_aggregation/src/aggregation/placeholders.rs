@@ -976,8 +976,7 @@ fn da_placeholders(ps: &mut impl FnMut(&str, String)) {
     );
 }
 
-/// `guest`'s leanSTARK caps and domains, and the coverage caps. leanSPHINCS takes none: the guest's verifier of it
-/// is a stub (`verify_sig_lean_sphincs`).
+/// The signature scheme, `guest`'s leanSTARK caps and domains, and the coverage caps.
 fn signature_placeholders(guest: Guest, ps: &mut impl FnMut(&str, String)) {
     ps("CLAIM_GROUP", CLAIM_GROUP.to_string());
     ps("BIG_GROUPS", BIG_GROUPS.to_string());
@@ -1011,4 +1010,28 @@ fn signature_placeholders(guest: Guest, ps: &mut impl FnMut(&str, String)) {
     assert_eq!(stack_log, verifier::MIN_STACKED_LOG, "every committed program opens in the least stack");
     ps("GEN_STACK_LOG", stack_log.to_string());
     ps("MAX_INNER_PROOFS_PER_STEP", MAX_INNER_PROOFS_PER_STEP.to_string());
+
+    // NiceTry SPHINCS- v2 (prototype).
+    for (name, value) in [
+        ("SP_K", lean_sphincs::K),
+        ("SP_A", lean_sphincs::A),
+        ("SP_D", lean_sphincs::D),
+        ("SP_HP", lean_sphincs::SUBTREE_H),
+        ("SP_H", lean_sphincs::H),
+        ("SP_W", lean_sphincs::W),
+        ("SP_LEN1", lean_sphincs::LEN1),
+        ("SP_LEN2", lean_sphincs::LEN2),
+        ("SP_MAX_CSUM", lean_sphincs::MAX_CSUM),
+    ] {
+        ps(name, value.to_string());
+    }
+    // Digest bit b (big-endian 256-bit integer) as an index into the bit run of the
+    // digest's last three lanes.
+    let bit_index: Vec<String> = (0..3 * 64)
+        .map(|b| {
+            let byte = 31 - b / 8;
+            (64 * (byte / 8 - 1) + 8 * (byte % 8) + b % 8).to_string()
+        })
+        .collect();
+    ps("SP_BIT_INDEX", format!("[{}]", bit_index.join(", ")));
 }
