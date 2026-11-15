@@ -1,0 +1,19 @@
+{
+  "label": "GCE n2-standard-8 (EIP-7870 full-node class), leaves and aggregation steps on leanVM F128 (lean-bindings #18 @ 6fd1904)",
+  "mode": "pq-batching",
+  "pq_ref": "6fd1904e7189bd8c66c62bd5970474effd6b8859",
+  "threads": 8,
+  "reps": 3,
+  "quiet": {
+    "max_load1": 2,
+    "timeout_s": 600
+  },
+  "leaf_cells": [
+    {"scheme": "mldsa44", "msg": 32, "n": [1, 2]},
+    {"scheme": "mldsa44", "msg": 32, "key": "flat", "n": [1]},
+    {"scheme": "falcon512", "msg": 32, "n": [1]},
+    {"scheme": "slhdsa128s", "msg": 32, "n": [1]},
+    {"scheme": "mldsa44", "msg": 32, "n": [4]}
+  ],
+  "tree": {"scheme": "mldsa44", "msg": 32, "signatures": 16, "per_leaf": 1, "routes": ["single"], "reps": 3}
+}

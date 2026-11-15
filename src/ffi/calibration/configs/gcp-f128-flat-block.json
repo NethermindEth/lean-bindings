@@ -1,0 +1,12 @@
+{
+  "label": "GCE, a 1,294-signature ML-DSA-44 block as single-signature leaves and as 9-signature leaves under the flat key (lean-bindings #18 @ 6fd1904)",
+  "mode": "pq-batching",
+  "pq_ref": "6fd1904e7189bd8c66c62bd5970474effd6b8859",
+  "threads": 22,
+  "reps": 3,
+  "quiet": {
+    "max_load1": 4,
+    "timeout_s": 600
+  },
+  "block": {"scheme": "mldsa44", "msg": 32, "key": "flat", "signatures": 1294, "per_leaf": 9, "arity": "max", "cold": true}
+}

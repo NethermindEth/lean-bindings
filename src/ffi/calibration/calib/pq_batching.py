@@ -26,6 +26,7 @@ from .runner import SWAP_GROWTH
 
 REPO_URL = "https://github.com/NethermindEth/lean-bindings.git"
 MAX_CLAIMS = 256
+MAX_INPUTS = 16
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -62,6 +63,7 @@ class Sweep:
             os.makedirs(os.path.join(out, d), exist_ok=True)
         self.jsonl = open(os.path.join(out, "pq-batching-runs.jsonl"), "a")
         self.seq = 0
+        self.arities = {}
 
     def env(self) -> dict:
         e = dict(os.environ)
@@ -190,9 +192,28 @@ class Sweep:
         return self.cell(["verify", path, str(self.cfg.get("verify_inner", 9))], "verify-" + os.path.basename(path), reps)
 
     # ---- trees -------------------------------------------------------------------------------------------------
-    def tree(self, scheme: str, msg: int, total: int, per_leaf: int, rep: int, cold: bool, label: str) -> dict:
-        """Proves `total` signatures as leaves of `per_leaf` signatures, then steps of up to 16 inputs to one root,
-        each node one process, back to back on this machine."""
+    def arity(self, key: str, kind: str, files: list[str], setting) -> int:
+        """Inputs per step over `files` of one `kind`: `setting` when it is a number, or with `max` the most inputs
+        one step over the first of `files` proves, probed from 16 down and remembered per kind."""
+        if setting != "max":
+            return int(setting)
+        # (largest arity that proved, smallest that failed) for this kind.
+        ok, failed = self.arities.get((key, kind), (1, MAX_INPUTS + 1))
+        k = min(failed - 1, len(files))
+        while k > ok:
+            rec = self.once(["step", key, "-", *files[:k], "--cold"], f"probe-arity-{key}-{kind}-{k}", gate="busy")
+            self.log(f"  probe step {key} {kind} x{k}: rc={rec['rc']}")
+            if rec["rc"] == 0:
+                ok = k
+            else:
+                failed, k = k, k - 1
+        self.arities[(key, kind)] = (ok, failed)
+        return min(ok, len(files))
+
+    def tree(self, scheme: str, msg: int, total: int, per_leaf: int, rep: int, cold: bool, label: str,
+             key: str = "committed", arity=MAX_INPUTS) -> dict:
+        """Proves `total` signatures as leaves of `per_leaf` signatures under `key`, then steps of up to `arity`
+        inputs to one root, each node one process, back to back on this machine."""
         d = os.path.join(self.corpus, f"tree-{label}-rep{rep}")
         os.makedirs(d, exist_ok=True)
         nodes, level, files = [], 0, []
@@ -200,22 +221,25 @@ class Sweep:
         for i, off in enumerate(range(0, total, per_leaf)):
             n = min(per_leaf, total - off)
             f = os.path.join(d, f"l{i}.leaf")
-            rec = self.once(self.leaf_args(scheme, n, msg, "committed", offset=100000 + off, save=f, cold=cold),
+            rec = self.once(self.leaf_args(scheme, n, msg, key, offset=100000 + off, save=f, cold=cold),
                             f"tree-{label}-rep{rep}-leaf{i}", gate="busy")
             nodes.append(node_record(rec, 0, n))
             if rec["rc"] != 0:
                 return {"status": "failed", "at": f"leaf {i}", "nodes": nodes}
             files.append(f)
+        arities = {}
         while len(files) > 1 or level == 0:
             level += 1
             nxt = []
-            for j in range(0, len(files), 16):
-                f = os.path.join(d, f"s{level}-{j // 16}.agg")
-                rec = self.once(["step", "committed", f, *files[j:j + 16], *(["--cold"] if cold else [])],
-                                f"tree-{label}-rep{rep}-l{level}-s{j // 16}", gate="busy")
-                nodes.append(node_record(rec, level, len(files[j:j + 16])))
+            a = self.arity(key, f"leaf-n{per_leaf}" if level == 1 else "agg", files, arity)
+            arities[str(level)] = a
+            for j in range(0, len(files), a):
+                f = os.path.join(d, f"s{level}-{j // a}.agg")
+                rec = self.once(["step", key, f, *files[j:j + a], *(["--cold"] if cold else [])],
+                                f"tree-{label}-rep{rep}-l{level}-s{j // a}", gate="busy")
+                nodes.append(node_record(rec, level, len(files[j:j + a])))
                 if rec["rc"] != 0:
-                    return {"status": "failed", "at": f"level {level} step {j // 16}", "nodes": nodes}
+                    return {"status": "failed", "at": f"level {level} step {j // a}", "nodes": nodes}
                 nxt.append(f)
             files = nxt
         t = [x["t"] for x in nodes]
@@ -229,22 +253,22 @@ class Sweep:
                "per_level_s": {str(k): sum(v) for k, v in sorted(lv.items())},
                "peak_rss_max": max(x["rss"] for x in nodes), "cycles": sum(x["cycles"] for x in nodes),
                "violated": any(x["violated"] for x in nodes) or not g["quiet"], "root": files[0], "nodes": nodes,
-               "cold": cold, "gate": g}
+               "cold": cold, "gate": g, "key": key, "arity": arities}
         self.log(f"  tree {label} rep{rep}: makespan {out['makespan_s']:.1f} s (leaves {out['leaf_s']:.1f} s, steps "
                  f"{out['step_s']:.1f} s), {out['leaves']} leaves + {out['steps']} steps, depth {level}, "
                  f"peak {out['peak_rss_max'] / 2**30:.1f} GB{' VIOLATED' if out['violated'] else ''}")
         return out
 
-    def tree_cell(self, scheme, msg, total, per_leaf, reps, cold, label) -> dict:
+    def tree_cell(self, scheme, msg, total, per_leaf, reps, cold, label, key="committed", arity=MAX_INPUTS) -> dict:
         runs = []
         for rep in range(1, reps + 1):
-            r = self.tree(scheme, msg, total, per_leaf, rep, cold, label)
+            r = self.tree(scheme, msg, total, per_leaf, rep, cold, label, key, arity)
             if r.get("violated"):
                 self.log(f"  tree {label} rep{rep} violated the quiet conditions; repeating once")
-                r = self.tree(scheme, msg, total, per_leaf, rep, cold, label + "-retry")
+                r = self.tree(scheme, msg, total, per_leaf, rep, cold, label + "-retry", key, arity)
             runs.append(r)
         ok = [r for r in runs if r["status"] == "ok" and not r["violated"]]
-        s = {"label": label, "signatures": total, "per_leaf": per_leaf, "reps": len(ok),
+        s = {"label": label, "signatures": total, "per_leaf": per_leaf, "reps": len(ok), "key": key,
              "excluded": sum(1 for r in runs if r.get("violated")), "cold": cold,
              "runs": [{k: v for k, v in r.items() if k != "nodes"} for r in runs]}
         if ok:
@@ -254,6 +278,7 @@ class Sweep:
             s["leaves"], s["steps"], s["depth"] = ok[0]["leaves"], ok[0]["steps"], ok[0]["depth"]
             s["cycles"] = statistics.median(r["cycles"] for r in ok)
             s["root"] = ok[0]["root"]
+            s["arity"] = ok[0]["arity"]
         return s
 
 
@@ -322,21 +347,24 @@ def run(cfg: dict, out: str, log) -> dict:
 
     t = cfg.get("tree")
     if t:
-        scheme, msg = t["scheme"], t.get("msg", 32)
-        per = res["max_n"].get(f"{scheme}-m{msg}-committed") or t["per_leaf"]
+        scheme, msg, key = t["scheme"], t.get("msg", 32), t.get("key", "committed")
+        per = res["max_n"].get(f"{scheme}-m{msg}-{key}") or t["per_leaf"]
         total = t.get("signatures") or t.get("groups", 16) * per
-        res["trees"]["batched"] = sw.tree_cell(scheme, msg, total, per, t.get("reps", reps), t.get("cold", False), f"batched-{total}")
-        save()
-        res["trees"]["single"] = sw.tree_cell(scheme, msg, total, 1, t.get("reps", reps), t.get("cold", False), f"single-{total}")
-        save()
-        # One step over 16 leaves of each kind, as a cell: the first 16 leaves of each tree's first repetition.
-        for route, label in (("single", f"single-{total}"), ("batched", f"batched-{total}")):
-            d = os.path.join(sw.corpus, f"tree-{label}-rep1")
-            files = [os.path.join(d, f"l{i}.leaf") for i in range(16)]
-            if all(os.path.exists(f) for f in files):
-                res["step16"][route] = sw.cell(["step", "committed", "-", *files], f"step16-{route}", reps)
+        routes = t.get("routes", ["batched", "single"])
+        for route, k in (("batched", per), ("single", 1)):
+            if route in routes:
+                res["trees"][route] = sw.tree_cell(scheme, msg, total, k, t.get("reps", reps), t.get("cold", False),
+                                                   f"{route}-{total}", key, t.get("arity", MAX_INPUTS))
                 save()
+        # One step over 16 leaves of each kind, as a cell: the first 16 leaves of each tree's first repetition.
         for route in ("single", "batched"):
+            d = os.path.join(sw.corpus, f"tree-{route}-{total}-rep1")
+            files = [os.path.join(d, f"l{i}.leaf") for i in range(MAX_INPUTS)]
+            tree = res["trees"].get(route, {})
+            if tree.get("arity", {}).get("1") == MAX_INPUTS and all(os.path.exists(f) for f in files):
+                res["step16"][route] = sw.cell(["step", key, "-", *files], f"step16-{route}", reps)
+                save()
+        for route in res["trees"]:
             root = res["trees"][route].get("root")
             if root and os.path.exists(root):
                 v = sw.verify_cell(root, reps)
@@ -346,11 +374,12 @@ def run(cfg: dict, out: str, log) -> dict:
 
     b = cfg.get("block")
     if b:
-        scheme, msg = b["scheme"], b.get("msg", 32)
-        per = res["max_n"].get(f"{scheme}-m{msg}-committed") or b["per_leaf"]
+        scheme, msg, key = b["scheme"], b.get("msg", 32), b.get("key", "committed")
+        per = res["max_n"].get(f"{scheme}-m{msg}-{key}") or b["per_leaf"]
         for route, k in (("batched", per), ("single", 1)):
             res.setdefault("block", {})[route] = sw.tree_cell(scheme, msg, b["signatures"], k, 1, b.get("cold", True),
-                                                              f"block-{route}-{b['signatures']}")
+                                                              f"block-{route}-{b['signatures']}", key,
+                                                              b.get("arity", MAX_INPUTS))
             save()
 
     res["finished"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -380,7 +409,8 @@ def report(res: dict) -> str:
                 m = t["makespan_s"]
                 lines.append(f"\n{name} {route}: {t['signatures']} sigs, {t['leaves']} leaves + {t['steps']} steps, makespan "
                              f"{m['median']:.1f} s ({m['min']:.1f}–{m['max']:.1f}), leaves {t['leaf_s']['median']:.1f} s, steps "
-                             f"{t['step_s']['median']:.1f} s, peak {t['peak_rss_max'] / g:.1f} GB, reps {t['reps']}")
+                             f"{t['step_s']['median']:.1f} s, peak {t['peak_rss_max'] / g:.1f} GB, reps {t['reps']}, "
+                             f"key {t.get('key', 'committed')}, most inputs per step by level {t.get('arity')}")
     for route, c in res.get("step16", {}).items():
         if c.get("status") == "ok":
             lines.append(f"\nstep16 {route}: {c['agg_s']['median']:.3f} s, {c['cycles']['median']:,.0f} cycles, "

@@ -130,7 +130,8 @@ and repeat-then-exclude rules (`calib.py worst|pq-leaves --config C --out DIR`, 
   there. It measures leaves of 1..max N (the largest N found by probing) under the committed or flat key, the step
   verifying each, native verification of leaves and one-leaf aggregates, steps of 16 single- and max-N leaves, and
   whole trees of the same signatures as single-signature leaves and as max-N leaves on one worker (`tree`, and an
-  optional `block`).
+  optional `block`). A tree or block takes a `key` (default `committed`) and an `arity`, the most inputs per step
+  (default 16; `max` probes the most a step proves, per input kind); a tree's `routes` can drop one of the two.
 
 ## Configuration
 
