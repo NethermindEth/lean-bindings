@@ -41,45 +41,56 @@ def main():
 
 
 def leaf_digest(pre, n_g):
-    # keccak256 of the L = 1 + 2N cells at pre. The padding is written after them, then the
-    # padded message is absorbed a block pair (LEAF_CHUNK cells) a loop frame through a heap
-    # chain of sponge states, and an odd last block alone. L = 17 chunks + rest: the last
-    # block is lone (odd) exactly when the rest and the padding fit 136 bytes, rest <= 8.
+    # keccak256 of the L = 1 + 2N cells at pre.
+    d = HeapBuf(4)
+    padded_hash(pre, GEN * n_g ** 2, 1, 1, d)
+    return d[1], d[GEN]
+
+
+def padded_hash(buf, q, r, first, out):
+    # Writes to out the first four cells of the Keccak state after absorbing, from zero, the
+    # Q = log(q) cells at buf, then the cell first: a message's last r < 16 bytes with the
+    # padding's first byte after them. The rest of pad10*1 is written after it, then the padded
+    # message is absorbed a block pair (LEAF_CHUNK cells) a loop frame through a heap chain of
+    # sponge states, and an odd last block alone. Q = 17 chunks + t, hinted: the last block is
+    # lone (odd) exactly when the padding's first byte, 16 t + r into the last chunk, falls in
+    # its first block.
     split = StackBuf(3)
-    hint_witness(split, "leaf_digest_split")
+    hint_witness(split, "hash_split")
     chunks = split[0]
-    rest = split[1]
+    t = split[1]
     odd = split[2]
     assert log(chunks) < 32
+    assert log(t) < LEAF_CHUNK
     base = chunks ** LEAF_CHUNK
-    assert base * rest == GEN * n_g ** 2
-    tail = pre * base
+    assert base * t == q
+    tail = buf * base
+    pos = t ** 16 * r
     pairs = StackBuf(1)
     if odd == 1:
-        assert log(rest) < 9
-        pad_tail(tail, rest, GEN ** 8, LANE_LO_TOP)
+        assert log(pos) < 136
+        pad_tail(tail, t, first, GEN ** 8, LANE_LO_TOP)
         pairs[0] = chunks
     else:
-        assert log(rest / GEN ** 9) < 8
-        pad_tail(tail, rest, GEN ** 16, LANE_HI_TOP)
+        assert log(pos / GEN ** 136) < 136
+        pad_tail(tail, t, first, GEN ** 16, LANE_HI_TOP)
         pairs[0] = chunks * GEN
     chain = HeapBuf(KECCAK_STATE * 33)
-    last = absorb_pairs(chain, pre, pairs[0])
-    digest = StackBuf(2)
+    last = absorb_pairs(chain, buf, pairs[0])
     if odd == 1:
         a = StackBuf(KECCAK_STATE)
         for c in unroll(0, 9):
             a[c] = last[GEN ** c] + tail[GEN ** c]
         for c in unroll(9, KECCAK_STATE):
             a[c] = last[GEN ** c]
-        d = StackBuf(2)
-        permute(a, d)
-        digest[0] = d[0]
-        digest[1] = d[1]
+        o = StackBuf(KECCAK_STATE)
+        permute(a, o)
+        for c in unroll(0, 4):
+            out[GEN ** c] = o[c]
     else:
-        digest[0] = last[1]
-        digest[1] = last[GEN]
-    return digest[0], digest[1]
+        for c in unroll(0, 4):
+            out[GEN ** c] = last[GEN ** c]
+    return
 
 
 def absorb_pairs(chain, buf, pairs_g):
@@ -95,13 +106,13 @@ def absorb_pairs(chain, buf, pairs_g):
     return chain * pairs_g ** KECCAK_STATE
 
 
-def pad_tail(tail, rest, end, top):
-    # Keccak's pad10*1 from cell rest to cell end: 0x01 at the message's end, top (0x80 in
-    # the block's last byte) in cell end, zeros between.
+def pad_tail(tail, rest, first, end, top):
+    # Keccak's pad10*1 from cell rest to cell end: first, which holds the padding's first byte,
+    # in cell rest, top (0x80 in the block's last byte) in cell end, zeros between.
     if rest == end:
-        tail[end] = top + 1
+        tail[end] = top + first
     else:
-        tail[rest] = 1
+        tail[rest] = first
         for k in mul_range(GEN, end / rest):
             tail[rest * k] = 0
         tail[end] = top

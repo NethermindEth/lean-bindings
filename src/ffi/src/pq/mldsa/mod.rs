@@ -1,21 +1,33 @@
 // SPDX-FileCopyrightText: 2026 Demerzel Solutions Limited
 // SPDX-License-Identifier: MIT
 
-//! ML-DSA-44 (FIPS 204 pure, empty context) over 32-byte messages: `mldsa.py`. The host decodes the key and
-//! signature, recomputes every intermediate the program checks and pushes the hints in its execution order.
+//! ML-DSA-44 (FIPS 204 pure, empty context) over messages of up to [`MAX_MESSAGE_LEN`] bytes: `mldsa.py`. The host
+//! decodes the key and signature, recomputes every intermediate the program checks and pushes the hints in its
+//! execution order.
+//!
+//! A signature over `M` under key `pk` is claimed as `keccak256(CLAIM_TAG ‖ tr ‖ keccak256(M'))`, with
+//! `tr = SHAKE256(pk, 64)` and `M' = 0x00 0x00 ‖ M` as FIPS 204 computes them for pure ML-DSA with an empty context: 112
+//! bytes an account holding `tr` recomputes from `M`, for WebAuthn `authenticatorData ‖ sha256(clientDataJSON)`. A
+//! 32-byte message is the case `|M| = 32`. The leaf hashes `M'` rather than `M` because `M` starts two bytes into a cell
+//! of `tr ‖ M'`, and realigning it does not fit the leanSTARK key's instruction bound.
 
 use std::collections::BTreeMap;
 
 use fips204::ml_dsa_44;
 use fips204::traits::{KeyGen, SerDes, Signer, Verifier};
-use primitives::field::F192;
+use primitives::field::F128;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 
-use super::common::{Claim, Hints, Scheme, cells, count, f192_literal};
+use super::common::{Claim, Hints, Scheme, cell, cells, count, f128_literal, hash_split};
 
 const GUEST: &str = include_str!("mldsa.py");
 /// The claim's domain: one cell.
 pub const CLAIM_TAG: &[u8; 16] = b"EIP8288:mldsa44:";
+/// The longest message the native check and the leaf accept.
+pub const MAX_MESSAGE_LEN: usize = 1024;
+/// The longest message the leaf's buffers hold, past [`MAX_MESSAGE_LEN`] so that the leaf's own bound is tested: `M'`
+/// fills at most 65 cells.
+const LEAF_MESSAGE_CAPACITY: usize = 65 * 16 - 3;
 const Q: u32 = 8380417;
 const LIMB: u32 = 4096;
 const GAMMA1: i32 = 1 << 17;
@@ -32,20 +44,20 @@ pub struct MlDsa44;
 #[derive(Clone)]
 pub struct Item {
     pub pk: [u8; ml_dsa_44::PK_LEN],
-    pub msg: [u8; 32],
+    pub msg: Vec<u8>,
     pub sig: [u8; ml_dsa_44::SIG_LEN],
     /// The key's index, for signing another message under it.
     key: usize,
 }
 
-fn signed(key: usize, msg: [u8; 32]) -> Item {
+fn signed(key: usize, msg: &[u8]) -> Item {
     let mut seed = [0u8; 32];
     seed[..8].copy_from_slice(&(key as u64).to_le_bytes());
     let (pk, sk) = ml_dsa_44::KG::keygen_from_seed(&seed);
-    let sig = sk.try_sign_with_seed(&seed, &msg, &[]).expect("signs");
+    let sig = sk.try_sign_with_seed(&seed, msg, &[]).expect("signs");
     Item {
         pk: pk.into_bytes(),
-        msg,
+        msg: msg.to_vec(),
         sig,
         key,
     }
@@ -53,10 +65,13 @@ fn signed(key: usize, msg: [u8; 32]) -> Item {
 
 /// The item of a signature that FIPS 204's verification (ML-DSA-44, pure, empty context) and this leaf's host computation
 /// both accept, as a relay checks it before admission and a prover before proving.
-pub fn verified(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Option<Item> {
+pub fn verified(pk: &[u8], msg: &[u8], sig: &[u8]) -> Option<Item> {
+    if msg.len() > MAX_MESSAGE_LEN {
+        return None;
+    }
     let item = Item {
         pk: pk.try_into().ok()?,
-        msg: *msg,
+        msg: msg.to_vec(),
         sig: sig.try_into().ok()?,
         key: 0,
     };
@@ -65,16 +80,19 @@ pub fn verified(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Option<Item> {
 }
 
 /// Key `key`'s signature over `msg`, with its public key.
-pub(super) fn sign_message(key: usize, msg: [u8; 32]) -> (Vec<u8>, Vec<u8>) {
+pub(super) fn sign_message(key: usize, msg: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let item = signed(key, msg);
     (item.pk.to_vec(), item.sig.to_vec())
 }
 
 /// The item of a signature without any check, to establish what the leaf does with it; `None` when the leaf cannot express it.
-pub(super) fn unchecked(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Option<Item> {
+pub(super) fn unchecked(pk: &[u8], msg: &[u8], sig: &[u8]) -> Option<Item> {
+    if msg.len() > LEAF_MESSAGE_CAPACITY {
+        return None;
+    }
     Some(Item {
         pk: pk.try_into().ok()?,
-        msg: *msg,
+        msg: msg.to_vec(),
         sig: sig.try_into().ok()?,
         key: 0,
     })
@@ -82,44 +100,54 @@ pub(super) fn unchecked(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Option<Item> {
 
 /// Equivalence vectors: honest signatures and the encodings and substitutions the native check must reject.
 pub(super) fn vector_inputs() -> Vec<super::RawCase> {
-    let (a, b) = (signed(0, message(0)), signed(1, message(1)));
-    let case = |label, pk: &[u8], msg, sig: &[u8], valid| (label, pk.to_vec(), msg, sig.to_vec(), valid);
+    let (a, b) = (signed(0, &message(0)), signed(1, &message(1)));
+    let case = |label, pk: &[u8], msg: &[u8], sig: &[u8], valid| (label, pk.to_vec(), msg.to_vec(), sig.to_vec(), valid);
+    // authenticatorData (rpIdHash, flags, signCount) then the client data's hash, keccak256 standing in for SHA-256.
+    let webauthn = [&crate::keccak(b"example.com")[..], &[0x05, 0, 0, 0, 1], &crate::keccak(b"clientDataJSON")].concat();
+    let longest: Vec<u8> = (0..MAX_MESSAGE_LEN).map(|i| (i * 7 + 1) as u8).collect();
+    let (w, l) = (signed(2, &webauthn), signed(3, &longest));
+    let over = signed(3, &[&longest[..], &[0]].concat());
     let mut cases = vec![
-        case("honest", &a.pk, a.msg, &a.sig, true),
-        case("honest, second key", &b.pk, b.msg, &b.sig, true),
-        case("signature over another message", &a.pk, a.msg, &MlDsa44::forge(&a).sig, false),
-        case("another key", &b.pk, a.msg, &a.sig, false),
-        case("truncated signature", &a.pk, a.msg, &a.sig[..ml_dsa_44::SIG_LEN - 1], false),
-        case("extended signature", &a.pk, a.msg, &[&a.sig[..], &[0]].concat(), false),
-        case("truncated key", &a.pk[..ml_dsa_44::PK_LEN - 1], a.msg, &a.sig, false),
+        case("honest", &a.pk, &a.msg, &a.sig, true),
+        case("honest, second key", &b.pk, &b.msg, &b.sig, true),
+        case("WebAuthn-shaped message", &w.pk, &w.msg, &w.sig, true),
+        case("1,024-byte message", &l.pk, &l.msg, &l.sig, true),
+        case("message over the limit", &over.pk, &over.msg, &over.sig, false),
+        case("signature over another message", &a.pk, &a.msg, &MlDsa44::forge(&a).sig, false),
+        case("another key", &b.pk, &a.msg, &a.sig, false),
+        case("truncated signature", &a.pk, &a.msg, &a.sig[..ml_dsa_44::SIG_LEN - 1], false),
+        case("extended signature", &a.pk, &a.msg, &[&a.sig[..], &[0]].concat(), false),
+        case("truncated key", &a.pk[..ml_dsa_44::PK_LEN - 1], &a.msg, &a.sig, false),
+        case("truncated message", &w.pk, &w.msg[..w.msg.len() - 1], &w.sig, false),
+        case("extended message", &w.pk, &[&w.msg[..], &[0]].concat(), &w.sig, false),
     ];
-    let mut msg = a.msg;
+    let mut msg = a.msg.clone();
     msg[31] ^= 1;
-    cases.push(case("altered message", &a.pk, msg, &a.sig, false));
+    cases.push(case("altered message", &a.pk, &msg, &a.sig, false));
     for (label, at) in [("altered c~", 0), ("altered z", 100)] {
         let mut sig = a.sig;
         sig[at] ^= 1;
-        cases.push(case(label, &a.pk, a.msg, &sig, false));
+        cases.push(case(label, &a.pk, &a.msg, &sig, false));
     }
     let mut pk = a.pk;
     pk[40] ^= 1;
-    cases.push(case("altered key", &pk, a.msg, &a.sig, false));
+    cases.push(case("altered key", &pk, &a.msg, &a.sig, false));
     // The hint: OMEGA index bytes, then the four rows' cumulative counts.
     let hint = ml_dsa_44::SIG_LEN - OMEGA - 4;
     let total = a.sig[ml_dsa_44::SIG_LEN - 1] as usize;
     if total < OMEGA {
         let mut sig = a.sig;
         sig[hint + total] = 1;
-        cases.push(case("nonzero hint padding", &a.pk, a.msg, &sig, false));
+        cases.push(case("nonzero hint padding", &a.pk, &a.msg, &sig, false));
     }
     let mut sig = a.sig;
     sig[hint + OMEGA] = OMEGA as u8 + 1;
-    cases.push(case("hint count above omega", &a.pk, a.msg, &sig, false));
+    cases.push(case("hint count above omega", &a.pk, &a.msg, &sig, false));
     let mut seed = [0u8; 32];
     seed[..8].copy_from_slice(&0u64.to_le_bytes());
     let (_, sk) = ml_dsa_44::KG::keygen_from_seed(&seed);
     let with_context = sk.try_sign_with_seed(&seed, &a.msg, b"ctx").expect("signs");
-    cases.push(case("nonempty context", &a.pk, a.msg, &with_context, false));
+    cases.push(case("nonempty context", &a.pk, &a.msg, &with_context, false));
     cases
 }
 
@@ -127,11 +155,29 @@ fn message(i: usize) -> [u8; 32] {
     crate::keccak(&(i as u64).to_le_bytes())
 }
 
-/// FIPS 204's M' (empty context), zero-filled to three cells.
-fn m_cells(msg: &[u8; 32]) -> [u8; 48] {
-    let mut m = [0u8; 48];
-    m[2..34].copy_from_slice(msg);
-    m
+/// FIPS 204's `M'` for pure ML-DSA with an empty context.
+fn framed(msg: &[u8]) -> Vec<u8> {
+    [&[0, 0][..], msg].concat()
+}
+
+/// `mldsa.py`'s message streams: `ml_len`, then `tr ‖ M'` padded for SHAKE256 as the program writes it, from cell 4,
+/// `M'`'s last partial cell, and the block splits of `mu` and `keccak256(M')`.
+fn push_message(tr: &[u8; 64], msg: &[u8], hints: &mut Hints) {
+    let m = framed(msg);
+    let (q, r) = (m.len() / 16, m.len() % 16);
+    hints.push("ml_len", vec![count(q), count(r)]);
+    let mut stream = [&tr[..], &m].concat();
+    let end = stream.len();
+    stream.resize(136 * (end / 136 + 1), 0);
+    stream[end] ^= 0x1f;
+    *stream.last_mut().unwrap() ^= 0x80;
+    stream.resize(stream.len().max(16 * 68), 0);
+    hints.push("ml_msg", cells(&stream[64..16 * 68]));
+    let mut part = [0u8; 16];
+    part[..r].copy_from_slice(&m[16 * q..]);
+    hints.push("ml_part", vec![cell(&part)]);
+    hints.push("hash_split", hash_split(4 + q, r));
+    hints.push("hash_split", hash_split(q, r));
 }
 
 fn shake256(data: &[&[u8]], out: &mut [u8]) {
@@ -142,8 +188,8 @@ fn shake256(data: &[&[u8]], out: &mut [u8]) {
     h.finalize_xof().read(out);
 }
 
-fn bit(b: bool) -> F192 {
-    if b { F192::ONE } else { F192::ZERO }
+fn bit(b: bool) -> F128 {
+    if b { F128::ONE } else { F128::ZERO }
 }
 
 /// FIPS 204 `zetas[m] = 1753^brv8(m) mod q`.
@@ -163,7 +209,7 @@ fn pow(base: u32, mut e: u64) -> u32 {
     acc as u32
 }
 
-fn record(r: u32) -> [F192; 3] {
+fn record(r: u32) -> [F128; 3] {
     [
         count((r % LIMB) as usize),
         count((r / LIMB) as usize),
@@ -235,10 +281,10 @@ fn use_hint_table() -> Vec<u32> {
 }
 
 /// The hinted constant table and the offsets of its parts, in the order `mldsa.py` names them.
-fn constants() -> (Vec<F192>, Vec<(&'static str, usize)>) {
+fn constants() -> (Vec<F128>, Vec<(&'static str, usize)>) {
     let mut cells = Vec::new();
     let mut offsets = Vec::new();
-    let mut part = |name: &'static str, values: Vec<F192>, zero_at: usize| {
+    let mut part = |name: &'static str, values: Vec<F128>, zero_at: usize| {
         offsets.push((name, cells.len() + zero_at));
         cells.extend(values);
     };
@@ -257,12 +303,12 @@ fn constants() -> (Vec<F192>, Vec<(&'static str, usize)>) {
             .collect(),
         0,
     );
-    part("BT", (0..256u64).map(|v| F192::new(v, 0, 0)).collect(), 0);
+    part("BT", (0..256u64).map(|v| F128::new(v, 0)).collect(), 0);
     let basis = |i: usize| {
         if i < 64 {
-            F192::new(1 << i, 0, 0)
+            F128::new(1 << i, 0)
         } else {
-            F192::new(0, 1 << (i - 64), 0)
+            F128::new(0, 1 << (i - 64))
         }
     };
     part("BB", (0..16).map(|k| basis(8 * k)).collect(), 0);
@@ -299,14 +345,13 @@ fn constants() -> (Vec<F192>, Vec<(&'static str, usize)>) {
         0,
     );
     if cells.len() % 2 == 1 {
-        cells.push(F192::ZERO);
+        cells.push(F128::ZERO);
     }
     offsets.push(("SIZE", cells.len()));
     (cells, offsets)
 }
 
-fn cell_bytes(c: F192) -> [u8; 16] {
-    assert_eq!(c.c2, 0);
+fn cell_bytes(c: F128) -> [u8; 16] {
     let mut b = [0u8; 16];
     b[..8].copy_from_slice(&c.c0.to_le_bytes());
     b[8..].copy_from_slice(&c.c1.to_le_bytes());
@@ -314,7 +359,7 @@ fn cell_bytes(c: F192) -> [u8; 16] {
 }
 
 /// The Keccak chain `load_checked` recomputes over the table's pairs.
-fn table_digest(table: &[F192]) -> [F192; 2] {
+fn table_digest(table: &[F128]) -> [F128; 2] {
     let mut h = [0u8; 32];
     for pair in table.chunks(2) {
         let mut pre = h.to_vec();
@@ -330,7 +375,7 @@ fn table_digest(table: &[F192]) -> [F192; 2] {
 struct Mq<'a>(&'a mut Hints);
 
 impl Mq<'_> {
-    fn limbs(r: u64) -> Vec<F192> {
+    fn limbs(r: u64) -> Vec<F128> {
         vec![
             count((r % LIMB as u64) as usize),
             count((r / LIMB as u64) as usize),
@@ -417,15 +462,16 @@ impl Scheme for MlDsa44 {
         let (t, offsets) = constants();
         let d = table_digest(&t);
         ps.insert("TABLE_PAIRS".into(), (t.len() / 2).to_string());
-        ps.insert("TABLE_D0".into(), f192_literal(d[0]));
-        ps.insert("TABLE_D1".into(), f192_literal(d[1]));
+        ps.insert("MAX_MESSAGE".into(), MAX_MESSAGE_LEN.to_string());
+        ps.insert("TABLE_D0".into(), f128_literal(d[0]));
+        ps.insert("TABLE_D1".into(), f128_literal(d[1]));
         for (name, at) in offsets {
             ps.insert(format!("CT_{name}"), at.to_string());
         }
     }
 
     fn item(i: usize) -> Item {
-        signed(i, message(i))
+        signed(i, &message(i))
     }
 
     fn claim(item: &Item) -> Claim {
@@ -433,7 +479,7 @@ impl Scheme for MlDsa44 {
         shake256(&[&item.pk], &mut tr);
         let mut bytes = CLAIM_TAG.to_vec();
         bytes.extend_from_slice(&tr);
-        bytes.extend_from_slice(&m_cells(&item.msg));
+        bytes.extend_from_slice(&crate::keccak(&framed(&item.msg)));
         crate::keccak(&bytes)
     }
 
@@ -445,16 +491,18 @@ impl Scheme for MlDsa44 {
 
     fn push_hints(item: &Item, hints: &mut Hints) {
         hints.push("ml_pk", cells(&item.pk));
-        hints.push("ml_msg", cells(&m_cells(&item.msg)));
+        let mut tr = [0u8; 64];
+        shake256(&[&item.pk], &mut tr);
+        push_message(&tr, &item.msg, hints);
         recompute_ctilde(item, hints);
     }
 
     /// The key's signature on another message, claimed for this one.
     fn forge(item: &Item) -> Item {
-        let mut other = item.msg;
+        let mut other = item.msg.clone();
         other[0] ^= 1;
         Item {
-            sig: signed(item.key, other).sig,
+            sig: signed(item.key, &other).sig,
             ..item.clone()
         }
     }
@@ -504,7 +552,7 @@ fn recompute_ctilde(item: &Item, hints: &mut Hints) -> [u8; 32] {
     let mut tr = [0u8; 64];
     shake256(&[pk], &mut tr);
     let mut mu = [0u8; 64];
-    shake256(&[&tr, &[0, 0], &item.msg], &mut mu);
+    shake256(&[&tr, &framed(&item.msg)], &mut mu);
 
     // SampleInBall.
     let ctilde = &sig[..32];
@@ -589,7 +637,7 @@ fn recompute_ctilde(item: &Item, hints: &mut Hints) -> [u8; 32] {
                 if v < Q {
                     let r1 = (v >> 12) as usize;
                     let wy = if r1 == 2046 {
-                        F192::ZERO
+                        F128::ZERO
                     } else {
                         (count(r1) + count(2046)).inv()
                     };
@@ -660,12 +708,12 @@ fn recompute_ctilde(item: &Item, hints: &mut Hints) -> [u8; 32] {
         let r = w[k];
         let (t, s) = (r / GAMMA2, r % GAMMA2);
         let wz = if s == 0 {
-            F192::ZERO
+            F128::ZERO
         } else {
-            (count(s as usize) + F192::ONE).inv()
+            (count(s as usize) + F128::ONE).inv()
         };
         let wy = if t == 88 {
-            F192::ZERO
+            F128::ZERO
         } else {
             (count(t as usize) + count(88)).inv()
         };
@@ -686,6 +734,8 @@ fn recompute_ctilde(item: &Item, hints: &mut Hints) -> [u8; 32] {
             w1enc[p / 8] |= (((v >> b) & 1) as u8) << (p % 8);
         }
     }
+    // mu || w1Encode: 52 cells.
+    hints.push("hash_split", hash_split(52, 0));
     let mut ct2 = [0u8; 32];
     shake256(&[&mu, &w1enc], &mut ct2);
     ct2

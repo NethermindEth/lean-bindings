@@ -18,7 +18,7 @@ pub fn limits() -> [u32; 7] {
         MAX_BYTES as u32,
         MAX_DEPS as u32,
         rec_aggregation_base::MAX_RECURSIONS as u32,
-        (signatures::lean_sphincs::PUB_KEY_SIZE + signatures::lean_sphincs::SIG_SIZE) as u32,
+        (lean_sphincs::PUB_KEY_SIZE + lean_sphincs::SIG_SIZE) as u32,
         MAX_INPUT_BYTES as u32,
         MAX_GENERIC_DEPENDENCIES as u32,
         1 << rec_aggregation_base::MAX_GENERIC_BYTECODE_LOG,
