@@ -1023,11 +1023,11 @@ mod tests {
         assert_eq!(keys[0], base::aggregated_vk());
         assert_eq!(keys[1], aggregated_vk(BATCHED));
         assert_ne!(keys[0], keys[1]);
-        // Guest 0 is EIP-8288's guest as the ABI 12 package pins it.
+        // Guest 0 is EIP-8288's guest, pinned.
         let base: Vec<u8> = (0..32)
             .map(|i| {
                 u8::from_str_radix(
-                    &"f6f37690cf7241c9ea24392f349867acc1c8e06034e8ce149e2f11a25eec56f9"
+                    &"b3a5a9b6773f76829132e11fa436d24bdac562014d2821396657fdf5dd081084"
                         [2 * i..2 * i + 2],
                     16,
                 )
