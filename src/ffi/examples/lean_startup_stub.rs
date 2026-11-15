@@ -7,7 +7,7 @@ pub extern "C" fn nlean_abi_version() -> u32 {
     if std::env::var("NETHERMIND_LEAN_STARTUP_PROBE").as_deref() == Ok("abi") {
         10
     } else {
-        12
+        20
     }
 }
 

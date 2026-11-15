@@ -3,7 +3,7 @@
 use super::cells::count;
 use super::child::gen_verify;
 use super::coverage::plan_coverage;
-use super::deferred::{DeferredClaim, aggregate_deferred_claims, bytecode_sums, bytecode_value, scalar_bytecode};
+use super::deferred::{DeferredBytecodeClaim, aggregate_deferred_claims, bytecode_sums, bytecode_value, scalar_bytecode};
 use super::error::{AggregateVerifyError, AggregationError, SnarkProveError, SnarkVerifyError};
 use super::guest::unified_guest;
 #[cfg(test)]
@@ -14,11 +14,10 @@ use super::proof::{EthereumClaims, EthereumProof, check_signer_set};
 use super::statement::{generic_claim_cells, lean_sphincs_claim_cells, list_split, statement_digest};
 use super::{GenericClaim, LeanSphincsClaim, MAX_RECURSIONS, RawGeneric};
 use fiat_shamir::merkle::hash_to_scalars;
-use lean_da::{BLOB_SYMBOLS, CELL_SYMBOLS, CELLS_PER_ROW, CODEWORD_SYMBOLS};
+use lean_da::{BLOB_SYMBOLS, CELLS_PER_ROW};
 use leanvm_core::cpu::{from_scalar, prove, public_input_bytes, scalar_proof};
-use primitives::field::{F64, F192};
-use signatures::lean_sphincs;
-use signatures::lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
+use lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
+use primitives::field::F128;
 
 /// Test builds only: whether this thread lifts the host's leanSTARK cap, so the guest's own is tested.
 fn allow_many_generic() -> bool {
@@ -35,7 +34,7 @@ fn allow_many_generic() -> bool {
 ///   ([`generic_witness`](super::generic_witness)), any order; at most
 ///   [`MAX_GENERIC_DEPENDENCIES`] distinct ones.
 /// - `raw_lean_sphincs`: list of `(public_key, message, signature)`, any order.
-/// - `blobs`: concatenated blobs, each containing [`BLOB_SYMBOLS`] little-endian `u64` symbols;
+/// - `blobs`: concatenated blobs, each containing [`BLOB_SYMBOLS`] symbols;
 ///   at most [`lean_da::DA_MAX_ROWS`] blobs. A node with blobs publishes their matrix's root, and none
 ///   of its children's.
 /// - `declare`: `None` keeps all signature claims and publishes the blob matrix's root, or else
@@ -60,7 +59,7 @@ pub fn aggregate(
     children: &[EthereumProof],
     raw_generic: Vec<RawGeneric>,
     raw_lean_sphincs: Vec<(LeanSphincsPublicKey, lean_sphincs::Message, LeanSphincsSignature)>,
-    blobs: &[u64],
+    blobs: &[lean_da::Symbol],
     declare: Option<&EthereumClaims>,
     log_inv_rate: usize,
 ) -> Result<EthereumProof, AggregationError> {
@@ -72,7 +71,7 @@ pub fn aggregate_with_stats(
     children: &[EthereumProof],
     raw_generic: Vec<RawGeneric>,
     raw_lean_sphincs: Vec<(LeanSphincsPublicKey, lean_sphincs::Message, LeanSphincsSignature)>,
-    blobs: &[u64],
+    blobs: &[lean_da::Symbol],
     declare: Option<&EthereumClaims>,
     log_inv_rate: usize,
 ) -> Result<(EthereumProof, leanvm_core::cpu::Stats), AggregationError> {
@@ -87,10 +86,13 @@ pub fn aggregate_with_stats(
     let direct = if blobs.is_empty() {
         None
     } else {
-        let _span = tracing::info_span!("LeanDA commit").entered();
-        Some(lean_da::commit(blobs)?)
+        let (rows, partial) = blobs.as_chunks::<BLOB_SYMBOLS>();
+        if !partial.is_empty() {
+            return Err(AggregationError::InvalidBlobSize { symbols: blobs.len() });
+        }
+        Some(lean_da::BlobMatrix::build(rows)?)
     };
-    let direct_root = direct.as_ref().map(|&(commitment, _)| commitment);
+    let direct_root = direct.as_ref().map(lean_da::BlobMatrix::top_root);
     if direct_root.is_some() && declared_root.is_some_and(|declared| declared != direct_root) {
         return Err(AggregationError::BlobsUnpublished);
     }
@@ -205,10 +207,10 @@ pub fn aggregate_with_stats(
     );
     let fs_seed = leanvm_core::cpu::fs_seed(guest);
     hints.push("fs_seed", vec![fs_seed[0], fs_seed[1]]);
-    // Both lists in the guest's order, leanSTARK first: each one's split, its declared
-    // claims, then its duplicates.
-    let generic_cells: Vec<[F192; 4]> = cover.generic.signers.iter().map(generic_claim_cells).collect();
-    let lean_sphincs_cells: Vec<[F192; 4]> = cover
+    // Both lists' declared claims in the guest's order, leanSTARK first, then the split of their
+    // dependency list, then the duplicates.
+    let generic_cells: Vec<[F128; 4]> = cover.generic.signers.iter().map(generic_claim_cells).collect();
+    let lean_sphincs_cells: Vec<[F128; 4]> = cover
         .lean_sphincs
         .signers
         .iter()
@@ -251,7 +253,7 @@ pub fn aggregate_with_stats(
 
     // Both claims of each child, in the batch's order: the fresh one, then the one it carried. The fresh
     // claim's value is read off the sums the batch runs on.
-    let claim_points: Vec<Vec<F192>> = replayed
+    let claim_points: Vec<Vec<F128>> = replayed
         .iter()
         .zip(children)
         .flat_map(|((_, summary), child)| {
@@ -300,19 +302,20 @@ pub fn aggregate_with_stats(
             hints.push(name, entry);
         }
         subs.push(defer);
-        carried.push(&child.defer);
+        carried.push(child.defer.clone());
     }
 
     drop(_span);
 
     let defer = if children.is_empty() {
-        let leaf = DeferredClaim::leaf();
+        let leaf = DeferredBytecodeClaim::leaf();
         hints.push("leaf_defer", vec![leaf.bytecode_value]);
         leaf
     } else {
         let _span = tracing::info_span!("Batch deferred claims").entered();
         let (agg_hints, reduced) =
-            aggregate_deferred_claims(&subs, &carried, sums).map_err(AggregationError::InvalidChild)?;
+            aggregate_deferred_claims(&subs, &carried, sums)
+                .ok_or(AggregationError::InvalidChild(AggregateVerifyError::MalformedClaim))?;
         for (name, entry) in agg_hints {
             hints.push(name, entry);
         }
@@ -320,28 +323,21 @@ pub fn aggregate_with_stats(
     };
 
     let mut da = child_da.get(da_pick).copied().unwrap_or_default();
-    if let Some((commitment, witness)) = direct {
-        let n_rows = blobs.len() / BLOB_SYMBOLS;
+    if let Some(matrix) = direct {
+        let commitment = matrix.top_root();
         da = verifier::da::digest(Some(commitment));
         hints.push(
             "da_challenge",
             vec![from_scalar(verifier::da::membership_challenge(&commitment))],
         );
-        hints.push(
-            "da_shape",
-            vec![count(n_rows), count(n_rows.next_power_of_two().ilog2() as usize)],
-        );
+        hints.push("da_n_blobs", vec![count(matrix.n_blobs())]);
         // Padding rows are constants the guest bakes, so only the real rows'
         // symbols ride the stream.
-        let (c, m) = (CELL_SYMBOLS, CODEWORD_SYMBOLS);
         for j in 0..CELLS_PER_ROW {
-            for i in 0..n_rows {
+            for cell in matrix.column(j).expect("a column below CELLS_PER_ROW") {
                 hints.push(
                     "da_symbols",
-                    witness.codewords[i * m + j * c..i * m + (j + 1) * c]
-                        .iter()
-                        .map(|&w| F192::from(F64(w)))
-                        .collect(),
+                    cell.iter().map(|&w| F128::new(w as u64, (w >> 64) as u64)).collect(),
                 );
             }
         }

@@ -1,7 +1,7 @@
 # EIP-8288 native Lean integration
 
 This adapter proves on unmodified [leanEthereum/leanVM](https://github.com/leanEthereum/leanVM), pinned to
-`e4dcb8d5436c9bf76398d890c57c59613af12956` in `Cargo.toml`; `Cargo.lock` pins every other dependency. The EIP-8288
+`f7ba4999ae523b94c8d0969b32762c3effea4cbd` in `Cargo.toml`; `Cargo.lock` pins every other dependency. The EIP-8288
 recursive guest and NiceTry v2 signatures live in `crates/`, vendored from the same revision with EIP-8288 changes on
 top (see `crates/README.md`). The guest verifies leanSPHINCS (NiceTry v2) signatures, generic leanVM execution proofs
 and its own child proofs. Upstream replacement belongs behind the existing `ILeanProofVerifier` interface and thin C
@@ -34,7 +34,7 @@ signatures and proofs and prints the pinned recursive verification key; `fixture
 one message, and `fixtures --prove-stark <hex> <file>` proves a leanSTARK dependency on it. **Build Lean** packages the vectors,
 this tool and the `lean_startup_stub` example as opt-in test assets of `Nethermind.Crypto.Lean`.
 
-The C ABI is version 12, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
+The C ABI is version 20, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
 `nlean_limits` writes seven u32 values (proof bytes, dependencies, recursive children,
 SPHINCS witness bytes, aggregation input bytes, leanSTARK claims per list, leanSTARK instructions); startup checks these against the managed protocol
 bounds before accepting work.
@@ -125,7 +125,7 @@ EIP, with the pinned guest's generic leanVM CPU proof as its leanSTARK profile:
   statement over it to the prover, a received mode-1 wrapper over it is invalid and an
   inclusion-list proof over it imposes no obligation, both without penalty or verification.
 
-Startup checks ABI 12, the pinned key and the seven bounds together. New devnets require fresh
+Startup checks ABI 20, the pinned key and the seven bounds together. New devnets require fresh
 chain and database namespaces.
 
 The latest companion specification has no block dependency quota: blocks are bounded by gas, mode-0 wrappers by `MAX_LEANSIG_DEPS_PER_WRAPPER`, `MAX_LEANSTARK_DEPS_PER_WRAPPER` and `MAX_WRAPPER_BYTES`, and mode-1 wrappers by `MAX_WRAPPER_BYTES` and the dependency-list limit of the circuit behind `AGGREGATED_VK`, which EIP-8288 fixes from benchmarks before activation. This prototype guest's limit is 256 dependencies, at most 16 of them leanSTARK; a received mode-1 wrapper over it is invalid and discarded before verification, without penalizing its sender. Blocks have no such limit in the draft, so this key cannot prove every block the draft permits and this prototype is not full-capacity conformance. Raising the bound changes the guest and so `AGGREGATED_VK`. Local inability to prove or retain a set is not an inclusion-list omission excuse. Full activation requires a verifier and proof format supporting every set the fork's gas rules permit, with the complete construction, including recursive merges and discards, benchmarked against the slot deadline.

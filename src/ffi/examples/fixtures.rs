@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Demerzel Solutions Limited
 // SPDX-License-Identifier: MIT
 use nethermind_lean::{ANY_INPUT_PROGRAM, aggregated_vk, keccak, prove_stark, verification_key};
-use signatures::lean_sphincs::{key_gen_from_seed, sign};
+use lean_sphincs::{key_gen_from_seed, sign};
 fn main() {
     let directory = std::env::args().nth(1).expect("fixture output directory");
     if directory == "--sign-message" || directory == "--prove-stark" {

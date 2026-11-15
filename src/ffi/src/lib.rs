@@ -6,7 +6,7 @@
 use rec_aggregation::{
     EthereumClaims, EthereumProof, MAX_GENERIC_BYTECODE_LOG, MAX_GENERIC_DEPENDENCIES,
 };
-use signatures::lean_sphincs::{self, LeanSphincsPublicKey, LeanSphincsSignature};
+use lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -390,7 +390,7 @@ fn checked(f: impl FnOnce() -> Result<bool, ()>) -> i32 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn nlean_abi_version() -> u32 {
-    12
+    20
 }
 /// Copies up to `len` bytes of the calling thread's last contained panic message into `out` and returns its full
 /// length; empty unless that thread's latest `checked` call returned -1.

@@ -1,5 +1,5 @@
 [package]
-name = "signatures"
+name = "lean_sphincs"
 version.workspace = true
 edition.workspace = true
 publish = false
@@ -7,11 +7,7 @@ publish = false
 [lints]
 workspace = true
 
-[features]
-mock = ["upstream_signatures/mock"]
-
 [dependencies]
-upstream_signatures.workspace = true
 primitives.workspace = true
 parallel.workspace = true
 rand.workspace = true

@@ -23,7 +23,7 @@ dependencies = [
 [[package]]
 name = "bench"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=e4dcb8d5436c9bf76398d890c57c59613af12956#e4dcb8d5436c9bf76398d890c57c59613af12956"
+source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
 dependencies = [
  "libc",
  "primitives",
@@ -51,7 +51,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 [[package]]
 name = "fiat_shamir"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=e4dcb8d5436c9bf76398d890c57c59613af12956#e4dcb8d5436c9bf76398d890c57c59613af12956"
+source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
 dependencies = [
  "parallel",
  "primitives",
@@ -78,7 +78,7 @@ dependencies = [
 [[package]]
 name = "keccak_gkr"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=e4dcb8d5436c9bf76398d890c57c59613af12956#e4dcb8d5436c9bf76398d890c57c59613af12956"
+source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
 dependencies = [
  "fiat_shamir",
  "parallel",
@@ -96,7 +96,7 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 [[package]]
 name = "lean_compiler"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=e4dcb8d5436c9bf76398d890c57c59613af12956#e4dcb8d5436c9bf76398d890c57c59613af12956"
+source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
 dependencies = [
  "leanvm_core",
  "primitives",
@@ -105,19 +105,35 @@ dependencies = [
 [[package]]
 name = "lean_da"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=e4dcb8d5436c9bf76398d890c57c59613af12956#e4dcb8d5436c9bf76398d890c57c59613af12956"
+source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
 dependencies = [
  "fiat_shamir",
- "parallel",
  "pcs",
  "primitives",
  "tracing",
 ]
 
 [[package]]
+name = "lean_sphincs"
+version = "0.1.0"
+dependencies = [
+ "parallel",
+ "primitives",
+ "rand",
+]
+
+[[package]]
+name = "lean_xmss"
+version = "0.1.0"
+source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
+dependencies = [
+ "primitives",
+]
+
+[[package]]
 name = "leanvm_core"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=e4dcb8d5436c9bf76398d890c57c59613af12956#e4dcb8d5436c9bf76398d890c57c59613af12956"
+source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
 dependencies = [
  "fiat_shamir",
  "keccak_gkr",
@@ -157,16 +173,16 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "nethermind-lean"
-version = "0.12.1"
+version = "0.20.0"
 dependencies = [
  "bench",
  "fiat_shamir",
  "lean_compiler",
+ "lean_sphincs",
  "leanvm_core",
  "parallel",
  "primitives",
  "rec_aggregation",
- "signatures 0.1.0",
  "tikv-jemallocator",
 ]
 
@@ -188,7 +204,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 [[package]]
 name = "parallel"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=e4dcb8d5436c9bf76398d890c57c59613af12956#e4dcb8d5436c9bf76398d890c57c59613af12956"
+source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
 dependencies = [
  "libc",
 ]
@@ -196,7 +212,7 @@ dependencies = [
 [[package]]
 name = "pcs"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=e4dcb8d5436c9bf76398d890c57c59613af12956#e4dcb8d5436c9bf76398d890c57c59613af12956"
+source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
 dependencies = [
  "fiat_shamir",
  "parallel",
@@ -222,7 +238,7 @@ dependencies = [
 [[package]]
 name = "primitives"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=e4dcb8d5436c9bf76398d890c57c59613af12956#e4dcb8d5436c9bf76398d890c57c59613af12956"
+source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
 dependencies = [
  "parallel",
 ]
@@ -288,12 +304,13 @@ dependencies = [
  "keccak_gkr",
  "lean_compiler",
  "lean_da",
+ "lean_sphincs",
+ "lean_xmss",
  "leanvm_core",
  "parallel",
  "pcs",
  "primitives",
  "rand",
- "signatures 0.1.0",
  "tracing",
  "verifier",
 ]
@@ -329,26 +346,6 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
-
-[[package]]
-name = "signatures"
-version = "0.1.0"
-dependencies = [
- "parallel",
- "primitives",
- "rand",
- "signatures 0.1.0 (git+https://github.com/leanEthereum/leanVM?rev=e4dcb8d5436c9bf76398d890c57c59613af12956)",
-]
-
-[[package]]
-name = "signatures"
-version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=e4dcb8d5436c9bf76398d890c57c59613af12956#e4dcb8d5436c9bf76398d890c57c59613af12956"
-dependencies = [
- "parallel",
- "primitives",
- "rand",
-]
 
 [[package]]
 name = "smallvec"
@@ -516,7 +513,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 [[package]]
 name = "verifier"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=e4dcb8d5436c9bf76398d890c57c59613af12956#e4dcb8d5436c9bf76398d890c57c59613af12956"
+source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
 
 [[package]]
 name = "wasip2"
