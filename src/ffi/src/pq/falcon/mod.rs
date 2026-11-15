@@ -96,15 +96,14 @@ pub fn padded(sig: &[u8]) -> Option<Vec<u8>> {
     })
 }
 
-/// The item of a signature without any check, to show that the leaf rejects what the native check does.
-#[cfg(test)]
-pub(super) fn unchecked(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> FalconItem {
-    FalconItem {
-        pk: pk.try_into().unwrap(),
+/// The item of a signature without any check, to establish what the leaf does with it; `None` when the leaf cannot express it.
+pub(super) fn unchecked(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Option<FalconItem> {
+    Some(FalconItem {
+        pk: pk.try_into().ok()?,
         msg: *msg,
         sig: sig.to_vec(),
         other: Vec::new(),
-    }
+    })
 }
 
 /// Key `key`'s PADDED signature over `msg`, with its public key: signing retries until the compressed `s2` fits.

@@ -101,7 +101,28 @@ impl Profile {
 /// A vector's input: label, public key, message, signature and whether the native check accepts it.
 type RawCase = (&'static str, Vec<u8>, [u8; 32], Vec<u8>, bool);
 
-/// One native/leaf equivalence vector.
+/// What the pinned leaf does with a vector, tested independently of the native check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeafResult {
+    /// The leaf proves the vector's claim.
+    Proves,
+    /// The leaf rejects it.
+    Rejects,
+    /// Not established: the input is inexpressible to the leaf, the host cannot build its witness, or it was not tried.
+    Untested,
+}
+
+impl LeafResult {
+    pub fn name(self) -> &'static str {
+        match self {
+            LeafResult::Proves => "proves",
+            LeafResult::Rejects => "rejects",
+            LeafResult::Untested => "untested",
+        }
+    }
+}
+
+/// One native/leaf conformance vector.
 pub struct Vector {
     pub profile: Profile,
     pub label: &'static str,
@@ -110,6 +131,37 @@ pub struct Vector {
     pub sig: Vec<u8>,
     /// The claim when the native check accepts.
     pub claim: Option<Claim>,
+    /// The leaf's independently tested result.
+    pub leaf: LeafResult,
+    /// The claim the leaf proves, when it does: a native-only rejection when the native check rejects.
+    pub leaf_claim: Option<Claim>,
+}
+
+/// The leaf's result for each vector, established by proving it (`leaf_results_match_the_leaf`; ML-DSA's accepted vectors by
+/// `mldsa_accepted_vectors_prove`). ML-DSA's rejections, the hint-encoding cases among them, are untested against the leaf.
+fn leaf_result(profile: Profile, label: &str) -> LeafResult {
+    use LeafResult::{Proves, Rejects, Untested};
+    match (profile, label) {
+        (_, "honest" | "honest, second key") => Proves,
+        (Profile::MlDsa44, _) => Untested,
+        (_, "truncated key") => Untested,
+        // The Falcon leaf takes the nonce and s2 coefficients, not their encoding.
+        (Profile::Falcon512, "truncated signature" | "extended signature" | "variable-length compressed encoding" | "nonzero padding"
+            | "constant-time encoding header" | "Falcon-1024 header") => Proves,
+        // SLH-DSA's host reads the signature at fixed offsets, so a trailing byte is ignored and a missing one leaves no witness.
+        (Profile::SlhDsa128s, "extended signature") => Proves,
+        (Profile::SlhDsa128s, "truncated signature") => Untested,
+        _ => Rejects,
+    }
+}
+
+/// The claim the leaf proves for a vector whose leaf result is [`LeafResult::Proves`].
+fn leaf_claim(profile: Profile, pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Option<Claim> {
+    match profile {
+        Profile::MlDsa44 => mldsa::unchecked(pk, msg, sig).map(|i| mldsa::MlDsa44::claim(&i)),
+        Profile::Falcon512 => falcon::unchecked(pk, msg, sig).map(|i| falcon::Falcon512::claim(&i)),
+        Profile::SlhDsa128s => slhdsa::unchecked(pk, msg, sig).map(|i| slhdsa::SlhDsa128s::claim(&i)),
+    }
 }
 
 /// Every profile's equivalence vectors, with the native verdicts this library reaches.
@@ -124,7 +176,11 @@ pub fn vectors() -> Vec<Vector> {
         for (label, pk, msg, sig, valid) in inputs {
             let claim = profile.verify(&pk, &msg, &sig);
             assert_eq!(claim.is_some(), valid, "{}: {label}", profile.name());
-            out.push(Vector { profile, label, pk, msg, sig, claim });
+            let leaf = leaf_result(profile, label);
+            let leaf_claim = if leaf == LeafResult::Proves { leaf_claim(profile, &pk, &msg, &sig) } else { None };
+            // Native acceptance must imply the leaf proves the same claim.
+            assert!(claim.is_none() || leaf_claim == claim, "{}: {label}", profile.name());
+            out.push(Vector { profile, label, pk, msg, sig, claim, leaf, leaf_claim });
         }
     }
     out
@@ -142,13 +198,16 @@ pub fn vectors_json() -> String {
         .iter()
         .map(|v| {
             format!(
-                "{{\"profile\":{},\"label\":\"{}\",\"publicKey\":{},\"message\":{},\"signature\":{},\"claim\":{}}}",
+                "{{\"profile\":{},\"label\":\"{}\",\"publicKey\":{},\"message\":{},\"signature\":{},\"claim\":{},\"native\":\"{}\",\"leaf\":\"{}\",\"leafClaim\":{}}}",
                 v.profile as u32,
                 v.label,
                 hex(&v.pk),
                 hex(&v.msg),
                 hex(&v.sig),
-                v.claim.map_or("null".to_string(), |c| hex(&c))
+                v.claim.map_or("null".to_string(), |c| hex(&c)),
+                if v.claim.is_some() { "accepts" } else { "rejects" },
+                v.leaf.name(),
+                v.leaf_claim.map_or("null".to_string(), |c| hex(&c))
             )
         })
         .collect();
@@ -198,6 +257,32 @@ mod tests {
         }
     }
 
+    /// Proves one vector with the leaf, bypassing the native check.
+    fn prove_with_leaf<S: Scheme>(program: &Program, item: Option<S::Item>) -> (LeafResult, Option<Claim>) {
+        let Some(item) = item else { return (LeafResult::Untested, None) };
+        let claim = S::claim(&item);
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| prove_items::<S>(program, vec![item], None))) {
+            Ok(Ok(leaf)) => (LeafResult::Proves, leaf.claims.first().copied().filter(|c| *c == claim)),
+            Ok(Err(_)) => (LeafResult::Rejects, None),
+            Err(_) => (LeafResult::Untested, None),
+        }
+    }
+
+    // The recorded leaf results are what the pinned leaf does: every Falcon and SLH-DSA vector is proved independently of the
+    // native check, so a native-only rejection is one the leaf proves with the same claim.
+    #[test]
+    fn leaf_results_match_the_leaf() {
+        for v in vectors().into_iter().filter(|v| v.profile != Profile::MlDsa44) {
+            let program = &v.profile.compiled().0;
+            let (result, claim) = match v.profile {
+                Profile::Falcon512 => prove_with_leaf::<falcon::Falcon512>(program, falcon::unchecked(&v.pk, &v.msg, &v.sig)),
+                _ => prove_with_leaf::<slhdsa::SlhDsa128s>(program, slhdsa::unchecked(&v.pk, &v.msg, &v.sig)),
+            };
+            assert_eq!(result, v.leaf, "{}: {}", v.profile.name(), v.label);
+            assert_eq!(claim, v.leaf_claim, "{}: {}", v.profile.name(), v.label);
+        }
+    }
+
     #[test]
     fn keys_are_distinct() {
         let keys: std::collections::BTreeSet<_> = Profile::ALL.iter().map(|p| p.key()).collect();
@@ -244,12 +329,12 @@ mod tests {
     #[test]
     fn the_leaf_rejects_signatures_the_native_check_rejects() {
         for v in of(Profile::SlhDsa128s).iter().filter(|v| v.label.starts_with("altered") && v.label != "altered message") {
-            let item = slhdsa::unchecked(&v.pk, &v.msg, &v.sig);
+            let item = slhdsa::unchecked(&v.pk, &v.msg, &v.sig).unwrap();
             let proved = prove_items::<slhdsa::SlhDsa128s>(&Profile::SlhDsa128s.compiled().0, vec![item], None);
             assert!(proved.is_err(), "slhdsa: {}", v.label);
         }
         for v in of(Profile::Falcon512).iter().filter(|v| matches!(v.label, "altered nonce" | "altered s2" | "signature over another message")) {
-            let item = falcon::unchecked(&v.pk, &v.msg, &v.sig);
+            let item = falcon::unchecked(&v.pk, &v.msg, &v.sig).unwrap();
             let proved = prove_items::<falcon::Falcon512>(&Profile::Falcon512.compiled().0, vec![item], None);
             assert!(proved.is_err(), "falcon: {}", v.label);
         }

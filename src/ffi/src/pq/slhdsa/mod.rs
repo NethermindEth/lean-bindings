@@ -64,15 +64,14 @@ pub fn verified(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Option<Item> {
     (key.verify(msg, &signature, &[]) && recompute(&item, &mut Hints::default()) == item.pk[N..]).then_some(item)
 }
 
-/// The item of a signature without any check, to show that the leaf rejects what the native check does.
-#[cfg(test)]
-pub(super) fn unchecked(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Item {
-    Item {
-        pk: pk.try_into().unwrap(),
+/// The item of a signature without any check, to establish what the leaf does with it; `None` when the leaf cannot express it.
+pub(super) fn unchecked(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Option<Item> {
+    Some(Item {
+        pk: pk.try_into().ok()?,
         msg: *msg,
         sig: sig.to_vec(),
         key: 0,
-    }
+    })
 }
 
 /// Key `key`'s signature over `msg`, with its public key.

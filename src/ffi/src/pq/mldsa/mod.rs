@@ -70,6 +70,16 @@ pub(super) fn sign_message(key: usize, msg: [u8; 32]) -> (Vec<u8>, Vec<u8>) {
     (item.pk.to_vec(), item.sig.to_vec())
 }
 
+/// The item of a signature without any check, to establish what the leaf does with it; `None` when the leaf cannot express it.
+pub(super) fn unchecked(pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Option<Item> {
+    Some(Item {
+        pk: pk.try_into().ok()?,
+        msg: *msg,
+        sig: sig.try_into().ok()?,
+        key: 0,
+    })
+}
+
 /// Equivalence vectors: honest signatures and the encodings and substitutions the native check must reject.
 pub(super) fn vector_inputs() -> Vec<super::RawCase> {
     let (a, b) = (signed(0, message(0)), signed(1, message(1)));

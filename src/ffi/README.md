@@ -71,7 +71,11 @@ costs). Profiles are `u32` identifiers: 1 ML-DSA-44, 2 Falcon-512, 3 SLH-DSA-SHA
   then per signature a u32-length key, the 32-byte message and a u32-length signature) after the same check, returning a
   witness freed with `nlean_free`. A one-signature leaf is also a direct witness of its dependency under guest 1.
 
-`fixtures` writes `raw-vectors.json`: each profile's key and equivalence vectors, accepted ones with their claims.
+`fixtures` writes `raw-vectors.json`: each profile's key and conformance vectors. Each records the native result (`native`, with
+the `claim` when accepted) and the leaf's, tested independently (`leaf`: `proves`, `rejects` or `untested`, with `leafClaim` when
+it proves). A rejection the leaf proves is native-only: Falcon's encoding checks (the leaf takes the nonce and `s2`
+coefficients, not their encoding) and a trailing SLH-DSA signature byte. ML-DSA's rejections, its hint-encoding cases among them,
+are untested against the leaf.
 
 ## Prototype wire format
 

@@ -38,7 +38,7 @@ public partial class RecognizedProgramTests
 
     private sealed record Profile(uint Id, string Name, byte[] Key);
 
-    private sealed record Vector(uint Profile, string Label, byte[] PublicKey, byte[] Message, byte[] Signature, byte[]? Claim);
+    private sealed record Vector(uint Profile, string Label, byte[] PublicKey, byte[] Message, byte[] Signature, byte[]? Claim, string Leaf);
 
     private static readonly Lazy<(Profile[] Profiles, Vector[] Vectors)> Vectors = new(Load);
 
@@ -51,7 +51,7 @@ public partial class RecognizedProgramTests
         Vector[] vectors = [.. json.RootElement.GetProperty("vectors").EnumerateArray()
             .Select(v => new Vector(v.GetProperty("profile").GetUInt32(), v.GetProperty("label").GetString()!, Hex(v.GetProperty("publicKey")),
                 Hex(v.GetProperty("message")), Hex(v.GetProperty("signature")),
-                v.GetProperty("claim").ValueKind == JsonValueKind.Null ? null : Hex(v.GetProperty("claim"))))];
+                v.GetProperty("claim").ValueKind == JsonValueKind.Null ? null : Hex(v.GetProperty("claim")), v.GetProperty("leaf").GetString()!))];
         return (profiles, vectors);
     }
 
@@ -86,6 +86,8 @@ public partial class RecognizedProgramTests
             (int result, byte[] claim) = VerifyRaw(vector.Profile, vector);
             await Assert.That(result).IsEqualTo(vector.Claim is null ? 0 : 1).Because(vector.Label);
             if (vector.Claim is not null) await Assert.That(claim).IsEquivalentTo(vector.Claim);
+            // EIP-8437 conformance: a native acceptance passes only with the leaf proving the same claim.
+            if (vector.Claim is not null) await Assert.That(vector.Leaf).IsEqualTo("proves").Because(vector.Label);
         }
     }
 
