@@ -5,7 +5,9 @@
 //! leanSTARK lists no longer capped at 16, so a chain without batch pricing keeps that package's input encoding (its
 //! `AGGREGATED_VK` changes with the field).
 
-use crate::{Dep, LEAN_SPHINCS, LEAN_STARK, LOG_INV_RATE, MAX_BYTES, MAX_DEPS, MAX_INPUT_BYTES};
+use crate::{
+    DEP_BYTES, Dep, LEAN_SPHINCS, LEAN_STARK, LOG_INV_RATE, MAX_BYTES, MAX_DEPS, MAX_INPUT_BYTES, MAX_RAW_PER_NODE,
+};
 use rec_aggregation_base::{EthereumClaims, EthereumProof, MAX_GENERIC_DEPENDENCIES};
 use std::collections::{BTreeSet, HashSet};
 
@@ -13,7 +15,7 @@ pub fn aggregated_vk() -> [u8; 32] {
     rec_aggregation_base::aggregated_vk()
 }
 
-/// The ABI 12 limits, in `nlean_limits` order.
+/// Guest 0's limits, in `nlean_limits` order.
 pub fn limits() -> [u32; 7] {
     [
         MAX_BYTES as u32,
@@ -53,7 +55,7 @@ impl<'a> Reader<'a> {
         self.take(n)
     }
     fn dep(&mut self) -> Result<Dep, ()> {
-        let d: Dep = self.take(96)?.try_into().map_err(|_| ())?;
+        let d: Dep = self.take(DEP_BYTES)?.try_into().map_err(|_| ())?;
         if d[..31].iter().any(|b| *b != 0) || !matches!(d[31], LEAN_SPHINCS | LEAN_STARK) {
             return Err(());
         }
@@ -134,7 +136,11 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
     let mut r = Reader { bytes: input };
     let mut all = Vec::new();
     let mut raw = Vec::new();
-    for _ in 0..r.count()? {
+    let raw_count = r.count()?;
+    if raw_count > MAX_RAW_PER_NODE {
+        return Err(());
+    }
+    for _ in 0..raw_count {
         let dep = r.dep()?;
         raw.push((dep, r.blob()?));
         all.push(dep);

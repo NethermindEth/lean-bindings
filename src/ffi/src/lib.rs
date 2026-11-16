@@ -18,9 +18,25 @@ use std::sync::{Barrier, Mutex, OnceLock};
 use std::thread::ThreadId;
 
 pub const MAX_BYTES: usize = 8 * 1024 * 1024;
-pub const MAX_INPUT_BYTES: usize = 18 * 1024 * 1024;
-/// A local bound: one guest node proves this many signatures in about 9 GiB.
-const MAX_DEPS: usize = 256;
+/// EIP-7934 `MAX_RLP_BLOCK_SIZE`: `MAX_BLOCK_SIZE` (10 MiB) less `SAFETY_MARGIN` (2 MiB).
+const MAX_RLP_BLOCK_SIZE: usize = 10 * 1024 * 1024 - 2 * 1024 * 1024;
+/// An encoded dependency triple.
+const DEP_BYTES: usize = 96;
+/// The most dependencies a list holds: EIP-8288's output capacity, `MAX_RLP_BLOCK_SIZE // 96`.
+const MAX_DEPS: usize = MAX_RLP_BLOCK_SIZE / DEP_BYTES;
+/// A local bound on the raw witnesses one call proves: one guest node proves this many signatures in about 9 GiB.
+/// EIP-8288 bounds a step only by its resources; the guests' own bound is their memory.
+const MAX_RAW_PER_NODE: usize = 256;
+/// The framing of one length-prefixed field.
+const LEN_BYTES: usize = 4;
+/// Every child's full dependency list and largest proof; each inner proof's largest witness, with a full batch leaf's
+/// key, claims and framing (guest 0's raw leanSTARK witnesses, guest 1's leaves); the raw signatures; and a full
+/// discard list.
+pub const MAX_INPUT_BYTES: usize = 4 * LEN_BYTES
+    + rec_aggregation::MAX_RECURSIONS * (2 * LEN_BYTES + MAX_DEPS * DEP_BYTES + MAX_BYTES)
+    + MAX_INNER_PROOFS_PER_STEP * (3 * LEN_BYTES + 32 + MAX_CLAIMS_PER_BATCH_LEAF * 32 + MAX_BYTES)
+    + MAX_RAW_PER_NODE * (DEP_BYTES + LEN_BYTES + lean_sphincs::PUB_KEY_SIZE + lean_sphincs::SIG_SIZE)
+    + MAX_DEPS * DEP_BYTES;
 // The upstream prover's timings assume its allocator: jemalloc keeps a proof's freed pages mapped for the next one.
 // It serves this library's allocations only, and holds their peak until the process exits.
 #[global_allocator]
@@ -52,7 +68,7 @@ static ACTIVE_ABI_CALLS: AtomicUsize = AtomicUsize::new(0);
 static ABI_WORKERS: OnceLock<Vec<ThreadId>> = OnceLock::new();
 thread_local! { static IN_ABI: Cell<bool> = const { Cell::new(false) }; }
 thread_local! { static LAST_PANIC: RefCell<String> = const { RefCell::new(String::new()) }; }
-type Dep = [u8; 96];
+type Dep = [u8; DEP_BYTES];
 const LEAN_SPHINCS: u8 = 0x10;
 /// EIP-8288 reserves this scheme; accepting it is an experimental extension of this stack.
 const LEAN_STARK: u8 = 0x11;
@@ -129,7 +145,7 @@ impl<'a> Reader<'a> {
         self.take(n)
     }
     fn dep(&mut self) -> Result<Dep, ()> {
-        let d: Dep = self.take(96)?.try_into().map_err(|_| ())?;
+        let d: Dep = self.take(DEP_BYTES)?.try_into().map_err(|_| ())?;
         if !known_scheme(&d) {
             return Err(());
         }
@@ -297,7 +313,11 @@ pub fn prove_aggregate(guest: Guest, hash: &[u8; 32], input: &[u8]) -> Result<Ve
     // EIP-8288 MAX_INNER_PROOFS_PER_STEP: every supplied leanSTARK proof, a direct one as a singleton leaf, and every
     // child, discarded or redundant ones included; leanSPHINCS witnesses do not count.
     let mut inner_proofs = 0;
-    for _ in 0..r.count()? {
+    let raw_count = r.count()?;
+    if raw_count > MAX_RAW_PER_NODE {
+        return Err(());
+    }
+    for _ in 0..raw_count {
         let dep = r.dep()?;
         inner_proofs += usize::from(dep[31] != LEAN_SPHINCS);
         raw.push((dep, r.blob()?));
@@ -900,8 +920,10 @@ mod tests {
         dep
     }
     fn signed(index: u8) -> (Dep, Vec<u8>) {
-        let (sk, pk) = lean_sphincs::key_gen_from_seed([index; 32]);
-        let message = keccak(&[index]);
+        signed_by([index; 32], keccak(&[index]))
+    }
+    fn signed_by(seed: [u8; 32], message: [u8; 32]) -> (Dep, Vec<u8>) {
+        let (sk, pk) = lean_sphincs::key_gen_from_seed(seed);
         let mut dep = [0; 96];
         dep[31] = 0x10;
         dep[32..64].copy_from_slice(&message);
@@ -1011,10 +1033,9 @@ mod tests {
         assert_eq!(limits[6], 2048, "leanSTARK instructions");
         assert_eq!(unsafe { nlean_limits(1, limits.as_mut_ptr(), 6) }, 0);
         assert_eq!(unsafe { nlean_limits(2, limits.as_mut_ptr(), 7) }, 0);
-        // EIP-8288's guest keeps the ABI 12 package's limits.
         let mut base = [0u32; 7];
         assert_eq!(unsafe { nlean_limits(0, base.as_mut_ptr(), 7) }, 1);
-        assert_eq!(base, [8 << 20, 256, 16, base[3], 18 << 20, 16, 2048]);
+        assert_eq!(base, [8 << 20, MAX_DEPS as u32, 16, base[3], MAX_INPUT_BYTES as u32, 16, 2048]);
         // One key per guest, and no third guest.
         let mut keys = [[0u8; 32]; 3];
         let verdicts = [0, 1, 2]
@@ -1374,6 +1395,33 @@ mod tests {
         .unwrap();
         assert!(verify_aggregate(BASE, &hash_of(&kept), &merged).is_ok());
         assert!(verify_aggregate(BASE, &hash_of(&[stark, other, sig]), &merged).is_err());
+    }
+
+    /// An aggregate holds more dependencies than one call takes raw witnesses: leaves whose union exceeds
+    /// `MAX_RAW_PER_NODE` merge and verify under either guest, while the same witnesses raw in one call are refused.
+    #[test]
+    fn merges_past_the_raw_witness_bound() {
+        const LEAVES: usize = 3;
+        const PER_LEAF: u16 = 86;
+        let raw: Vec<_> = (0..LEAVES as u16 * PER_LEAF)
+            .map(|i| signed_by(keccak(&[b"many".as_slice(), &i.to_le_bytes()].concat()), keccak(&i.to_le_bytes())))
+            .collect();
+        let all: Vec<Dep> = raw.iter().map(|(dep, _)| *dep).collect();
+        assert!(all.len() > MAX_RAW_PER_NODE);
+        for guest in [BASE, BATCHED] {
+            assert!(prove_aggregate(guest, &hash_of(&all), &input(&raw, &[], &[])).is_err());
+            let leaves: Vec<_> = raw
+                .chunks(PER_LEAF.into())
+                .map(|raw| {
+                    let deps = canonical(raw.iter().map(|(dep, _)| *dep).collect());
+                    let proof = prove_aggregate(guest, &hash_of(&deps), &input(raw, &[], &[])).unwrap();
+                    (deps, proof)
+                })
+                .collect();
+            let children: Vec<_> = leaves.iter().map(|(deps, proof)| (&deps[..], &proof[..])).collect();
+            let merged = prove_aggregate(guest, &hash_of(&all), &input(&[], &children, &[])).unwrap();
+            assert!(verify_aggregate(guest, &hash_of(&all), &merged).is_ok(), "{guest:?}");
+        }
     }
 
     #[test]

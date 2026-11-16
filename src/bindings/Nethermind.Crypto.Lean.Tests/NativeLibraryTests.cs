@@ -17,10 +17,17 @@ public partial class NativeLibraryTests
     // EIP-8288's guest (0) and the one with ethereum/EIPs#12664 batched generic proof dependencies (1).
     private const string ExpectedAggregatedVk = "e09e5acfcfe87832f337eb42acac98246d160bb915b55c55fbd8118b203cbb81";
     private const string ExpectedBatchedAggregatedVk = "6a2e13dab57ca0558170a9a047039221ce10ebdcd94beb53cf75f7d89ce65af9";
-    // Proof bytes, dependencies, inner proofs per step, NiceTry v2 witness bytes, aggregation input bytes, leanSTARK
-    // dependencies per list (guest 0) or claims per batch leaf (guest 1), leanSTARK instructions.
-    private static readonly uint[] ExpectedLimits = [8 * 1024 * 1024, 256, 16, 32 + 6176, 18 * 1024 * 1024, 16, 2048];
-    private static readonly uint[] ExpectedBatchedLimits = [8 * 1024 * 1024, 256, 16, 32 + 6176, 18 * 1024 * 1024, 256, 2048];
+    private const uint MaxProofBytes = 8 * 1024 * 1024;
+    // EIP-8288's output capacity: EIP-7934 MAX_RLP_BLOCK_SIZE // 96.
+    private const uint MaxDependencies = (10 * 1024 * 1024 - 2 * 1024 * 1024) / 96;
+    // Framing, 16 children's full lists and largest proofs, 16 inner proofs' largest witnesses with full batch-leaf
+    // framing, 256 raw signatures, a full discard list.
+    private const uint MaxInputBytes = 4 * 4 + 16 * (2 * 4 + MaxDependencies * 96 + MaxProofBytes)
+        + 16 * (3 * 4 + 32 + 256 * 32 + MaxProofBytes) + 256 * (96 + 4 + 32 + 6176) + MaxDependencies * 96;
+    // Proof bytes, dependencies, inner proofs per step, NiceTry v2 witness bytes, aggregation input bytes, raw leanSTARK
+    // proofs per node (guest 0) or claims per batch leaf (guest 1), leanSTARK instructions.
+    private static readonly uint[] ExpectedLimits = [MaxProofBytes, MaxDependencies, 16, 32 + 6176, MaxInputBytes, 16, 2048];
+    private static readonly uint[] ExpectedBatchedLimits = [MaxProofBytes, MaxDependencies, 16, 32 + 6176, MaxInputBytes, 256, 2048];
 
     // A project reference leaves the library under runtimes/<rid>/native; a package consumer gets it beside the binary.
     static NativeLibraryTests() => NativeLibrary.SetDllImportResolver(typeof(NativeLibraryTests).Assembly, static (name, assembly, searchPath) =>
