@@ -34,9 +34,9 @@ signatures and proofs and prints the pinned recursive verification key; `fixture
 one message, and `fixtures --prove-stark <hex> <file>` proves a leanSTARK dependency on it. **Build Lean** packages the vectors,
 this tool and the `lean_startup_stub` example as opt-in test assets of `Nethermind.Crypto.Lean`.
 
-The C ABI is version 20, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
+The C ABI is version 21, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
 `nlean_limits` writes seven u32 values (proof bytes, dependencies, recursive children,
-SPHINCS witness bytes, aggregation input bytes, leanSTARK claims per list, leanSTARK instructions); startup checks these against the managed protocol
+SPHINCS witness bytes, aggregation input bytes, raw leanSTARK proofs per node, leanSTARK instructions); startup checks these against the managed protocol
 bounds before accepting work.
 Verification/proving return 1 on success, 0 on failure and -1 for a contained panic. After -1, `nlean_last_error(out, len)` on the same
 thread copies up to `len` bytes of the panic message and returns its full length. Callers initialize proof output
@@ -120,15 +120,16 @@ EIP, with the pinned guest's generic leanVM CPU proof as its leanSTARK profile:
 * Frames, wrappers and inclusion-list `proof_deps` accept `0x11`, charged
   `LEANSTARK_VERIFICATION_GAS`; any other scheme is rejected as before.
 * The guest checks every entry of the selected list and of each child list, discarded entries
-  included, against its run, and holds at most 16 leanSTARK entries per list. Like the
-  256-dependency bound it is part of the circuit's dependency-list limit: the builder never sends a
-  statement over it to the prover, a received mode-1 wrapper over it is invalid and an
-  inclusion-list proof over it imposes no obligation, both without penalty or verification.
+  included, against its run, and verifies at most 16 raw leanSTARK proofs per node; its lists
+  hold leanSTARK entries up to the 256-dependency bound. That bound is the circuit's
+  dependency-list limit: the builder never sends a statement over it to the prover, a received
+  mode-1 wrapper over it is invalid and an inclusion-list proof over it imposes no obligation,
+  both without penalty or verification.
 
-Startup checks ABI 20, the pinned key and the seven bounds together. New devnets require fresh
+Startup checks ABI 21, the pinned key and the seven bounds together. New devnets require fresh
 chain and database namespaces.
 
-The latest companion specification has no block dependency quota: blocks are bounded by gas, mode-0 wrappers by `MAX_LEANSIG_DEPS_PER_WRAPPER`, `MAX_LEANSTARK_DEPS_PER_WRAPPER` and `MAX_WRAPPER_BYTES`, and mode-1 wrappers by `MAX_WRAPPER_BYTES` and the dependency-list limit of the circuit behind `AGGREGATED_VK`, which EIP-8288 fixes from benchmarks before activation. This prototype guest's limit is 256 dependencies, at most 16 of them leanSTARK; a received mode-1 wrapper over it is invalid and discarded before verification, without penalizing its sender. Blocks have no such limit in the draft, so this key cannot prove every block the draft permits and this prototype is not full-capacity conformance. Raising the bound changes the guest and so `AGGREGATED_VK`. Local inability to prove or retain a set is not an inclusion-list omission excuse. Full activation requires a verifier and proof format supporting every set the fork's gas rules permit, with the complete construction, including recursive merges and discards, benchmarked against the slot deadline.
+The latest companion specification has no block dependency quota: blocks are bounded by gas, mode-0 wrappers by `MAX_LEANSIG_DEPS_PER_WRAPPER`, `MAX_LEANSTARK_DEPS_PER_WRAPPER` and `MAX_WRAPPER_BYTES`, and mode-1 wrappers by `MAX_WRAPPER_BYTES` and the dependency-list limit of the circuit behind `AGGREGATED_VK`, which EIP-8288 fixes from benchmarks before activation. This prototype guest's limit is 256 dependencies of either scheme; a received mode-1 wrapper over it is invalid and discarded before verification, without penalizing its sender. Blocks have no such limit in the draft, so this key cannot prove every block the draft permits and this prototype is not full-capacity conformance. Raising the bound changes the guest and so `AGGREGATED_VK`. Local inability to prove or retain a set is not an inclusion-list omission excuse. Full activation requires a verifier and proof format supporting every set the fork's gas rules permit, with the complete construction, including recursive merges and discards, benchmarked against the slot deadline.
 
 ## Proving resources
 

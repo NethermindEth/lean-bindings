@@ -136,9 +136,6 @@ pub fn commitment(ds: &[Dep]) -> [u8; 32] {
     let claims = claims(ds);
     rec_aggregation::deps_hash(&claims.lean_sphincs, &claims.generic)
 }
-fn generic_count(ds: &[Dep]) -> usize {
-    ds.iter().filter(|dep| dep[31] == LEAN_STARK).count()
-}
 fn canonical(ds: Vec<Dep>) -> Vec<Dep> {
     ds.into_iter()
         .collect::<BTreeSet<_>>()
@@ -242,9 +239,6 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
             }
             continue;
         }
-        if generic_count(&declared) > MAX_GENERIC_DEPENDENCIES {
-            return Err(());
-        }
         children.push((decode_child(&declared, proof)?, proof, declared.clone()));
         all.extend(declared);
     }
@@ -260,10 +254,7 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    if deps.len() > MAX_DEPS
-        || generic_count(&deps) > MAX_GENERIC_DEPENDENCIES
-        || commitment(&deps) != *hash
-    {
+    if deps.len() > MAX_DEPS || commitment(&deps) != *hash {
         return Err(());
     }
     if deps.is_empty() {
@@ -390,7 +381,7 @@ fn checked(f: impl FnOnce() -> Result<bool, ()>) -> i32 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn nlean_abi_version() -> u32 {
-    20
+    21
 }
 /// Copies up to `len` bytes of the calling thread's last contained panic message into `out` and returns its full
 /// length; empty unless that thread's latest `checked` call returned -1.
@@ -714,6 +705,24 @@ mod tests {
         .unwrap();
         assert!(verify_aggregate(&hash_of(&kept), &merged).is_ok());
         assert!(verify_aggregate(&hash_of(&[stark, other, sig]), &merged).is_err());
+    }
+
+    /// One call verifies at most `MAX_GENERIC_DEPENDENCIES` raw leanSTARK witnesses; children carry more between them.
+    #[test]
+    fn merges_children_past_the_raw_leanstark_cap() {
+        let raw: Vec<_> = (0..=MAX_GENERIC_DEPENDENCIES as u8).map(proven).collect();
+        let all = canonical(raw.iter().map(|(dep, _)| *dep).collect());
+        assert!(prove_aggregate(&hash_of(&all), &input(&raw, &[], &[])).is_err());
+        let (left, right) = raw.split_at(raw.len() / 2);
+        let leaf = |raw: &[(Dep, Vec<u8>)]| {
+            let deps = canonical(raw.iter().map(|(dep, _)| *dep).collect());
+            let proof = prove_aggregate(&hash_of(&deps), &input(raw, &[], &[])).unwrap();
+            (deps, proof)
+        };
+        let ((left, left_proof), (right, right_proof)) = (leaf(left), leaf(right));
+        let children = [(&left[..], &left_proof[..]), (&right[..], &right_proof[..])];
+        let merged = prove_aggregate(&hash_of(&all), &input(&[], &children, &[])).unwrap();
+        assert!(verify_aggregate(&hash_of(&all), &merged).is_ok());
     }
 
     #[test]

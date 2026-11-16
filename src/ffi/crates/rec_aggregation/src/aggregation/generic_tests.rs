@@ -1,7 +1,7 @@
 //! leanSTARK (`0x11`) dependencies: proving, recursion, the digest, and the guest's rejections.
 
 use super::cells::count;
-use super::error::{AggregateVerifyError, AggregationError};
+use super::error::AggregationError;
 use super::hints::{ALLOW_MANY_GENERIC, FORGE, Hints};
 use super::node::aggregate;
 use super::proof::{EthereumClaims, EthereumProof};
@@ -238,7 +238,7 @@ fn recursion_mixes_schemes_dedups_and_discards() {
 }
 
 #[test]
-fn claims_over_the_cap_are_refused() {
+fn raw_proofs_over_the_cap_are_refused() {
     let deps: Vec<RawGeneric> = (0..=MAX_GENERIC_DEPENDENCIES as u8)
         .map(|i| preimage_dep(100 + i))
         .collect();
@@ -255,16 +255,26 @@ fn claims_over_the_cap_are_refused() {
         "{:?}",
         result.err()
     );
-    // A list of 17 claims fails the native check as well.
-    let mut claims = EthereumClaims::default();
-    claims.generic = (0..=MAX_GENERIC_DEPENDENCIES as u8)
-        .map(|i| ([i; 32], [0; 32]))
-        .collect();
-    let proof = aggregate(&[], vec![preimage_dep(7)], vec![], &[], None, RATE).expect("proves");
-    assert_eq!(
-        EthereumProof::from_proof_bytes(&proof.proof_bytes(), claims).err(),
-        Some(AggregateVerifyError::MalformedSignerSet)
-    );
+}
+
+/// The raw cap bounds one node's proofs, not the lists it carries: children whose union exceeds it merge, and the
+/// merge is carried further.
+#[test]
+fn merges_carry_more_generic_claims_than_one_node_verifies() {
+    let full: Vec<RawGeneric> = (0..MAX_GENERIC_DEPENDENCIES as u8).map(|i| preimage_dep(140 + i)).collect();
+    let (extra, more) = (preimage_dep(170), preimage_dep(171));
+    let full_leaf = aggregate(&[], full.clone(), vec![], &[], None, RATE).expect("the most raw proofs a node takes");
+    let extra_leaf = aggregate(&[], vec![extra.clone()], vec![], &[], None, RATE).expect("proves");
+    let merged = aggregate(&[full_leaf, extra_leaf], vec![], vec![], &[], None, RATE).expect("merges");
+    let mut want: Vec<GenericClaim> = full.iter().chain([&extra]).map(claim).collect();
+    want.sort();
+    assert_eq!(merged.claims().generic, want);
+    check(&merged);
+    let parent = aggregate(&[merged], vec![more.clone()], sphincs(1), &[], None, RATE).expect("carries the merge");
+    want.push(claim(&more));
+    want.sort();
+    assert_eq!(parent.claims().generic, want);
+    check(&parent);
 }
 
 #[test]

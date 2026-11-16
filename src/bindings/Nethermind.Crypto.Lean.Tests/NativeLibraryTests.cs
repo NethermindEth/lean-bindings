@@ -13,8 +13,8 @@ namespace Nethermind.Crypto.Lean.Tests;
 public partial class NativeLibraryTests
 {
     private const string Library = "nethermind_lean";
-    private const uint ExpectedAbi = 20;
-    private const string ExpectedAggregatedVk = "b3a5a9b6773f76829132e11fa436d24bdac562014d2821396657fdf5dd081084";
+    private const uint ExpectedAbi = 21;
+    private const string ExpectedAggregatedVk = "e09e5acfcfe87832f337eb42acac98246d160bb915b55c55fbd8118b203cbb81";
     // Proof bytes, dependencies, recursive children, NiceTry v2 witness bytes, aggregation input bytes, leanSTARK claims
     // per list, leanSTARK instructions.
     private static readonly uint[] ExpectedLimits = [8 * 1024 * 1024, 256, 16, 32 + 6176, 18 * 1024 * 1024, 16, 2048];

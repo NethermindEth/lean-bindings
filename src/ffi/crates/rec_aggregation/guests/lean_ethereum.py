@@ -404,7 +404,7 @@ STMT_CELLS = STMT_DEFER_OFF + DEFER_STMT_CELLS
 # carries that state through a heap run between loop frames, KECCAK_STATE cells a
 # step (`claim_list_digest`).
 KECCAK_STATE = KECCAK_STATE_PLACEHOLDER
-# leanSTARK (0x11) dependencies: the most instructions (log) and claims a list, and the
+# leanSTARK (0x11) dependencies: the most instructions (log) and raw proofs a node, and the
 # leanVM tag's first 8 bytes as a lane and its 9th byte, and the mixed dependency
 # digest's 32-byte domain as two cells.
 MAX_GENERIC_BYTECODE_LOG = MAX_GENERIC_BYTECODE_LOG_PLACEHOLDER
@@ -4366,9 +4366,9 @@ def main():
     n_raw_s_g = meta[5]
     n_children_g = meta[6]
     n_direct_da_g = meta[7]
-    # The first list is the leanSTARK (0x11) one, at most MAX_GENERIC_DEPENDENCIES
-    # declared claims and as many proofs verified here.
-    assert log(n_lx_g) < MAX_GENERIC_DEPENDENCIES + 1
+    # The first list is the leanSTARK (0x11) one, bounded like the leanSPHINCS one, with
+    # at most MAX_GENERIC_DEPENDENCIES proofs verified here.
+    assert_gpow(n_lx_g)
     assert_gpow(n_xdup_g)
     assert log(n_raw_x_g) < MAX_GENERIC_DEPENDENCIES + 1
     assert_gpow(n_lean_sphincs_g)
@@ -4466,7 +4466,7 @@ def main():
         hint_witness(child_meta, "child_meta")  # n_generic, n_lean_sphincs
         nsub_x_g = child_meta[0]
         nsub_s_g = child_meta[1]
-        assert log(nsub_x_g) < MAX_GENERIC_DEPENDENCIES + 1
+        assert_gpow(nsub_x_g)
         assert_gpow(nsub_s_g)
         nsub_g = nsub_x_g * nsub_s_g
         cx_0, cx_1 = child_claim_list_digest(lx_table, cover, base, lx_slots_g, nsub_x_g)
