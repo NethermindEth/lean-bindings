@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 root=$PWD
 mode=${1:?usage: crates/upstream.sh diff | update <rev>}
 old=$(grep -o 'leanEthereum/leanVM", rev = "[0-9a-f]*"' Cargo.toml | grep -o '[0-9a-f]\{40\}' | sort -u)
-[ "$(wc -l <<<"$old")" = 1 ] || { echo "Cargo.toml must pin exactly one leanVM revision" >&2; exit 1; }
+[ "$(wc -l <<<"$old" | tr -d " ")" = 1 ] || { echo "Cargo.toml must pin exactly one leanVM revision" >&2; exit 1; }
 
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
@@ -18,7 +18,7 @@ git clone -q --filter=blob:none "${LEANVM_REPO:-https://github.com/leanEthereum/
 git -C "$work/repo" worktree add -q --detach "$work/base" "$old"
 
 if [ "$mode" = diff ]; then
-  for crate in rec_aggregation signatures; do
+  for crate in rec_aggregation lean_sphincs; do
     git diff --no-index --stat=200 -- "$work/base/crates/$crate" "crates/$crate" | sed "s|$work/base||g" || true
     git diff --no-index -- "$work/base/crates/$crate" "crates/$crate" | sed "s|$work/base||g" || true
   done
@@ -29,8 +29,8 @@ new=$(git -C "$work/repo" rev-parse --verify "${2:?update needs a revision}^{com
 git -C "$work/repo" worktree add -q --detach "$work/next" "$new"
 
 conflicts=0
-for crate in rec_aggregation signatures; do
-  files=$(for tree in "$work/base" "$work/next" "$root"; do (cd "$tree/crates/$crate" && find . -type f); done | sort -u)
+for crate in rec_aggregation lean_sphincs; do
+  files=$(for tree in "$work/base" "$work/next" "$root"; do [ -d "$tree/crates/$crate" ] && (cd "$tree/crates/$crate" && find . -type f); done | sort -u)
   for f in $files; do
     ours=crates/$crate/$f base=$work/base/crates/$crate/$f next=$work/next/crates/$crate/$f
     if [ -f "$ours" ] && [ -f "$base" ] && [ -f "$next" ]; then
@@ -46,6 +46,6 @@ for crate in rec_aggregation signatures; do
   done
 done
 
-sed -i "s/$old/$new/g" Cargo.toml
+sed -i.bak "s/$old/$new/g" Cargo.toml && rm Cargo.toml.bak
 cargo update -q -p leanvm_core
 echo "leanVM ${old:0:10} -> ${new:0:10}; $conflicts conflicted file(s). Rebuild, rerun the tests and print the new AGGREGATED_VK."

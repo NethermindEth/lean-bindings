@@ -16,6 +16,10 @@ on:
           - 'No'
           - Staging
           - Production
+      build-run:
+        description: Build Lean run ID whose binaries to publish to staging instead of the committed ones
+        default: ''
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -47,11 +51,39 @@ jobs:
           - ubuntu-latest
           - ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          lfs: true
+          lfs: ${{ inputs.build-run == '' }}
+
+      # The binaries a staging publish takes from a Build Lean run are the ones tested; Publish checks the run.
+      - name: Remove the committed outputs
+        if: inputs.build-run != ''
+        run: rm -rf src/bindings/Nethermind.Crypto.Lean/runtimes src/bindings/Nethermind.Crypto.Lean/testing
+
+      - name: Download the libraries
+        if: inputs.build-run != ''
+        uses: actions/download-artifact@v8
+        with:
+          pattern: linux-*
+          merge-multiple: true
+          path: src/bindings/Nethermind.Crypto.Lean/runtimes
+          run-id: ${{ inputs.build-run }}
+          github-token: ${{ github.token }}
+
+      - name: Download the test assets
+        if: inputs.build-run != ''
+        uses: actions/download-artifact@v8
+        with:
+          pattern: testing-linux-*
+          merge-multiple: true
+          path: src/bindings/Nethermind.Crypto.Lean/testing
+          run-id: ${{ inputs.build-run }}
+          github-token: ${{ github.token }}
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
@@ -136,6 +168,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.publish != 'No' || github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       id-token: write
     env:
@@ -143,20 +176,84 @@ jobs:
       NUGET_SOURCE: ${{ inputs.publish == 'Staging' && 'https://apiint.nugettest.org' || 'https://api.nuget.org' }}/v3/index.json
 
     steps:
+      # NuGet.org takes only the committed binaries; a branch's build goes to staging only, from that exact commit.
+      - name: Check the Build Lean run
+        if: inputs.build-run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN: ${{ inputs.build-run }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [[ $PUBLISH == Staging ]] || fail "A Build Lean run publishes to staging only, not $PUBLISH"
+          [[ $GITHUB_REF == refs/heads/* && $GITHUB_REF != refs/heads/main ]] || fail "A Build Lean run publishes only from a branch other than main, not $GITHUB_REF"
+          [[ $BUILD_RUN =~ ^[0-9]+$ ]] || fail "Invalid run ID '$BUILD_RUN'"
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN" \
+            --jq '[.repository.full_name, .path, .conclusion, .head_sha] | @tsv')
+          IFS=$'\t' read -r repo path conclusion sha <<< "$run"
+          [[ $repo == "$GITHUB_REPOSITORY" && $path == .github/workflows/build-lean.yml ]] || fail "Run $BUILD_RUN is $repo/$path, not Build Lean"
+          [[ $conclusion == success ]] || fail "Run $BUILD_RUN concluded '$conclusion', not success"
+          [[ $sha == "$GITHUB_SHA" ]] || fail "Run $BUILD_RUN built $sha, not $GITHUB_SHA"
+
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          lfs: true
+          lfs: ${{ inputs.build-run == '' }}
 
+      - name: Remove the committed outputs
+        if: inputs.build-run != ''
+        run: rm -rf src/bindings/Nethermind.Crypto.Lean/runtimes src/bindings/Nethermind.Crypto.Lean/testing THIRD-PARTY-NOTICES
+
+      - name: Download the libraries
+        if: inputs.build-run != ''
+        uses: actions/download-artifact@v8
+        with:
+          pattern: linux-*
+          merge-multiple: true
+          path: src/bindings/Nethermind.Crypto.Lean/runtimes
+          run-id: ${{ inputs.build-run }}
+          github-token: ${{ github.token }}
+
+      - name: Download the test assets
+        if: inputs.build-run != ''
+        uses: actions/download-artifact@v8
+        with:
+          pattern: testing-linux-*
+          merge-multiple: true
+          path: src/bindings/Nethermind.Crypto.Lean/testing
+          run-id: ${{ inputs.build-run }}
+          github-token: ${{ github.token }}
+
+      - name: Download the notices
+        if: inputs.build-run != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: notices
+          run-id: ${{ inputs.build-run }}
+          github-token: ${{ github.token }}
+
+      # A Build Lean run takes the crate version with the branch as a pre-release, e.g. 0.12.0-my-branch(.<run number>).
       - name: Detect version
         id: version
         working-directory: src/bindings
+        env:
+          BUILD_RUN: ${{ inputs.build-run }}
         run: |
           version_prefix=$(sed -n 's|.*<VersionPrefix>\(.*\)</VersionPrefix>.*|\1|p' Directory.Build.props)
           version_suffix=$(sed -n 's|.*<VersionSuffix>\(.*\)</VersionSuffix>.*|\1|p' Directory.Build.props)
+          if [[ -n $BUILD_RUN ]]; then
+            crate=$(sed -n 's/^version = "\(.*\)"$/\1/p' ../ffi/Cargo.toml | head -1)
+            [[ $crate =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::Unexpected crate version '$crate'"; exit 1; }
+            branch=$(tr '[:upper:]' '[:lower:]' <<< "$GITHUB_REF_NAME" | sed -e 's/[^0-9a-z-]/-/g' -e 's/--*/-/g' | cut -c1-40 | sed 's/^-*//; s/-*$//')
+            # A numeric pre-release identifier must not have leading zeros; a prefix makes any slug alphanumeric.
+            [[ $branch =~ ^[0-9]*$ ]] && branch=branch${branch:+-$branch}
+            version_prefix=${crate%%-*}
+            version_suffix=$([[ $crate == *-* ]] && echo "${crate#*-}." || true)$branch
+          fi
           version=$version_prefix${version_suffix:+-$version_suffix}
           echo "Detected version $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Publishing \`Nethermind.Crypto.Lean\` \`$version.$GITHUB_RUN_NUMBER\` to $NUGET_URL" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v6

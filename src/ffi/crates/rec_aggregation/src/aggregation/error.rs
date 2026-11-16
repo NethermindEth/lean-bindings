@@ -1,6 +1,6 @@
 //! Errors of aggregation and verification.
 
-use lean_da::{DA_LOG_K, DA_MAX_ROWS};
+use lean_da::{BLOB_SYMBOLS, DA_MAX_ROWS};
 use leanvm_core::cpu::ProveError;
 use pcs::whir::{MAX_LOG_INV_RATE, MIN_LOG_INV_RATE};
 
@@ -55,7 +55,7 @@ pub enum AggregationError {
     /// A raw leanSTARK dependency's witness does not parse, does not hash to its key, or its proof
     /// does not verify ([`super::verify_generic`]).
     InvalidGenericWitness,
-    /// More than [`MAX_GENERIC_DEPENDENCIES`](super::MAX_GENERIC_DEPENDENCIES) leanSTARK claims in a list.
+    /// More than [`MAX_GENERIC_DEPENDENCIES`](super::MAX_GENERIC_DEPENDENCIES) raw leanSTARK proofs at one node.
     TooManyGeneric,
     /// More than [`MAX_RECURSIONS`](super::MAX_RECURSIONS) children.
     TooLarge,
@@ -88,9 +88,11 @@ impl std::fmt::Display for AggregateVerifyError {
 
 impl std::error::Error for AggregateVerifyError {}
 
-impl From<lean_da::BlobSizeError> for AggregationError {
-    fn from(error: lean_da::BlobSizeError) -> Self {
-        Self::InvalidBlobSize { symbols: error.symbols }
+impl From<lean_da::BlobCountError> for AggregationError {
+    fn from(error: lean_da::BlobCountError) -> Self {
+        Self::InvalidBlobSize {
+            symbols: error.blobs * BLOB_SYMBOLS,
+        }
     }
 }
 
@@ -102,15 +104,14 @@ impl std::fmt::Display for AggregationError {
             Self::NotCovered => write!(f, "a declared claim is not covered by the children and raw signatures"),
             Self::MalformedRawSignature => write!(f, "a raw signature does not decode to a target-sum encoding"),
             Self::InvalidGenericWitness => write!(f, "a raw leanSTARK dependency's witness does not verify"),
-            Self::TooManyGeneric => write!(f, "too many leanSTARK claims in a list"),
+            Self::TooManyGeneric => write!(f, "too many raw leanSTARK proofs at one node"),
             Self::TooLarge => {
                 write!(f, "too many children")
             }
             Self::InvalidBlobSize { symbols } => {
                 write!(
                     f,
-                    "{symbols} blob symbols do not form 1..={DA_MAX_ROWS} rows of {} symbols",
-                    1 << DA_LOG_K
+                    "{symbols} blob symbols do not form 1..={DA_MAX_ROWS} rows of {BLOB_SYMBOLS} symbols"
                 )
             }
             Self::BlobNotCovered => write!(f, "the requested blob commitment is not carried by any child"),

@@ -7,7 +7,7 @@ Nethermind's native EIP-8288 Lean backend (`libnethermind_lean.so`) and its NuGe
 - [src/ffi](./src/ffi/): The Rust source of the library, a thin C ABI (`nlean_*`) over unmodified upstream leanVM pinned by git revision, and the EIP-8288 guest crates in [src/ffi/crates](./src/ffi/crates/) vendored from that revision. This repository is the only source of this code.
 - [src/bindings](./src/bindings/): The .NET codebase. `Nethermind.Crypto.Lean` is a native-only package; `Nethermind.Crypto.Lean` also carries, under `testing/`, the consumers' test assets, which `buildTransitive` copies only with `NethermindCryptoLeanTestAssets=true`; `Nethermind.Crypto.Lean.Tests` tests the committed library through the `nlean_*` C API.
 - [build-lean.yml](./.github/workflows/build-lean.yml): Builds [src/ffi](./src/ffi/), generates [THIRD-PARTY-NOTICES](./THIRD-PARTY-NOTICES) and opens a pull request with the resulting binaries.
-- [test-publish.yml](./.github/workflows/test-publish.yml): Runs the Rust tests and the .NET tests against the committed binaries, and optionally publishes the package on NuGet.
+- [test-publish.yml](./.github/workflows/test-publish.yml): Runs the Rust tests and the .NET tests against the committed binaries, and optionally publishes the package on NuGet. With `build-run`, publishes that Build Lean run's binaries (same commit, a branch other than `main`, artifacts kept 7 days) to staging only; NuGet.org takes only committed binaries.
 
 ## Coding guidelines
 

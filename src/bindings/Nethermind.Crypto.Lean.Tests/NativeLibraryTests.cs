@@ -13,11 +13,19 @@ namespace Nethermind.Crypto.Lean.Tests;
 public partial class NativeLibraryTests
 {
     private const string Library = "nethermind_lean";
-    private const uint ExpectedAbi = 12;
-    private const string ExpectedAggregatedVk = "f7cf74585d02043051f0575c23c6b441b0b08ac9e273f5e989c5984b8a4ac0e5";
-    // Proof bytes, dependencies, recursive children, NiceTry v2 witness bytes, aggregation input bytes, leanSTARK claims
-    // per list, leanSTARK instructions.
-    private static readonly uint[] ExpectedLimits = [8 * 1024 * 1024, 256, 16, 32 + 6176, 18 * 1024 * 1024, 16, 2048];
+    private const uint ExpectedAbi = 21;
+    private const string ExpectedAggregatedVk = "e09e5acfcfe87832f337eb42acac98246d160bb915b55c55fbd8118b203cbb81";
+    private const uint MaxProofBytes = 8 * 1024 * 1024;
+    // EIP-8288's output capacity: EIP-7934 MAX_RLP_BLOCK_SIZE // 96.
+    private const uint MaxDependencies = (10 * 1024 * 1024 - 2 * 1024 * 1024) / 96;
+    // Framing, 16 children's full lists and largest proofs, 256 raw signatures, 16 raw leanSTARK witnesses, a full
+    // discard list.
+    private const uint MaxInputBytes =
+        3 * 4 + 16 * (2 * 4 + MaxDependencies * 96 + MaxProofBytes) + 256 * (96 + 4 + 32 + 6176) + 16 * MaxProofBytes
+        + MaxDependencies * 96;
+    // Proof bytes, dependencies, recursive children, NiceTry v2 witness bytes, aggregation input bytes, raw leanSTARK
+    // proofs per node, leanSTARK instructions.
+    private static readonly uint[] ExpectedLimits = [MaxProofBytes, MaxDependencies, 16, 32 + 6176, MaxInputBytes, 16, 2048];
 
     // A project reference leaves the library under runtimes/<rid>/native; a package consumer gets it beside the binary.
     static NativeLibraryTests() => NativeLibrary.SetDllImportResolver(typeof(NativeLibraryTests).Assembly, static (name, assembly, searchPath) =>

@@ -1,7 +1,7 @@
 //! leanSTARK (`0x11`) dependencies: proving, recursion, the digest, and the guest's rejections.
 
 use super::cells::count;
-use super::error::{AggregateVerifyError, AggregationError};
+use super::error::AggregationError;
 use super::hints::{ALLOW_MANY_GENERIC, FORGE, Hints};
 use super::node::aggregate;
 use super::proof::{EthereumClaims, EthereumProof};
@@ -10,8 +10,8 @@ use crate::signers_cache::get_lean_sphincs_signers;
 use fiat_shamir::merkle::hash_to_scalars;
 use lean_compiler::{compile, parse};
 use leanvm_core::cpu::{Program, bytecode_table, prove};
-use primitives::field::F192;
-use signatures::lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
+use primitives::field::F128;
+use lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
 use std::sync::OnceLock;
 
 const RATE: usize = leanvm_core::pcs::TEST_LOG_INV_RATE;
@@ -63,7 +63,7 @@ fn wide_program() -> &'static Generic {
     P.get_or_init(|| generic(&wide_source()))
 }
 
-fn cells(digest: &[u8; 32]) -> [F192; 2] {
+fn cells(digest: &[u8; 32]) -> [F128; 2] {
     hash_to_scalars(digest)
 }
 
@@ -73,7 +73,7 @@ fn preimage_dep(seed: u8) -> RawGeneric {
     let pre = [seed; 64];
     let data_hash = primitives::hash::hash(&pre);
     let mut program = g.program.clone();
-    let pre_cells: Vec<F192> = pre.chunks(16).map(super::cells::pack_16_bytes).collect();
+    let pre_cells: Vec<F128> = pre.chunks(16).map(super::cells::pack_16_bytes).collect();
     program.set_witness("pre", vec![pre_cells]);
     let (proof, _) = prove(&program, cells(&data_hash), RATE).expect("the preimage program proves");
     (data_hash, g.vk, generic_witness(&g.table, &proof).expect("a witness"))
@@ -102,7 +102,7 @@ fn claim(raw: &RawGeneric) -> GenericClaim {
 fn independent_deps_hash(sphincs: &[LeanSphincsClaim], generic: &[GenericClaim]) -> [u8; 32] {
     let s_bytes: Vec<u8> = sphincs
         .iter()
-        .flat_map(|(m, pk)| m.iter().chain(&pk.root).chain(&pk.public_param).copied())
+        .flat_map(|(m, pk)| m.iter().chain(&pk.public_param).chain(&pk.root).copied())
         .collect();
     let s = primitives::hash::hash(&s_bytes);
     if generic.is_empty() {
@@ -159,7 +159,6 @@ fn native_verifier_accepts_and_rejects() {
 
 #[test]
 fn generic_only_leaf() {
-    leanvm_core::init_prover();
     let dep = preimage_dep(2);
     let proof = aggregate(&[], vec![dep.clone()], vec![], &[], None, RATE).expect("proves");
     assert_eq!(proof.claims().generic, vec![claim(&dep)]);
@@ -168,7 +167,6 @@ fn generic_only_leaf() {
 
 #[test]
 fn mixed_leaf_with_a_near_cap_program() {
-    leanvm_core::init_prover();
     let deps = vec![preimage_dep(3), wide_dep([9; 32])];
     let proof = aggregate(&[], deps, sphincs(2), &[], None, RATE).expect("proves");
     assert_eq!(
@@ -184,7 +182,7 @@ fn pure_lean_sphincs_digest_is_unchanged() {
     assert_eq!(deps_hash(&claims, &[]), independent_deps_hash(&claims, &[]));
     let entries: Vec<u8> = claims
         .iter()
-        .flat_map(|(m, pk)| m.iter().chain(&pk.root).chain(&pk.public_param).copied())
+        .flat_map(|(m, pk)| m.iter().chain(&pk.public_param).chain(&pk.root).copied())
         .collect();
     assert_eq!(deps_hash(&claims, &[]), primitives::hash::hash(&entries));
 }
@@ -194,9 +192,7 @@ fn pure_lean_sphincs_digest_is_unchanged() {
 #[test]
 fn the_same_bytes_under_both_schemes_are_distinct() {
     let (message, pk) = sphincs(1).iter().map(|(pk, m, _)| (*m, *pk)).next().unwrap();
-    let mut key = [0; 32];
-    key[..16].copy_from_slice(&pk.root);
-    key[16..].copy_from_slice(&pk.public_param);
+    let key = pk.to_bytes();
     let as_sphincs = deps_hash(&[(message, pk)], &[]);
     let as_generic = deps_hash(&[], &[(message, key)]);
     let both = deps_hash(&[(message, pk)], &[(message, key)]);
@@ -205,7 +201,6 @@ fn the_same_bytes_under_both_schemes_are_distinct() {
 
 #[test]
 fn recursion_mixes_schemes_dedups_and_discards() {
-    leanvm_core::init_prover();
     let (a, b) = (preimage_dep(4), preimage_dep(5));
     let signers = sphincs(2);
     // A child with both lists, and a generic-only child sharing one of its generic claims.
@@ -243,8 +238,7 @@ fn recursion_mixes_schemes_dedups_and_discards() {
 }
 
 #[test]
-fn claims_over_the_cap_are_refused() {
-    leanvm_core::init_prover();
+fn raw_proofs_over_the_cap_are_refused() {
     let deps: Vec<RawGeneric> = (0..=MAX_GENERIC_DEPENDENCIES as u8)
         .map(|i| preimage_dep(100 + i))
         .collect();
@@ -261,21 +255,30 @@ fn claims_over_the_cap_are_refused() {
         "{:?}",
         result.err()
     );
-    // A list of 17 claims fails the native check as well.
-    let mut claims = EthereumClaims::default();
-    claims.generic = (0..=MAX_GENERIC_DEPENDENCIES as u8)
-        .map(|i| ([i; 32], [0; 32]))
-        .collect();
-    let proof = aggregate(&[], vec![preimage_dep(7)], vec![], &[], None, RATE).expect("proves");
-    assert_eq!(
-        EthereumProof::from_proof_bytes(&proof.proof_bytes(), claims).err(),
-        Some(AggregateVerifyError::MalformedSignerSet)
-    );
+}
+
+/// The raw cap bounds one node's proofs, not the lists it carries: children whose union exceeds it merge, and the
+/// merge is carried further.
+#[test]
+fn merges_carry_more_generic_claims_than_one_node_verifies() {
+    let full: Vec<RawGeneric> = (0..MAX_GENERIC_DEPENDENCIES as u8).map(|i| preimage_dep(140 + i)).collect();
+    let (extra, more) = (preimage_dep(170), preimage_dep(171));
+    let full_leaf = aggregate(&[], full.clone(), vec![], &[], None, RATE).expect("the most raw proofs a node takes");
+    let extra_leaf = aggregate(&[], vec![extra.clone()], vec![], &[], None, RATE).expect("proves");
+    let merged = aggregate(&[full_leaf, extra_leaf], vec![], vec![], &[], None, RATE).expect("merges");
+    let mut want: Vec<GenericClaim> = full.iter().chain([&extra]).map(claim).collect();
+    want.sort();
+    assert_eq!(merged.claims().generic, want);
+    check(&merged);
+    let parent = aggregate(&[merged], vec![more.clone()], sphincs(1), &[], None, RATE).expect("carries the merge");
+    want.push(claim(&more));
+    want.sort();
+    assert_eq!(parent.claims().generic, want);
+    check(&parent);
 }
 
 #[test]
 fn an_invalid_witness_is_refused_natively() {
-    leanvm_core::init_prover();
     let (data_hash, vk, witness) = preimage_dep(8);
     let mut other = data_hash;
     other[5] ^= 1;
@@ -303,13 +306,10 @@ fn refused_by_the_guest(name: &str, result: Result<EthereumProof, AggregationErr
 /// proof's sub-proof hints: every run must fail.
 #[test]
 fn the_guest_refuses_false_generic_claims() {
-    leanvm_core::init_prover();
     let (data_hash, vk, witness) = preimage_dep(9);
     let signer = sphincs(1);
     let (message, pk) = (signer[0].1, signer[0].0);
-    let mut sphincs_bytes = [0; 32];
-    sphincs_bytes[..16].copy_from_slice(&pk.root);
-    sphincs_bytes[16..].copy_from_slice(&pk.public_param);
+    let sphincs_bytes = pk.to_bytes();
     let flip = |mut bytes: [u8; 32]| {
         bytes[0] ^= 1;
         bytes
@@ -354,10 +354,7 @@ fn the_guest_refuses_false_generic_claims() {
 fn a_generic_claim_is_no_lean_sphincs_claim() {
     let (data_hash, vk, _) = preimage_dep(10);
     let mut signer = sphincs(1).remove(0);
-    signer.0 = LeanSphincsPublicKey {
-        root: vk[..16].try_into().unwrap(),
-        public_param: vk[16..].try_into().unwrap(),
-    };
+    signer.0 = LeanSphincsPublicKey::from_bytes(&vk);
     signer.1 = data_hash;
     assert_eq!(
         aggregate(&[], vec![], vec![signer], &[], None, RATE).err(),
@@ -368,11 +365,20 @@ fn a_generic_claim_is_no_lean_sphincs_claim() {
 /// Hints edited after the host built them: every run must fail.
 #[test]
 fn forged_generic_hints_are_rejected() {
-    leanvm_core::init_prover();
     let dep = preimage_dep(11);
+    // Where the proof's stream carries the bytecode value.
+    let parsed = super::generic::parse_witness(&dep.2).unwrap();
+    let (_, summary) = super::generic::check(&dep.0, &dep.1, &parsed).unwrap();
+    let value = leanvm_core::cpu::from_scalar(verifier::Bytecode::new(&parsed.table).evaluate(&summary.bytecode_point).unwrap());
+    let value_at = parsed
+        .proof
+        .stream
+        .iter()
+        .position(|x| *x == value)
+        .expect("the value rides the stream");
     let flip = |hints: &mut Hints, name: &str, at: usize| {
         let entry = hints.entry_mut(name, 0);
-        entry[at] += F192::ONE;
+        entry[at] += F128::ONE;
     };
     let forgeries: Vec<(&str, Box<dyn Fn(&mut Hints)>)> = vec![
         ("tampered proof scalar", Box::new(move |h| flip(h, "stream", 40))),
@@ -381,7 +387,7 @@ fn forged_generic_hints_are_rejected() {
             Box::new(|h| *h.entry_mut("gen_kbc", 0) = vec![count(MAX_GENERIC_BYTECODE_LOG + 1)]),
         ),
         // The generic program's bytecode claim is settled in the guest: a false value is not deferred.
-        ("smuggled bytecode value", Box::new(move |h| flip(h, "bytecode_val", 0))),
+        ("smuggled bytecode value", Box::new(move |h| flip(h, "stream", value_at))),
         // The first word's bytes split another way, (b0 + x^8, b1 + 1): the same field value, other
         // bytes. The first piece is out of the byte table's range.
         (
