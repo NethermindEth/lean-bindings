@@ -233,6 +233,10 @@ class Sweep:
             nxt = []
             a = self.arity(key, f"leaf-n{per_leaf}" if level == 1 else "agg", files, arity)
             arities[str(level)] = a
+            if a < 2 and len(files) > 1:
+                # A step that cannot merge two inputs never reaches one root (e.g. guest 0's 16-claim cap).
+                return {"status": "failed", "at": f"level {level}: no step over 2 inputs proves", "nodes": nodes,
+                        "arity": arities}
             for j in range(0, len(files), a):
                 f = os.path.join(d, f"s{level}-{j // a}.agg")
                 rec = self.once(["step", key, f, *files[j:j + a], *(["--cold"] if cold else [])],
@@ -419,6 +423,9 @@ def report(res: dict) -> str:
                              f"{m['median']:.1f} s ({m['min']:.1f}–{m['max']:.1f}), leaves {t['leaf_s']['median']:.1f} s, steps "
                              f"{t['step_s']['median']:.1f} s, peak {t['peak_rss_max'] / g:.1f} GB, reps {t['reps']}, "
                              f"key {t.get('key', 'committed')}, most inputs per step by level {t.get('arity')}")
+            else:
+                why = "; ".join(str(r.get("at")) for r in t.get("runs", []) if r.get("status") != "ok")
+                lines.append(f"\n{name} {route}: {t['signatures']} sigs, no root ({why})")
     for c in res.get("sigs", []):
         if c.get("status") == "ok":
             a = c["agg_s"]
