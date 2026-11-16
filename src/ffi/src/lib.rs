@@ -29,14 +29,19 @@ const MAX_DEPS: usize = MAX_RLP_BLOCK_SIZE / DEP_BYTES;
 const MAX_RAW_PER_NODE: usize = 256;
 /// The framing of one length-prefixed field.
 const LEN_BYTES: usize = 4;
-/// Every child's full dependency list and largest proof; each inner proof's largest witness, with a full batch leaf's
-/// key, claims and framing (guest 0's raw leanSTARK witnesses, guest 1's leaves); the raw signatures; and a full
-/// discard list.
+/// Each inner proof, a child or a batch leaf, with a leaf's key and claims, a full dependency list and its largest proof
+/// or witness; guest 0's raw leanSTARK witnesses, which it counts apart from its children; the raw signatures; and a
+/// full discard list.
 pub const MAX_INPUT_BYTES: usize = 4 * LEN_BYTES
-    + rec_aggregation::MAX_RECURSIONS * (2 * LEN_BYTES + MAX_DEPS * DEP_BYTES + MAX_BYTES)
-    + MAX_INNER_PROOFS_PER_STEP * (3 * LEN_BYTES + 32 + MAX_CLAIMS_PER_BATCH_LEAF * 32 + MAX_BYTES)
+    + MAX_INNER_PROOFS_PER_STEP * (3 * LEN_BYTES + 32 + MAX_CLAIMS_PER_BATCH_LEAF * 32 + MAX_DEPS * DEP_BYTES + MAX_BYTES)
+    + rec_aggregation_base::MAX_GENERIC_DEPENDENCIES * MAX_BYTES
     + MAX_RAW_PER_NODE * (DEP_BYTES + LEN_BYTES + lean_sphincs::PUB_KEY_SIZE + lean_sphincs::SIG_SIZE)
     + MAX_DEPS * DEP_BYTES;
+// Either guest's children are inner proofs of the bound above.
+const _: () = assert!(
+    rec_aggregation::MAX_RECURSIONS <= MAX_INNER_PROOFS_PER_STEP
+        && rec_aggregation_base::MAX_RECURSIONS <= MAX_INNER_PROOFS_PER_STEP
+);
 // The upstream prover's timings assume its allocator: jemalloc keeps a proof's freed pages mapped for the next one.
 // It serves this library's allocations only, and holds their peak until the process exits.
 #[global_allocator]
@@ -1397,8 +1402,29 @@ mod tests {
         assert!(verify_aggregate(BASE, &hash_of(&[stark, other, sig]), &merged).is_err());
     }
 
+    type Prove = Box<dyn Fn(&[u8; 32], &[u8]) -> Result<Vec<u8>, ()>>;
+    type Verify = Box<dyn Fn(&[u8; 32], &[u8]) -> Result<(), ()>>;
+    type Hash = Box<dyn Fn(&[Dep]) -> [u8; 32]>;
+    /// The ABI's guest 0 ([`base`]) and guest 1 entry points, each with its own commitment.
+    fn abi_guests() -> [(&'static str, Prove, Verify, Hash); 2] {
+        [
+            (
+                "guest 0",
+                Box::new(base::prove_aggregate),
+                Box::new(base::verify_aggregate),
+                Box::new(|deps| base::commitment(&canonical(deps.to_vec()))),
+            ),
+            (
+                "guest 1",
+                Box::new(|hash, input| prove_aggregate(BATCHED, hash, input)),
+                Box::new(|hash, proof| verify_aggregate(BATCHED, hash, proof)),
+                Box::new(hash_of),
+            ),
+        ]
+    }
+
     /// An aggregate holds more dependencies than one call takes raw witnesses: leaves whose union exceeds
-    /// `MAX_RAW_PER_NODE` merge and verify under either guest, while the same witnesses raw in one call are refused.
+    /// `MAX_RAW_PER_NODE` merge and verify under both ABI guests, while the same witnesses raw in one call are refused.
     #[test]
     fn merges_past_the_raw_witness_bound() {
         const LEAVES: usize = 3;
@@ -1408,20 +1434,46 @@ mod tests {
             .collect();
         let all: Vec<Dep> = raw.iter().map(|(dep, _)| *dep).collect();
         assert!(all.len() > MAX_RAW_PER_NODE);
-        for guest in [BASE, BATCHED] {
-            assert!(prove_aggregate(guest, &hash_of(&all), &input(&raw, &[], &[])).is_err());
+        for (name, prove, verify, hash) in abi_guests() {
+            assert!(prove(&hash(&all), &input(&raw, &[], &[])).is_err(), "{name}");
             let leaves: Vec<_> = raw
                 .chunks(PER_LEAF.into())
                 .map(|raw| {
                     let deps = canonical(raw.iter().map(|(dep, _)| *dep).collect());
-                    let proof = prove_aggregate(guest, &hash_of(&deps), &input(raw, &[], &[])).unwrap();
+                    let proof = prove(&hash(&deps), &input(raw, &[], &[])).unwrap();
                     (deps, proof)
                 })
                 .collect();
             let children: Vec<_> = leaves.iter().map(|(deps, proof)| (&deps[..], &proof[..])).collect();
-            let merged = prove_aggregate(guest, &hash_of(&all), &input(&[], &children, &[])).unwrap();
-            assert!(verify_aggregate(guest, &hash_of(&all), &merged).is_ok(), "{guest:?}");
+            let merged = prove(&hash(&all), &input(&[], &children, &[])).unwrap();
+            assert!(verify(&hash(&all), &merged).is_ok(), "{name}");
         }
+    }
+
+    /// Guest 0 verifies every raw witness, even when discards leave nothing to prove, and takes at most
+    /// `MAX_GENERIC_DEPENDENCIES` leanSTARK ones a call, discarded ones included.
+    #[test]
+    fn guest_0_verifies_and_counts_discarded_raw_witnesses() {
+        let (dep, witness) = signed(1);
+        let mut forged = witness.clone();
+        forged[100] ^= 1;
+        let empty = base::commitment(&[]);
+        assert!(base::prove_aggregate(&empty, &input(&[(dep, witness)], &[], &[dep])).unwrap().is_empty());
+        assert!(base::prove_aggregate(&empty, &input(&[(dep, forged)], &[], &[dep])).is_err());
+
+        let starks: Vec<_> = (0..=rec_aggregation_base::MAX_GENERIC_DEPENDENCIES as u8)
+            .map(|i| {
+                let message = keccak(&[0x53, i]);
+                let (witness, key) = prove_stark(BASE, ANY_INPUT_PROGRAM, &message).unwrap();
+                (leanstark_dependency(&message, &key), witness)
+            })
+            .collect();
+        let discard = |raw: &[(Dep, Vec<u8>)]| {
+            let deps: Vec<Dep> = raw.iter().map(|(dep, _)| *dep).collect();
+            base::prove_aggregate(&empty, &input(raw, &[], &deps))
+        };
+        assert!(discard(&starks[..rec_aggregation_base::MAX_GENERIC_DEPENDENCIES]).unwrap().is_empty());
+        assert!(discard(&starks).is_err());
     }
 
     #[test]

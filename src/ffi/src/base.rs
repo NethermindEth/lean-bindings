@@ -145,6 +145,10 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
         raw.push((dep, r.blob()?));
         all.push(dep);
     }
+    // Every supplied leanSTARK witness counts, discarded or redundant ones included, so none is verified past the cap.
+    if raw.iter().filter(|(dep, _)| dep[31] == LEAN_STARK).count() > MAX_GENERIC_DEPENDENCIES {
+        return Err(());
+    }
     let child_count = r.count()?;
     if child_count > rec_aggregation_base::MAX_RECURSIONS {
         return Err(());
@@ -177,9 +181,6 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
     if deps.len() > MAX_DEPS || commitment(&deps) != *hash {
         return Err(());
     }
-    if deps.is_empty() {
-        return Ok(vec![]);
-    }
     let kept: HashSet<_> = deps.iter().copied().collect();
     children.retain(|(_, _, declared)| declared.iter().any(|dep| kept.contains(dep)));
     let covered: HashSet<_> = children
@@ -196,6 +197,9 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
         .any(|(dep, witness)| !verify_witness(dep, witness))
     {
         return Err(());
+    }
+    if deps.is_empty() {
+        return Ok(vec![]);
     }
     if let Some((_, bytes, _)) = children.iter().find(|(_, _, declared)| *declared == deps) {
         return Ok(bytes.to_vec());

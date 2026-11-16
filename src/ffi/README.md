@@ -82,8 +82,8 @@ witness failing to execute, and its hint-encoding cases are untested against the
 ## Prototype wire format
 
 All framing integers are unsigned 32-bit little-endian. The native backend bounds proofs and
-individual witnesses to 8 MiB and aggregation input to every child's full list and largest proof, each inner proof's
-witness, the raw signatures and a full discard list (about 394 MiB); managed callers first apply
+individual witnesses to 8 MiB and aggregation input to every inner proof's full list and largest proof or witness,
+guest 0's raw leanSTARK witnesses, the raw signatures and a full discard list (about 394 MiB); managed callers first apply
 the local 1.25 MiB pinned-prover bound (`Eip8288Constants.MaxAggregateProofBytes`, not an EIP-8288
 constant) to every aggregate proof. This is an input-buffer limit, not a process memory bound.
 Dependency lists are bounded to EIP-8288's output capacity, `MAX_RLP_BLOCK_SIZE // 96` (87,381, EIP-7934), of either
@@ -181,8 +181,9 @@ EIP, with the pinned guest's generic leanVM CPU proof as its leanSTARK profile:
 * Frames, wrappers and inclusion-list `proof_deps` accept `0x11`, charged
   `LEANSTARK_VERIFICATION_GAS`; any other scheme is rejected as before.
 * The guest checks every entry of the selected list and of each child list, discarded entries
-  included, against its run. Its lists are bounded by its memory, for both schemes; the native host bounds them to the
-  output capacity.
+  included, against its run, and verifies at most 16 raw leanSTARK proofs per node; the native host takes at most 16
+  leanSTARK witnesses a call, discarded or redundant ones included. Its lists are bounded by its memory, for both
+  schemes; the native host bounds them to the output capacity.
 
 Startup checks the ABI version, the pinned keys and the seven bounds together. New devnets require fresh
 chain and database namespaces.

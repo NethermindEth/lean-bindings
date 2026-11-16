@@ -20,10 +20,10 @@ public partial class NativeLibraryTests
     private const uint MaxProofBytes = 8 * 1024 * 1024;
     // EIP-8288's output capacity: EIP-7934 MAX_RLP_BLOCK_SIZE // 96.
     private const uint MaxDependencies = (10 * 1024 * 1024 - 2 * 1024 * 1024) / 96;
-    // Framing, 16 children's full lists and largest proofs, 16 inner proofs' largest witnesses with full batch-leaf
-    // framing, 256 raw signatures, a full discard list.
-    private const uint MaxInputBytes = 4 * 4 + 16 * (2 * 4 + MaxDependencies * 96 + MaxProofBytes)
-        + 16 * (3 * 4 + 32 + 256 * 32 + MaxProofBytes) + 256 * (96 + 4 + 32 + 6176) + MaxDependencies * 96;
+    // Framing; 16 inner proofs, each with a leaf's key and claims, a full dependency list and a largest proof or witness;
+    // guest 0's 16 raw leanSTARK witnesses; 256 raw signatures; a full discard list.
+    private const uint MaxInputBytes = 4 * 4 + 16 * (3 * 4 + 32 + 256 * 32 + MaxDependencies * 96 + MaxProofBytes)
+        + 16 * MaxProofBytes + 256 * (96 + 4 + 32 + 6176) + MaxDependencies * 96;
     // Proof bytes, dependencies, inner proofs per step, NiceTry v2 witness bytes, aggregation input bytes, raw leanSTARK
     // proofs per node (guest 0) or claims per batch leaf (guest 1), leanSTARK instructions.
     private static readonly uint[] ExpectedLimits = [MaxProofBytes, MaxDependencies, 16, 32 + 6176, MaxInputBytes, 16, 2048];
