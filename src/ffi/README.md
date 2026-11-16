@@ -123,7 +123,8 @@ EIP, with the pinned guest's generic leanVM CPU proof as its leanSTARK profile:
 * Frames, wrappers and inclusion-list `proof_deps` accept `0x11`, charged
   `LEANSTARK_VERIFICATION_GAS`; any other scheme is rejected as before.
 * The guest checks every entry of the selected list and of each child list, discarded entries
-  included, against its run, and verifies at most 16 raw leanSTARK proofs per node. Its lists are
+  included, against its run, and verifies at most 16 raw leanSTARK proofs per node; the native host
+  takes at most 16 leanSTARK witnesses a call, discarded or redundant ones included. Its lists are
   bounded by its memory, for both schemes; the native host bounds them to the output capacity.
 
 Startup checks ABI 21, the pinned key and the seven bounds together. New devnets require fresh

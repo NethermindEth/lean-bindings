@@ -244,6 +244,10 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
         raw.push((dep, r.blob()?));
         all.push(dep);
     }
+    // Every supplied leanSTARK witness counts, discarded or redundant ones included, so none is verified past the cap.
+    if raw.iter().filter(|(dep, _)| dep[31] == LEAN_STARK).count() > MAX_GENERIC_DEPENDENCIES {
+        return Err(());
+    }
     let child_count = r.count()?;
     if child_count > rec_aggregation::MAX_RECURSIONS {
         return Err(());
@@ -276,9 +280,6 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
     if deps.len() > MAX_DEPS || commitment(&deps) != *hash {
         return Err(());
     }
-    if deps.is_empty() {
-        return Ok(vec![]);
-    }
     let kept: HashSet<_> = deps.iter().copied().collect();
     children.retain(|(_, _, declared)| declared.iter().any(|dep| kept.contains(dep)));
     let covered: HashSet<_> = children
@@ -295,6 +296,9 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
         .any(|(dep, witness)| !verify_witness(dep, witness))
     {
         return Err(());
+    }
+    if deps.is_empty() {
+        return Ok(vec![]);
     }
     if let Some((_, bytes, _)) = children.iter().find(|(_, _, declared)| *declared == deps) {
         return Ok(bytes.to_vec());
@@ -769,6 +773,26 @@ mod tests {
         assert!(prove_aggregate(&hash_of(&all), &input(&raw, &[], &[])).is_err());
         let merged = prove_aggregate(&hash_of(&all), &input(&[], &children, &[])).unwrap();
         assert!(verify_aggregate(&hash_of(&all), &merged).is_ok());
+    }
+
+    /// Every raw witness is verified, even when discards leave nothing to prove, and at most
+    /// `MAX_GENERIC_DEPENDENCIES` leanSTARK ones are taken, discarded ones included.
+    #[test]
+    fn discarded_raw_witnesses_are_verified_and_counted() {
+        let (dep, witness) = signed(1);
+        let mut forged = witness.clone();
+        forged[100] ^= 1;
+        let empty = commitment(&[]);
+        assert!(prove_aggregate(&empty, &input(&[(dep, witness)], &[], &[dep])).unwrap().is_empty());
+        assert!(prove_aggregate(&empty, &input(&[(dep, forged)], &[], &[dep])).is_err());
+
+        let starks: Vec<_> = (0..=MAX_GENERIC_DEPENDENCIES as u8).map(|i| proven(0x80 + i)).collect();
+        let discard = |raw: &[(Dep, Vec<u8>)]| {
+            let deps: Vec<Dep> = raw.iter().map(|(dep, _)| *dep).collect();
+            prove_aggregate(&empty, &input(raw, &[], &deps))
+        };
+        assert!(discard(&starks[..MAX_GENERIC_DEPENDENCIES]).unwrap().is_empty());
+        assert!(discard(&starks).is_err());
     }
 
     #[test]
