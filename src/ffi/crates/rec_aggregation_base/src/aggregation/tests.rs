@@ -39,7 +39,7 @@ fn the_wire_layout_is_pinned() {
 #[test]
 fn aggregated_vk_is_pinned() {
     let hex = super::proof::aggregated_vk().iter().map(|b| format!("{b:02x}")).collect::<String>();
-    assert_eq!(hex, "b3a5a9b6773f76829132e11fa436d24bdac562014d2821396657fdf5dd081084");
+    assert_eq!(hex, "e09e5acfcfe87832f337eb42acac98246d160bb915b55c55fbd8118b203cbb81");
 }
 
 /// The guest compiles to one program, always.

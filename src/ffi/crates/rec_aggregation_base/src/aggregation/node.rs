@@ -19,7 +19,7 @@ use leanvm_core::cpu::{from_scalar, prove, public_input_bytes, scalar_proof};
 use lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
 use primitives::field::F128;
 
-/// Test builds only: whether this thread lifts the host's leanSTARK cap, so the guest's own is tested.
+/// Test builds only: whether this thread lifts the host's raw leanSTARK cap, so the guest's own is tested.
 fn allow_many_generic() -> bool {
     #[cfg(test)]
     return super::hints::ALLOW_MANY_GENERIC.with(std::cell::Cell::get);
@@ -171,9 +171,6 @@ pub fn aggregate_with_stats(
         .map(|(pk, message, _)| (*message, *pk))
         .collect();
     let mut cover = plan_coverage(&raw_generic_claims, &raw_lean_sphincs_claims, children, declare)?;
-    if cover.generic.signers.len() > MAX_GENERIC_DEPENDENCIES && !allow_many_generic() {
-        return Err(AggregationError::TooManyGeneric);
-    }
     match forge.as_str() {
         // Publish the duplicate slots too: the declared list repeats a claim.
         "dup" => {

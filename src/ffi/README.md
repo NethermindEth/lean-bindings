@@ -39,14 +39,15 @@ bare message. The vectors hold a direct leanSTARK proof for each guest: `stark-p
 `examples/batch_leaves/batch.py` template and aggregates its `n` leanSTARK dependencies. **Build Lean** packages the vectors,
 this tool and the `lean_startup_stub` example as opt-in test assets of `Nethermind.Crypto.Lean`.
 
-The C ABI is version 19, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
+The C ABI is version 22, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
 `nlean_limits`, `nlean_aggregated_vk`, `nlean_verify_leanstark`, `nlean_verify_recursive` and `nlean_prove_recursive` take a
 leading `u32` guest:
 0 for EIP-8288's, 1 for the one with ethereum/EIPs#12664 batched generic proof dependencies (see below); any other value fails, and the key
-passed must be that guest's. Guest 0 is the ABI 12 package 0.12.1's guest and host unchanged (`crates/rec_aggregation_base`),
-so its key, limits, direct leanSTARK statement (the bare claim) and aggregation input encoding are that package's.
+passed must be that guest's. Guest 0 is the ABI 12 package 0.12.1's guest and host (`crates/rec_aggregation_base`), except
+that its leanSTARK lists are bounded like leanSPHINCS ones rather than at 16, so its limits, direct leanSTARK statement (the
+bare claim) and aggregation input encoding are that package's.
 `nlean_limits` writes seven u32 values (proof bytes, dependencies, inner proofs per step,
-SPHINCS witness bytes, aggregation input bytes, then leanSTARK dependencies per list for guest 0 or claims per batch leaf
+SPHINCS witness bytes, aggregation input bytes, then raw leanSTARK proofs per node for guest 0 or claims per batch leaf
 for guest 1, then leanSTARK instructions); startup checks these against the managed protocol bounds before accepting work.
 Verification/proving return 1 on success, 0 on failure and -1 for a contained panic. After -1, `nlean_last_error(out, len)` on the same
 thread copies up to `len` bytes of the panic message and returns its full length. Callers initialize proof output

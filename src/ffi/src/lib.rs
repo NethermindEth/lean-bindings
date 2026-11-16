@@ -521,7 +521,7 @@ fn checked(f: impl FnOnce() -> Result<bool, ()>) -> i32 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn nlean_abi_version() -> u32 {
-    19
+    22
 }
 /// Copies up to `len` bytes of the calling thread's last contained panic message into `out` and returns its full
 /// length; empty unless that thread's latest `checked` call returned -1.
@@ -1003,7 +1003,7 @@ mod tests {
 
     #[test]
     fn exported_abi_and_limits() {
-        assert_eq!(nlean_abi_version(), 19);
+        assert_eq!(nlean_abi_version(), 22);
         let mut limits = [0u32; 7];
         assert_eq!(unsafe { nlean_limits(1, limits.as_mut_ptr(), 7) }, 1);
         assert_eq!(limits[2], 16, "MAX_INNER_PROOFS_PER_STEP");
@@ -1027,7 +1027,7 @@ mod tests {
         let base: Vec<u8> = (0..32)
             .map(|i| {
                 u8::from_str_radix(
-                    &"b3a5a9b6773f76829132e11fa436d24bdac562014d2821396657fdf5dd081084"
+                    &"e09e5acfcfe87832f337eb42acac98246d160bb915b55c55fbd8118b203cbb81"
                         [2 * i..2 * i + 2],
                     16,
                 )
@@ -1225,6 +1225,32 @@ mod tests {
             assert!(!verify_witness(&dep, &forged), "{name}");
             assert!(discarded(&forged).iter().all(Result::is_err), "{name}");
         }
+    }
+
+    /// Guest 0 verifies at most `MAX_GENERIC_DEPENDENCIES` raw leanSTARK witnesses a call; children carry more between
+    /// them.
+    #[test]
+    fn guest_0_merges_children_past_the_raw_leanstark_cap() {
+        let raw: Vec<_> = (0..=rec_aggregation_base::MAX_GENERIC_DEPENDENCIES as u8)
+            .map(|i| {
+                let message = keccak(&[0x52, i]);
+                let (witness, key) = prove_stark(BASE, ANY_INPUT_PROGRAM, &message).unwrap();
+                (leanstark_dependency(&message, &key), witness)
+            })
+            .collect();
+        let hash = |deps: &[Dep]| base::commitment(&canonical(deps.to_vec()));
+        let all: Vec<Dep> = raw.iter().map(|(dep, _)| *dep).collect();
+        assert!(base::prove_aggregate(&hash(&all), &input(&raw, &[], &[])).is_err());
+        let (left, right) = raw.split_at(raw.len() / 2);
+        let leaf = |raw: &[(Dep, Vec<u8>)]| {
+            let deps = canonical(raw.iter().map(|(dep, _)| *dep).collect());
+            let proof = base::prove_aggregate(&hash(&deps), &input(raw, &[], &[])).unwrap();
+            (deps, proof)
+        };
+        let ((left, left_proof), (right, right_proof)) = (leaf(left), leaf(right));
+        let children = [(&left[..], &left_proof[..]), (&right[..], &right_proof[..])];
+        let merged = base::prove_aggregate(&hash(&all), &input(&[], &children, &[])).unwrap();
+        assert!(base::verify_aggregate(&hash(&all), &merged).is_ok());
     }
 
     /// EIP-8288 lays a leanSPHINCS key out as `PK.seed ‖ PK.root`; the former `PK.root ‖ PK.seed` names another key.

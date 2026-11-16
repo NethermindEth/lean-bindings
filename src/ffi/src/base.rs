@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Demerzel Solutions Limited
 // SPDX-License-Identifier: MIT
 
-//! Guest 0: EIP-8288's recursive guest and its host as the ABI 12 package 0.12.1 ships them, ported to F128, so a chain
-//! without batch pricing keeps that package's limits and input encoding (its `AGGREGATED_VK` changes with the field).
+//! Guest 0: EIP-8288's recursive guest and its host as the ABI 12 package 0.12.1 ships them, ported to F128 and with
+//! leanSTARK lists no longer capped at 16, so a chain without batch pricing keeps that package's input encoding (its
+//! `AGGREGATED_VK` changes with the field).
 
 use crate::{Dep, LEAN_SPHINCS, LEAN_STARK, LOG_INV_RATE, MAX_BYTES, MAX_DEPS, MAX_INPUT_BYTES};
 use rec_aggregation_base::{EthereumClaims, EthereumProof, MAX_GENERIC_DEPENDENCIES};
@@ -87,9 +88,6 @@ pub fn commitment(ds: &[Dep]) -> [u8; 32] {
     let claims = claims(ds);
     rec_aggregation_base::deps_hash(&claims.lean_sphincs, &claims.generic)
 }
-fn generic_count(ds: &[Dep]) -> usize {
-    ds.iter().filter(|dep| dep[31] == LEAN_STARK).count()
-}
 fn canonical(ds: Vec<Dep>) -> Vec<Dep> {
     ds.into_iter()
         .collect::<BTreeSet<_>>()
@@ -155,9 +153,6 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
             }
             continue;
         }
-        if generic_count(&declared) > MAX_GENERIC_DEPENDENCIES {
-            return Err(());
-        }
         children.push((decode_child(&declared, proof)?, proof, declared.clone()));
         all.extend(declared);
     }
@@ -173,10 +168,7 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    if deps.len() > MAX_DEPS
-        || generic_count(&deps) > MAX_GENERIC_DEPENDENCIES
-        || commitment(&deps) != *hash
-    {
+    if deps.len() > MAX_DEPS || commitment(&deps) != *hash {
         return Err(());
     }
     if deps.is_empty() {

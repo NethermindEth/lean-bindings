@@ -13,9 +13,9 @@ namespace Nethermind.Crypto.Lean.Tests;
 public partial class NativeLibraryTests
 {
     private const string Library = "nethermind_lean";
-    private const uint ExpectedAbi = 19;
+    private const uint ExpectedAbi = 22;
     // EIP-8288's guest (0) and the one with ethereum/EIPs#12664 batched generic proof dependencies (1).
-    private const string ExpectedAggregatedVk = "b3a5a9b6773f76829132e11fa436d24bdac562014d2821396657fdf5dd081084";
+    private const string ExpectedAggregatedVk = "e09e5acfcfe87832f337eb42acac98246d160bb915b55c55fbd8118b203cbb81";
     private const string ExpectedBatchedAggregatedVk = "6a2e13dab57ca0558170a9a047039221ce10ebdcd94beb53cf75f7d89ce65af9";
     // Proof bytes, dependencies, inner proofs per step, NiceTry v2 witness bytes, aggregation input bytes, leanSTARK
     // dependencies per list (guest 0) or claims per batch leaf (guest 1), leanSTARK instructions.

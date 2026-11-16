@@ -26,7 +26,8 @@ use primitives::field::F128;
 
 /// The most instructions, as a log, of a leanSTARK dependency's program.
 pub const MAX_GENERIC_BYTECODE_LOG: usize = 11;
-/// The most leanSTARK claims one aggregation list holds.
+/// The most raw leanSTARK proofs one aggregation node verifies. The claim lists a node publishes or takes from its
+/// children are bounded by the guest's memory alone, as leanSPHINCS ones are.
 pub const MAX_GENERIC_DEPENDENCIES: usize = 16;
 
 /// The domain closing the dependency digest of a list with leanSTARK claims: `"eip8288/leanstark-deps"`, zero-padded.
