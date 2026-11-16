@@ -21,7 +21,7 @@ licenses follow.
 
 --------------------------------------------------------------------------------
 Apache License 2.0 (Apache-2.0)
-Used by: bench 0.1.0, fiat_shamir 0.1.0, keccak_gkr 0.1.0, lean_compiler 0.1.0, lean_da 0.1.0, leanvm_core 0.1.0, parallel 0.1.0, pcs 0.1.0, primitives 0.1.0, signatures 0.1.0, verifier 0.1.0, rec_aggregation 0.1.0
+Used by: bench 0.1.0, fiat_shamir 0.1.0, keccak_gkr 0.1.0, lean_compiler 0.1.0, lean_da 0.1.0, leanvm_core 0.1.0, parallel 0.1.0, pcs 0.1.0, primitives 0.1.0, verifier 0.1.0, lean_sphincs 0.1.0, rec_aggregation 0.1.0
 
                                  Apache License
                            Version 2.0, January 2004
@@ -1321,7 +1321,7 @@ limitations under the License.
 
 --------------------------------------------------------------------------------
 Apache License 2.0 (Apache-2.0)
-Used by: bench 0.1.0, fiat_shamir 0.1.0, keccak_gkr 0.1.0, lean_compiler 0.1.0, lean_da 0.1.0, leanvm_core 0.1.0, parallel 0.1.0, pcs 0.1.0, primitives 0.1.0, signatures 0.1.0, verifier 0.1.0, rec_aggregation 0.1.0
+Used by: bench 0.1.0, fiat_shamir 0.1.0, keccak_gkr 0.1.0, lean_compiler 0.1.0, lean_da 0.1.0, leanvm_core 0.1.0, parallel 0.1.0, pcs 0.1.0, primitives 0.1.0, verifier 0.1.0, rec_aggregation 0.1.0
 
 MIT License
 
@@ -1424,7 +1424,7 @@ DEALINGS IN THE SOFTWARE.
 
 --------------------------------------------------------------------------------
 MIT License (MIT)
-Used by: nethermind-lean 0.12.0, nethermind-lean 0.12.0
+Used by: nethermind-lean 0.21.0, nethermind-lean 0.21.0, lean_sphincs 0.1.0
 
 MIT License
 
