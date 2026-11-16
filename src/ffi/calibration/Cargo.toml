@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2026 Demerzel Solutions Limited
+# SPDX-License-Identifier: MIT
+[package]
+name = "gas-calibration"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Activation gas calibration for EIP-8288 and ethereum/EIPs#12664: node cells, a distributed prover and the scheduler. Not shipped."
+
+[lints]
+workspace = true
+
+[features]
+# The batch-pricing guest (ethereum/EIPs#12664): `Guest`, batch leaves, payments and finalization. Build against a
+# library revision that has it (`calib.py build` detects it).
+batch = []
+# Generic proofs keyed by a bytecode commitment: `Program::committed()` before proving a leaf.
+committed = ["dep:verifier"]
+
+[dependencies]
+rec_aggregation.workspace = true
+signatures.workspace = true
+primitives.workspace = true
+leanvm_core.workspace = true
+lean_compiler.workspace = true
+fiat_shamir.workspace = true
+# The plain leanSTARK verifier, for verification-only timings (calib-node native). Pinned to the workspace's leanVM
+# revision; a revision's `[patch]` of leanVM applies to it too.
+verifier = { git = "https://github.com/leanEthereum/leanVM", rev = "e4dcb8d5436c9bf76398d890c57c59613af12956", optional = true }
+libc = "0.2"
+tikv-jemallocator = "0.7"
+
+# Under src/cmd: the repository ignores `bin/` directories.
+[[bin]]
+name = "calib-node"
+path = "src/cmd/node.rs"
+
+[[bin]]
+name = "calib-worker"
+path = "src/cmd/worker.rs"
+
+[[bin]]
+name = "calib-coord"
+path = "src/cmd/coord.rs"

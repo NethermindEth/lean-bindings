@@ -1,0 +1,21 @@
+{
+  "label": "GCE, post-quantum signature leaves at the verifier's committed-witness bound (2^30): largest N that proves and aggregates",
+  "mode": "pq-leaves",
+  "pq_ref": "da6351bd09e728064ce49a8d69bb179ef3b769c7",
+  "schemes": ["mldsa44", "falcon512", "slhdsa128s"],
+  "max_log_committed": 30.0,
+  "known": {
+    "mldsa44": {"lo": 6},
+    "falcon512": {"lo": 30, "hi": 34},
+    "slhdsa128s": {"lo": 255}
+  },
+  "extra_n": {
+    "mldsa44": [6]
+  },
+  "reps": 3,
+  "quiet": {
+    "max_load1": 4,
+    "timeout_s": 600
+  },
+  "threads": 22
+}
