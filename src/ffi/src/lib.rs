@@ -14,9 +14,15 @@ use std::sync::{Barrier, Mutex, OnceLock};
 use std::thread::ThreadId;
 
 pub const MAX_BYTES: usize = 8 * 1024 * 1024;
-pub const MAX_INPUT_BYTES: usize = 18 * 1024 * 1024;
-/// A local bound: one guest node proves this many signatures in about 9 GiB.
-const MAX_DEPS: usize = 256;
+/// EIP-7934 `MAX_RLP_BLOCK_SIZE`: `MAX_BLOCK_SIZE` (10 MiB) less `SAFETY_MARGIN` (2 MiB).
+const MAX_RLP_BLOCK_SIZE: usize = 10 * 1024 * 1024 - 2 * 1024 * 1024;
+/// An encoded dependency triple.
+const DEP_BYTES: usize = 96;
+/// The most dependencies a list holds: EIP-8288's output capacity, `MAX_RLP_BLOCK_SIZE // 96`.
+const MAX_DEPS: usize = MAX_RLP_BLOCK_SIZE / DEP_BYTES;
+/// Room for every child's full dependency list and largest proof, and as much again for raw witnesses and discards.
+/// Raw witnesses are bounded by these bytes alone, not by [`MAX_DEPS`].
+pub const MAX_INPUT_BYTES: usize = (rec_aggregation::MAX_RECURSIONS + 1) * (MAX_DEPS * DEP_BYTES + MAX_BYTES);
 // The upstream prover's timings assume its allocator: jemalloc keeps a proof's freed pages mapped for the next one.
 // It serves this library's allocations only, and holds their peak until the process exits.
 #[global_allocator]
@@ -48,7 +54,7 @@ static ACTIVE_ABI_CALLS: AtomicUsize = AtomicUsize::new(0);
 static ABI_WORKERS: OnceLock<Vec<ThreadId>> = OnceLock::new();
 thread_local! { static IN_ABI: Cell<bool> = const { Cell::new(false) }; }
 thread_local! { static LAST_PANIC: RefCell<String> = const { RefCell::new(String::new()) }; }
-type Dep = [u8; 96];
+type Dep = [u8; DEP_BYTES];
 const LEAN_SPHINCS: u8 = 0x10;
 /// EIP-8288 reserves this scheme; accepting it is an experimental extension of this stack.
 const LEAN_STARK: u8 = 0x11;
@@ -88,7 +94,7 @@ impl<'a> Reader<'a> {
         self.take(n)
     }
     fn dep(&mut self) -> Result<Dep, ()> {
-        let d: Dep = self.take(96)?.try_into().map_err(|_| ())?;
+        let d: Dep = self.take(DEP_BYTES)?.try_into().map_err(|_| ())?;
         if d[..31].iter().any(|b| *b != 0) || !matches!(d[31], LEAN_SPHINCS | LEAN_STARK) {
             return Err(());
         }
@@ -535,8 +541,10 @@ mod tests {
     use super::*;
 
     fn signed(index: u8) -> (Dep, Vec<u8>) {
-        let (sk, pk) = lean_sphincs::key_gen_from_seed([index; 32]);
-        let message = keccak(&[index]);
+        signed_by([index; 32], keccak(&[index]))
+    }
+    fn signed_by(seed: [u8; 32], message: [u8; 32]) -> (Dep, Vec<u8>) {
+        let (sk, pk) = lean_sphincs::key_gen_from_seed(seed);
         let mut dep = [0; 96];
         dep[31] = 0x10;
         dep[32..64].copy_from_slice(&message);
@@ -721,6 +729,29 @@ mod tests {
         };
         let ((left, left_proof), (right, right_proof)) = (leaf(left), leaf(right));
         let children = [(&left[..], &left_proof[..]), (&right[..], &right_proof[..])];
+        let merged = prove_aggregate(&hash_of(&all), &input(&[], &children, &[])).unwrap();
+        assert!(verify_aggregate(&hash_of(&all), &merged).is_ok());
+    }
+
+    /// An aggregate holds more than the former 256-dependency bound: leaves whose union exceeds it merge and verify.
+    #[test]
+    fn merges_past_256_dependencies() {
+        const LEAVES: usize = 3;
+        const PER_LEAF: u16 = 86;
+        let raw: Vec<_> = (0..LEAVES as u16 * PER_LEAF)
+            .map(|i| signed_by(keccak(&[b"many".as_slice(), &i.to_le_bytes()].concat()), keccak(&i.to_le_bytes())))
+            .collect();
+        let leaves: Vec<_> = raw
+            .chunks(PER_LEAF.into())
+            .map(|raw| {
+                let deps = canonical(raw.iter().map(|(dep, _)| *dep).collect());
+                let proof = prove_aggregate(&hash_of(&deps), &input(raw, &[], &[])).unwrap();
+                (deps, proof)
+            })
+            .collect();
+        let children: Vec<_> = leaves.iter().map(|(deps, proof)| (&deps[..], &proof[..])).collect();
+        let all: Vec<Dep> = raw.iter().map(|(dep, _)| *dep).collect();
+        assert!(all.len() > 256);
         let merged = prove_aggregate(&hash_of(&all), &input(&[], &children, &[])).unwrap();
         assert!(verify_aggregate(&hash_of(&all), &merged).is_ok());
     }

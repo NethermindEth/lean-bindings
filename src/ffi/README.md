@@ -50,10 +50,12 @@ dispatcher, where the ABI catches them.
 ## Prototype wire format
 
 All framing integers are unsigned 32-bit little-endian. The native backend bounds proofs and
-individual witnesses to 8 MiB and aggregation input to 18 MiB; managed callers first apply
+individual witnesses to 8 MiB and aggregation input to 17 full dependency lists with their largest proofs (about
+272 MiB); managed callers first apply
 the local 1.25 MiB pinned-prover bound (`Eip8288Constants.MaxAggregateProofBytes`, not an EIP-8288
 constant) to every aggregate proof. This is an input-buffer limit, not a process memory bound.
-Dependency lists are bounded to 256 and recursive children to 16. This format and the
+Dependency lists are bounded to EIP-8288's output capacity, `MAX_RLP_BLOCK_SIZE // 96` (87,381, EIP-7934), and recursive
+children to 16; raw witnesses are bounded by the input bytes alone. This format and the
 pinned key are prototype protocol choices, pending finalized EIP-8288 encodings.
 
 The serialized mixed guest proof is the whole `stark_proof`; an empty dependency list has an
@@ -120,16 +122,13 @@ EIP, with the pinned guest's generic leanVM CPU proof as its leanSTARK profile:
 * Frames, wrappers and inclusion-list `proof_deps` accept `0x11`, charged
   `LEANSTARK_VERIFICATION_GAS`; any other scheme is rejected as before.
 * The guest checks every entry of the selected list and of each child list, discarded entries
-  included, against its run, and verifies at most 16 raw leanSTARK proofs per node; its lists
-  hold leanSTARK entries up to the 256-dependency bound. That bound is the circuit's
-  dependency-list limit: the builder never sends a statement over it to the prover, a received
-  mode-1 wrapper over it is invalid and an inclusion-list proof over it imposes no obligation,
-  both without penalty or verification.
+  included, against its run, and verifies at most 16 raw leanSTARK proofs per node. Its lists are
+  bounded by its memory, for both schemes; the native host bounds them to the output capacity.
 
 Startup checks ABI 21, the pinned key and the seven bounds together. New devnets require fresh
 chain and database namespaces.
 
-The latest companion specification has no block dependency quota: blocks are bounded by gas, mode-0 wrappers by `MAX_LEANSIG_DEPS_PER_WRAPPER`, `MAX_LEANSTARK_DEPS_PER_WRAPPER` and `MAX_WRAPPER_BYTES`, and mode-1 wrappers by `MAX_WRAPPER_BYTES` and the dependency-list limit of the circuit behind `AGGREGATED_VK`, which EIP-8288 fixes from benchmarks before activation. This prototype guest's limit is 256 dependencies of either scheme; a received mode-1 wrapper over it is invalid and discarded before verification, without penalizing its sender. Blocks have no such limit in the draft, so this key cannot prove every block the draft permits and this prototype is not full-capacity conformance. Raising the bound changes the guest and so `AGGREGATED_VK`. Local inability to prove or retain a set is not an inclusion-list omission excuse. Full activation requires a verifier and proof format supporting every set the fork's gas rules permit, with the complete construction, including recursive merges and discards, benchmarked against the slot deadline.
+The latest companion specification has no block dependency quota: blocks are bounded by gas, mode-0 wrappers by `MAX_LEANSIG_DEPS_PER_WRAPPER`, `MAX_LEANSTARK_DEPS_PER_WRAPPER` and `MAX_WRAPPER_BYTES`, and mode-1 wrappers by `MAX_WRAPPER_BYTES` and the dependency-list limit of the circuit behind `AGGREGATED_VK`, which EIP-8288 fixes from benchmarks before activation. The native host accepts lists up to EIP-8288's output capacity, `MAX_RLP_BLOCK_SIZE // 96`, of either scheme; the guest's own bound is its memory, so changing the host's does not change `AGGREGATED_VK`. Whether a full-capacity aggregate proves within a slot is a question of prover resources, not of this bound. Local inability to prove or retain a set is not an inclusion-list omission excuse. Full activation requires a verifier and proof format supporting every set the fork's gas rules permit, with the complete construction, including recursive merges and discards, benchmarked against the slot deadline.
 
 ## Proving resources
 
@@ -194,8 +193,8 @@ selected witnesses, discard dependencies outside the selected transaction set, a
 produced block proof. Selection reserves proof gas from both execution and state gas budgets.
 Managed proving folds at most four direct witnesses or two recursive children per native call;
 4 MiB is the direct-leaf batching target, not a block-wide witness limit. Native inputs are bounded
-to 18 MiB and output proofs to the local aggregate proof bound. Each encoded dependency list and the selected
-output are bounded to 256 dependencies; inputs may jointly cover more claims when
+to the native input bound and output proofs to the local aggregate proof bound. Each encoded dependency list and
+the selected output are bounded to the output capacity; inputs may jointly cover more claims when
 the discarded subset brings the output within that bound.
 A verified recursive source covers duplicate claims without retaining or selecting
 raw witness lengths for the output. Supplied raw duplicates still require authentication;
@@ -311,7 +310,7 @@ coalesce while proving. Subsets are transaction-hash-prefix buckets: the candida
 order start as one bucket, and one that does not fit is subdivided by successive hash bits. Buckets
 do not depend on arrival order, but splits depend on the held proofs through the proving-cost
 estimate, so other nodes cut the same buckets only where their pool and held proofs agree. Mode 1 is bounded by `MAX_WRAPPER_BYTES` and the
-circuit's dependency-list limit (the guest's 256 dependencies), and a bucket also by an estimated
+circuit's dependency-list limit (the output capacity), and a bucket also by an estimated
 proving cost equal to folding 16 fresh signatures: already proven aggregates merge whole and may
 carry many more dependencies. Mode-0 witnesses fold directly into the aggregate, and a set a held
 proof already proves is not proven again; for partial coverage held proofs are merged and only
@@ -338,7 +337,7 @@ noninterruptible. Producing processors also retain a bounded local cache and con
 exact dependency-set cache after execution determines the final body. Work completed after an
 improvement deadline remains reusable, while the expired caller still cancels before publishing a
 block. This cache is a bounded optimization: a folding working set larger than its capacity can
-still repeat work, so the backend's 256-dependency acceptance limit does not guarantee production
+still repeat work, so the backend's dependency acceptance limit does not guarantee production
 within a normal slot budget.
 
 ## Proof-bearing inclusion lists
@@ -388,9 +387,9 @@ decoding fallbacks; the proof-aware source overrides that path with its prepared
 A builder merges its running wrapper aggregate with any inclusion-list proofs it does not cover,
 discarding what its block does not need; EIP-8288 bounds a step's discards by the sum of its
 input dependency lists and leaves the number of bounded steps to the slot deadline. The pinned
-guest folds two recursive inputs per step and discards at most 256 dependencies, so the managed
+guest folds two recursive inputs per step and discards at most the output capacity, so the managed
 aggregator merges over a binary tree, pruning each child separately, at the cost of extra proving
-rounds; inclusion-list proofs whose dependency lists exceed the local 256-dependency bound
+rounds; inclusion-list proofs whose dependency lists exceed the output capacity
 cannot be folded.
 
 The separate [frame/FOCIL PR #13590](https://github.com/NethermindEth/nethermind/pull/13590)
