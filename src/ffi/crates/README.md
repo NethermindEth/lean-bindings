@@ -1,15 +1,16 @@
 # Vendored leanVM crates
 
-`rec_aggregation` and `signatures` derive from [leanEthereum/leanVM](https://github.com/leanEthereum/leanVM) at
-`e4dcb8d5436c9bf76398d890c57c59613af12956`, the revision `../Cargo.toml` pins for every other leanVM crate. Upstream
+`rec_aggregation` and `lean_sphincs` derive from [leanEthereum/leanVM](https://github.com/leanEthereum/leanVM) at
+`f7ba4999ae523b94c8d0969b32762c3effea4cbd`, the revision `../Cargo.toml` pins for every other leanVM crate. Upstream
 licenses them under MIT or Apache-2.0 (each crate's `LICENSE-MIT`, `LICENSE-APACHE`). The core (`leanvm_core`, `verifier`,
 `lean_compiler`, `fiat_shamir`, `pcs`, `primitives`) stays a git dependency at that revision, patched in `../Cargo.toml`
 to the committed bytecode key's core changes on top of it until they are upstream.
 
 Changes against upstream, all EIP-8288 specific:
 
-- `signatures::lean_sphincs`: NiceTry v2 (SPHINCS- v2) parameters and encoding, the wallet's signature scheme. The vendored
-  copy drops leanXMSS; test-only mock signers come from the upstream crate.
+- `lean_sphincs`: NiceTry v2 (SPHINCS- v2) parameters and encoding, the wallet's signature scheme, in place of upstream's
+  leanSPHINCS, with the public key `PK.seed ‖ PK.root`. Upstream's tests and known-answer vectors are for its own scheme
+  and are not vendored; the crate checks NiceTry's reference vector instead. leanXMSS is upstream's `lean_xmss`, unvendored.
 - `rec_aggregation`: the aggregation guest (`guests/lean_ethereum.py`) commits to the EIP-8288 dependency digest with
   Keccak-256, verifies NiceTry v2 signatures (scheme `0x10`) and leanVM execution proofs of programs up to 2^11
   instructions as EIP-8288 batch leaves (scheme `0x11`, `src/aggregation/generic.rs`), and merges or discards child
@@ -19,7 +20,7 @@ Changes against upstream, all EIP-8288 specific:
   [`rec_aggregation/EIP8288-PROFILE.md`](rec_aggregation/EIP8288-PROFILE.md) specifies that key, the witness and the
   proof encoding as the proof-system profile the EIPs pin, and
   [`rec_aggregation/guests/BATCHING.md`](rec_aggregation/guests/BATCHING.md) describes what the guest decides
-  that the EIPs leave to the proof system. `rec_aggregation_base` is the ABI 12 package's EIP-8288 guest, unchanged.
+  that the EIPs leave to the proof system. `rec_aggregation_base` is the ABI 12 package's EIP-8288 guest (flat key, singleton leaves), ported to F128 with its semantics unchanged.
 
 `crates/upstream.sh diff` prints every change against upstream at the pinned revision; `crates/upstream.sh update <rev>`
 moves the crates and the pin to a newer upstream revision by three-way merge and lists what needs review. After an

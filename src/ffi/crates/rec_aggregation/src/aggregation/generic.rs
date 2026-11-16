@@ -37,7 +37,7 @@ use super::error::AggregationError;
 use super::guest::Guest;
 use super::hints::SubHints;
 use leanvm_core::cpu::{Proof, from_scalar, scalar_proof};
-use primitives::field::{F64, F192};
+use primitives::field::{F64, F128};
 
 /// The most instructions, as a log, of a leanSTARK dependency's program.
 pub const MAX_GENERIC_BYTECODE_LOG: usize = 11;
@@ -145,7 +145,7 @@ pub fn scheme_word(scheme: u8) -> [u8; 32] {
 }
 
 /// A digest as the two canonical cells the VM takes it in.
-pub(super) fn digest_cells(digest: &[u8; 32]) -> [F192; 2] {
+pub(super) fn digest_cells(digest: &[u8; 32]) -> [F128; 2] {
     [pack_16_bytes(&digest[..16]), pack_16_bytes(&digest[16..])]
 }
 

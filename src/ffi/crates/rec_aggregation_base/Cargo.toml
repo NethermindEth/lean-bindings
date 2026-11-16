@@ -15,7 +15,8 @@ pcs.workspace = true
 keccak_gkr.workspace = true
 leanvm_core.workspace = true
 lean_compiler.workspace = true
-signatures.workspace = true
+lean_xmss.workspace = true
+lean_sphincs.workspace = true
 lean_da.workspace = true
 verifier.workspace = true
 rand = { workspace = true, optional = true }
@@ -24,9 +25,10 @@ tracing.workspace = true
 [features]
 # Malicious-host switches for the rejection tests. Never enable in a prover that ships.
 forge = []
-# `signers_cache`: cached benchmark signers over leanXMSS mock keys, for tests and the CLI.
-signers-cache = ["signatures/mock", "dep:rand"]
+# `signers_cache`: cached benchmark signers, for tests and the CLI.
+signers-cache = ["dep:rand"]
 
 [dev-dependencies]
-signatures = { workspace = true, features = ["mock"] }
+leanvm_core = { workspace = true, features = ["forge"] }
+verifier = { workspace = true, features = ["forge"] }
 rand.workspace = true

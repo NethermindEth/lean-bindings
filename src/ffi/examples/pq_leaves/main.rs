@@ -35,7 +35,6 @@ fn main() {
         eprintln!("usage: pq_leaves size|test|prove <scheme> [n] [reps] [--agg] | pq_leaves vectors | pq_leaves sign <profile> <key> <message-hex>");
         std::process::exit(2);
     };
-    leanvm_core::init_prover();
     match scheme {
         "null" => run::<common::Null>(command, &args),
         "mldsa44" => run::<mldsa::MlDsa44>(command, &args),

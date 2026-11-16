@@ -23,7 +23,7 @@ dependencies = [
 [[package]]
 name = "bench"
 version = "0.1.0"
-source = "git+https://github.com/Marchhill/leanVM?rev=2ce918752cbdcf3c341da70f532e8523f89d402b#2ce918752cbdcf3c341da70f532e8523f89d402b"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "libc",
  "primitives",
@@ -89,7 +89,7 @@ dependencies = [
 [[package]]
 name = "fiat_shamir"
 version = "0.1.0"
-source = "git+https://github.com/Marchhill/leanVM?rev=2ce918752cbdcf3c341da70f532e8523f89d402b#2ce918752cbdcf3c341da70f532e8523f89d402b"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "parallel",
  "primitives",
@@ -170,7 +170,7 @@ dependencies = [
 [[package]]
 name = "keccak_gkr"
 version = "0.1.0"
-source = "git+https://github.com/Marchhill/leanVM?rev=2ce918752cbdcf3c341da70f532e8523f89d402b#2ce918752cbdcf3c341da70f532e8523f89d402b"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "fiat_shamir",
  "parallel",
@@ -188,7 +188,7 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 [[package]]
 name = "lean_compiler"
 version = "0.1.0"
-source = "git+https://github.com/Marchhill/leanVM?rev=2ce918752cbdcf3c341da70f532e8523f89d402b#2ce918752cbdcf3c341da70f532e8523f89d402b"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "leanvm_core",
  "primitives",
@@ -197,19 +197,35 @@ dependencies = [
 [[package]]
 name = "lean_da"
 version = "0.1.0"
-source = "git+https://github.com/Marchhill/leanVM?rev=2ce918752cbdcf3c341da70f532e8523f89d402b#2ce918752cbdcf3c341da70f532e8523f89d402b"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "fiat_shamir",
- "parallel",
  "pcs",
  "primitives",
  "tracing",
 ]
 
 [[package]]
+name = "lean_sphincs"
+version = "0.1.0"
+dependencies = [
+ "parallel",
+ "primitives",
+ "rand",
+]
+
+[[package]]
+name = "lean_xmss"
+version = "0.1.0"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
+dependencies = [
+ "primitives",
+]
+
+[[package]]
 name = "leanvm_core"
 version = "0.1.0"
-source = "git+https://github.com/Marchhill/leanVM?rev=2ce918752cbdcf3c341da70f532e8523f89d402b#2ce918752cbdcf3c341da70f532e8523f89d402b"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "fiat_shamir",
  "keccak_gkr",
@@ -249,13 +265,14 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "nethermind-lean"
-version = "0.18.0"
+version = "0.22.0"
 dependencies = [
  "bench",
  "fiat_shamir",
  "fips204",
  "fips205",
  "lean_compiler",
+ "lean_sphincs",
  "leanvm_core",
  "libc",
  "parallel",
@@ -263,7 +280,6 @@ dependencies = [
  "rec_aggregation",
  "rec_aggregation_base",
  "sha3",
- "signatures 0.1.0",
  "tide-fn-dsa",
  "tikv-jemallocator",
  "verifier",
@@ -287,7 +303,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 [[package]]
 name = "parallel"
 version = "0.1.0"
-source = "git+https://github.com/Marchhill/leanVM?rev=2ce918752cbdcf3c341da70f532e8523f89d402b#2ce918752cbdcf3c341da70f532e8523f89d402b"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "libc",
 ]
@@ -295,7 +311,7 @@ dependencies = [
 [[package]]
 name = "pcs"
 version = "0.1.0"
-source = "git+https://github.com/Marchhill/leanVM?rev=2ce918752cbdcf3c341da70f532e8523f89d402b#2ce918752cbdcf3c341da70f532e8523f89d402b"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "fiat_shamir",
  "parallel",
@@ -321,7 +337,7 @@ dependencies = [
 [[package]]
 name = "primitives"
 version = "0.1.0"
-source = "git+https://github.com/Marchhill/leanVM?rev=2ce918752cbdcf3c341da70f532e8523f89d402b#2ce918752cbdcf3c341da70f532e8523f89d402b"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "parallel",
 ]
@@ -396,12 +412,13 @@ dependencies = [
  "keccak_gkr",
  "lean_compiler",
  "lean_da",
+ "lean_sphincs",
+ "lean_xmss",
  "leanvm_core",
  "parallel",
  "pcs",
  "primitives",
  "rand",
- "signatures 0.1.0",
  "tracing",
  "verifier",
 ]
@@ -414,12 +431,13 @@ dependencies = [
  "keccak_gkr",
  "lean_compiler",
  "lean_da",
+ "lean_sphincs",
+ "lean_xmss",
  "leanvm_core",
  "parallel",
  "pcs",
  "primitives",
  "rand",
- "signatures 0.1.0",
  "tracing",
  "verifier",
 ]
@@ -476,26 +494,6 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
-
-[[package]]
-name = "signatures"
-version = "0.1.0"
-dependencies = [
- "parallel",
- "primitives",
- "rand",
- "signatures 0.1.0 (git+https://github.com/Marchhill/leanVM?rev=2ce918752cbdcf3c341da70f532e8523f89d402b)",
-]
-
-[[package]]
-name = "signatures"
-version = "0.1.0"
-source = "git+https://github.com/Marchhill/leanVM?rev=2ce918752cbdcf3c341da70f532e8523f89d402b#2ce918752cbdcf3c341da70f532e8523f89d402b"
-dependencies = [
- "parallel",
- "primitives",
- "rand",
-]
 
 [[package]]
 name = "smallvec"
@@ -723,7 +721,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 [[package]]
 name = "verifier"
 version = "0.1.0"
-source = "git+https://github.com/Marchhill/leanVM?rev=2ce918752cbdcf3c341da70f532e8523f89d402b#2ce918752cbdcf3c341da70f532e8523f89d402b"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 
 [[package]]
 name = "version_check"

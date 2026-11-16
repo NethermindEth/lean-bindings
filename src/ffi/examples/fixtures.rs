@@ -4,7 +4,7 @@ use nethermind_lean::{
     ANY_INPUT_PROGRAM, abi_aggregated_vk, batch_hash, keccak, prove_stark, verification_key,
 };
 use rec_aggregation::Guest;
-use signatures::lean_sphincs::{key_gen_from_seed, sign};
+use lean_sphincs::{key_gen_from_seed, sign};
 fn main() {
     let directory = std::env::args().nth(1).expect("fixture output directory");
     if directory == "--sign-message" || directory == "--prove-stark" {
@@ -107,7 +107,7 @@ fn main() {
 /// reject.
 fn save_commitment_vectors(save: &dyn Fn(&str, &[u8]), data_hash: &[u8; 32], key: &[u8; 32], witness: &[u8]) {
     let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let limbs = |e: verifier::E| format!("{:016x} {:016x} {:016x}", e.c0, e.c1, e.c2);
+    let limbs = |e: verifier::E| format!("{:016x} {:016x}", e.c0, e.c1);
     let kgen = witness[0] as usize;
     let root: [u8; 32] = witness[1..33].try_into().unwrap();
     let ood: [u8; 32] = witness[33..65].try_into().unwrap();
@@ -120,9 +120,9 @@ fn save_commitment_vectors(save: &dyn Fn(&str, &[u8]), data_hash: &[u8; 32], key
         .flat_map(|word| word.0.to_le_bytes())
         .collect();
     let mut text = format!(
-        "# leanSTARK EIP-8288 profile v1. program_commitment = keccak256(\"leanvm-commit-1\" || u8 kgen || root || ood);\n\
-         # ood_point = {} sponge challenges, IV root, public input \"leanvm-ood-pt-1\" || u8 kgen || 16 zero bytes;\n\
-         # vk_hash = keccak256(\"EIP8288:vk:v1\" || program_commitment). Limbs are c0 c1 c2 of y^0, y^1, y^2.\n\
+        "# leanSTARK EIP-8288 profile v1. program_commitment = keccak256(\"leanvm-commit-2\" || u8 kgen || root || ood);\n\
+         # ood_point_0, ood_point_1 = 2 x {} sponge challenges, IV root, public input \"leanvm-ood-pt-2\" || u8 kgen || 16 zero bytes;\n\
+         # vk_hash = keccak256(\"EIP8288:vk:v1\" || program_commitment). Limbs are c0 c1 of y^0, y^1.\n\
          # The witness proves statement = get_claim_hash(data_hash) = keccak256(\"EIP8288:batch:v1\" || data_hash).\n\
          data_hash {}\nstatement {}\ntable {}\nkgen {kgen}\nroot {}\nood {}\nprogram_commitment {}\nvk_hash {}\n",
         verifier::MIN_STACKED_LOG,
@@ -134,8 +134,10 @@ fn save_commitment_vectors(save: &dyn Fn(&str, &[u8]), data_hash: &[u8; 32], key
         hex(&commitment),
         hex(&vk_hash),
     );
-    for (j, coordinate) in verifier::committed_ood_point(kgen, &root).into_iter().enumerate() {
-        text += &format!("ood_point[{j}] {}\n", limbs(coordinate));
+    for (i, point) in verifier::committed_ood_points(kgen, &root).into_iter().enumerate() {
+        for (j, coordinate) in point.into_iter().enumerate() {
+            text += &format!("ood_point_{i}[{j}] {}\n", limbs(coordinate));
+        }
     }
     save("stark-key-hash-vectors.txt", text.as_bytes());
     for (name, at) in [("stark-key-opening-wrong-ood.bin", 33), ("stark-key-opening-wrong-root.bin", 1)] {

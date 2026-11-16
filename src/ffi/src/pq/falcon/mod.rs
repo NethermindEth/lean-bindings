@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use primitives::field::F192;
+use primitives::field::F128;
 use primitives::hash::keccak_f;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 use tide_fn_dsa::{
@@ -14,7 +14,7 @@ use tide_fn_dsa::{
     SIGNATURE_SIZE_512, SigningKey, SigningKeyStandard, VRFY_KEY_SIZE_512, VerifyingKey, VerifyingKeyStandard,
 };
 
-use super::common::{Claim, Hints, Scheme, cell, count, f192_literal};
+use super::common::{Claim, Hints, Scheme, cell, count, f128_literal};
 
 const GUEST: &str = include_str!("falcon.py");
 const CLAIM_TAG: &[u8; 16] = b"EIP8288:fn512:v1";
@@ -126,7 +126,7 @@ pub(super) fn vector_inputs() -> Vec<super::RawCase> {
     let mut honest = (0..).map(Falcon512::item).filter(|i| padded(&i.sig).is_some() && padded(&i.other).is_some());
     let (a, b) = (honest.next().unwrap(), honest.next().unwrap());
     let (sig, other) = (padded(&a.sig).unwrap(), padded(&a.other).unwrap());
-    let case = |label, pk: &[u8], msg, sig: &[u8], valid| (label, pk.to_vec(), msg, sig.to_vec(), valid);
+    let case = |label, pk: &[u8], msg: [u8; 32], sig: &[u8], valid| (label, pk.to_vec(), msg.to_vec(), sig.to_vec(), valid);
     let mut cases = vec![
         case("honest", &a.pk, a.msg, &sig, true),
         case("honest, second key", &b.pk, b.msg, &padded(&b.sig).unwrap(), true),
@@ -194,15 +194,14 @@ fn zetas() -> Vec<u32> {
 
 /// The guest's constant table: zetas as g-powers, the 64 stream-bit lane weights `W[s] = x^(8 (s / 8) + 7 - s % 8)`,
 /// and `E[t] = g^(2^(15 - t)) + 1`.
-fn table() -> Vec<F192> {
-    let mut t: Vec<F192> = zetas().iter().map(|&z| count(z as usize)).collect();
+fn table() -> Vec<F128> {
+    let mut t: Vec<F128> = zetas().iter().map(|&z| count(z as usize)).collect();
     t.extend((0..64).map(|s| count(8 * (s / 8) + 7 - s % 8)));
-    t.extend((0..16).map(|k| count(1 << (15 - k)) + F192::ONE));
+    t.extend((0..16).map(|k| count(1 << (15 - k)) + F128::ONE));
     t
 }
 
-fn cell_bytes(f: F192) -> [u8; 16] {
-    assert_eq!(f.c2, 0);
+fn cell_bytes(f: F128) -> [u8; 16] {
     let mut b = [0; 16];
     b[..8].copy_from_slice(&f.c0.to_le_bytes());
     b[8..].copy_from_slice(&f.c1.to_le_bytes());
@@ -210,8 +209,8 @@ fn cell_bytes(f: F192) -> [u8; 16] {
 }
 
 /// The keccak chain the guest binds the table with: from two zero cells, `h = keccak256(h || pair)`.
-fn chain(cells: &[F192]) -> [F192; 2] {
-    let mut h = [F192::ZERO; 2];
+fn chain(cells: &[F128]) -> [F128; 2] {
+    let mut h = [F128::ZERO; 2];
     for pair in cells.chunks(2) {
         let bytes = [h[0], h[1], pair[0], pair[1]].map(cell_bytes).concat();
         let d = crate::keccak(&bytes);
@@ -220,23 +219,23 @@ fn chain(cells: &[F192]) -> [F192; 2] {
     h
 }
 
-fn lane(l: u64) -> F192 {
-    F192::new(l, 0, 0)
+fn lane(l: u64) -> F128 {
+    F128::new(l, 0)
 }
 
-fn lanes(bytes: &[u8]) -> Vec<F192> {
+fn lanes(bytes: &[u8]) -> Vec<F128> {
     bytes
         .chunks(8)
         .map(|c| lane(u64::from_le_bytes(c.try_into().unwrap())))
         .collect()
 }
 
-fn bit(b: bool) -> F192 {
-    if b { F192::ONE } else { F192::ZERO }
+fn bit(b: bool) -> F128 {
+    if b { F128::ONE } else { F128::ZERO }
 }
 
 /// Bytes as a stream of bits, most significant first in each byte.
-fn stream_bits(bytes: &[u8]) -> Vec<F192> {
+fn stream_bits(bytes: &[u8]) -> Vec<F128> {
     bytes
         .iter()
         .flat_map(|&b| (0..8).map(move |t| bit(b >> (7 - t) & 1 == 1)))
@@ -447,9 +446,9 @@ impl Scheme for Falcon512 {
         ps.insert("CLAIM_TAG_0".into(), tag.c0.to_string());
         ps.insert("CLAIM_TAG_1".into(), tag.c1.to_string());
         let d = chain(&table());
-        ps.insert("CT_D0".into(), f192_literal(d[0]));
-        ps.insert("CT_D1".into(), f192_literal(d[1]));
-        ps.insert("FNINV".into(), f192_literal(count(NINV as usize)));
+        ps.insert("CT_D0".into(), f128_literal(d[0]));
+        ps.insert("CT_D1".into(), f128_literal(d[1]));
+        ps.insert("FNINV".into(), f128_literal(count(NINV as usize)));
     }
 
     fn item(i: usize) -> FalconItem {

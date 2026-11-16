@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Demerzel Solutions Limited
 // SPDX-License-Identifier: MIT
 
-//! Recognized signature programs (EIP-8437 mode 2): generic leaves verifying ML-DSA-44, Falcon-512 or
-//! SLH-DSA-SHAKE-128s signatures over 32-byte messages, one claim per signature, and the native checks a relay runs
-//! before admitting a raw signature for proving.
+//! Recognized signature programs (EIP-8437 mode 2): generic leaves verifying ML-DSA-44 signatures over messages of up
+//! to [`mldsa::MAX_MESSAGE_LEN`] bytes, or Falcon-512 or SLH-DSA-SHAKE-128s signatures over 32-byte messages, one claim
+//! per signature, and the native checks a relay runs before admitting a raw signature for proving.
 
 pub mod common;
 pub mod falcon;
@@ -17,8 +17,8 @@ use rec_aggregation::{MAX_CLAIMS_PER_BATCH_LEAF, generic_verification_key};
 
 use common::{Claim, Leaf, Scheme, program, prove_items};
 
-/// A raw signature: public key, 32-byte message and signature.
-pub type RawSignature<'a> = (&'a [u8], [u8; 32], &'a [u8]);
+/// A raw signature: public key, message and signature.
+pub type RawSignature<'a> = (&'a [u8], &'a [u8], &'a [u8]);
 
 /// A recognized program, by its ABI identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,21 +64,23 @@ impl Profile {
         self.compiled().1
     }
 
-    /// The claim of a signature over `msg` that this profile's native check accepts, or `None`.
-    pub fn verify(self, pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Option<Claim> {
+    /// The claim of a signature over `msg` that this profile's native check accepts, or `None`. Falcon-512 and
+    /// SLH-DSA-SHAKE-128s take 32-byte messages, ML-DSA-44 up to [`mldsa::MAX_MESSAGE_LEN`] bytes.
+    pub fn verify(self, pk: &[u8], msg: &[u8], sig: &[u8]) -> Option<Claim> {
         match self {
             Profile::MlDsa44 => mldsa::verified(pk, msg, sig).map(|i| mldsa::MlDsa44::claim(&i)),
-            Profile::Falcon512 => falcon::verified(pk, msg, sig).map(|i| falcon::Falcon512::claim(&i)),
-            Profile::SlhDsa128s => slhdsa::verified(pk, msg, sig).map(|i| slhdsa::SlhDsa128s::claim(&i)),
+            Profile::Falcon512 => falcon::verified(pk, msg.try_into().ok()?, sig).map(|i| falcon::Falcon512::claim(&i)),
+            Profile::SlhDsa128s => slhdsa::verified(pk, msg.try_into().ok()?, sig).map(|i| slhdsa::SlhDsa128s::claim(&i)),
         }
     }
 
-    /// Deterministic test key `key`'s signature over `msg` and its public key, for fixtures and devnets.
-    pub fn sign(self, key: usize, msg: [u8; 32]) -> (Vec<u8>, Vec<u8>) {
+    /// Deterministic test key `key`'s signature over `msg` and its public key, for fixtures and devnets. `None` when the
+    /// profile does not take a message of that length.
+    pub fn sign(self, key: usize, msg: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
         match self {
-            Profile::MlDsa44 => mldsa::sign_message(key, msg),
-            Profile::Falcon512 => falcon::sign_message(key, msg),
-            Profile::SlhDsa128s => slhdsa::sign_message(key, msg),
+            Profile::MlDsa44 => (msg.len() <= mldsa::MAX_MESSAGE_LEN).then(|| mldsa::sign_message(key, msg)),
+            Profile::Falcon512 => Some(falcon::sign_message(key, msg.try_into().ok()?)),
+            Profile::SlhDsa128s => Some(slhdsa::sign_message(key, msg.try_into().ok()?)),
         }
     }
 
@@ -92,14 +94,18 @@ impl Profile {
         let program = &self.compiled().0;
         match self {
             Profile::MlDsa44 => prove_checked::<mldsa::MlDsa44>(program, signatures, mldsa::verified),
-            Profile::Falcon512 => prove_checked::<falcon::Falcon512>(program, signatures, falcon::verified),
-            Profile::SlhDsa128s => prove_checked::<slhdsa::SlhDsa128s>(program, signatures, slhdsa::verified),
+            Profile::Falcon512 => prove_checked::<falcon::Falcon512>(program, signatures, |pk, msg, sig| {
+                falcon::verified(pk, msg.try_into().ok()?, sig)
+            }),
+            Profile::SlhDsa128s => prove_checked::<slhdsa::SlhDsa128s>(program, signatures, |pk, msg, sig| {
+                slhdsa::verified(pk, msg.try_into().ok()?, sig)
+            }),
         }
     }
 }
 
 /// A vector's input: label, public key, message, signature and whether the native check accepts it.
-type RawCase = (&'static str, Vec<u8>, [u8; 32], Vec<u8>, bool);
+type RawCase = (&'static str, Vec<u8>, Vec<u8>, Vec<u8>, bool);
 
 /// What the pinned leaf does with a vector, tested independently of the native check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,7 +133,7 @@ pub struct Vector {
     pub profile: Profile,
     pub label: &'static str,
     pub pk: Vec<u8>,
-    pub msg: [u8; 32],
+    pub msg: Vec<u8>,
     pub sig: Vec<u8>,
     /// The claim when the native check accepts.
     pub claim: Option<Claim>,
@@ -138,12 +144,16 @@ pub struct Vector {
 }
 
 /// The leaf's result for each vector, established by proving it (`leaf_results_match_the_leaf`; ML-DSA's accepted vectors by
-/// `mldsa_accepted_vectors_prove`). ML-DSA's rejections, the hint-encoding cases among them, are untested against the leaf.
+/// `mldsa_accepted_vectors_prove`) or, for ML-DSA's rejections, by its witness failing to execute
+/// (`mldsa_leaf_results_match_the_leaf`). ML-DSA's hint-encoding cases are untested against the leaf.
 fn leaf_result(profile: Profile, label: &str) -> LeafResult {
     use LeafResult::{Proves, Rejects, Untested};
     match (profile, label) {
         (_, "honest" | "honest, second key") => Proves,
-        (Profile::MlDsa44, _) => Untested,
+        (Profile::MlDsa44, "WebAuthn-shaped message" | "1,024-byte message") => Proves,
+        (Profile::MlDsa44, "nonzero hint padding" | "hint count above omega") => Untested,
+        // The ML-DSA leaf takes the key and signature at their lengths.
+        (Profile::MlDsa44, "truncated signature" | "extended signature") => Untested,
         (_, "truncated key") => Untested,
         // The Falcon leaf takes the nonce and s2 coefficients, not their encoding.
         (Profile::Falcon512, "truncated signature" | "extended signature" | "variable-length compressed encoding" | "nonzero padding"
@@ -156,11 +166,11 @@ fn leaf_result(profile: Profile, label: &str) -> LeafResult {
 }
 
 /// The claim the leaf proves for a vector whose leaf result is [`LeafResult::Proves`].
-fn leaf_claim(profile: Profile, pk: &[u8], msg: &[u8; 32], sig: &[u8]) -> Option<Claim> {
+fn leaf_claim(profile: Profile, pk: &[u8], msg: &[u8], sig: &[u8]) -> Option<Claim> {
     match profile {
         Profile::MlDsa44 => mldsa::unchecked(pk, msg, sig).map(|i| mldsa::MlDsa44::claim(&i)),
-        Profile::Falcon512 => falcon::unchecked(pk, msg, sig).map(|i| falcon::Falcon512::claim(&i)),
-        Profile::SlhDsa128s => slhdsa::unchecked(pk, msg, sig).map(|i| slhdsa::SlhDsa128s::claim(&i)),
+        Profile::Falcon512 => falcon::unchecked(pk, msg.try_into().ok()?, sig).map(|i| falcon::Falcon512::claim(&i)),
+        Profile::SlhDsa128s => slhdsa::unchecked(pk, msg.try_into().ok()?, sig).map(|i| slhdsa::SlhDsa128s::claim(&i)),
     }
 }
 
@@ -217,7 +227,7 @@ pub fn vectors_json() -> String {
 fn prove_checked<S: Scheme>(
     program: &Program,
     signatures: &[RawSignature],
-    verified: fn(&[u8], &[u8; 32], &[u8]) -> Option<S::Item>,
+    verified: fn(&[u8], &[u8], &[u8]) -> Option<S::Item>,
 ) -> Result<Leaf, ()> {
     let items = signatures
         .iter()
@@ -244,7 +254,7 @@ mod tests {
     fn every_profile_has_accepted_and_rejected_vectors() {
         for profile in Profile::ALL {
             let vectors = of(profile);
-            assert_eq!(vectors.iter().filter(|v| v.claim.is_some()).count(), 2, "{}", profile.name());
+            assert!(vectors.iter().filter(|v| v.claim.is_some()).count() >= 2, "{}", profile.name());
             assert!(vectors.iter().filter(|v| v.claim.is_none()).count() >= 10, "{}", profile.name());
         }
     }
@@ -252,7 +262,7 @@ mod tests {
     #[test]
     fn test_keys_sign_what_the_native_check_accepts() {
         for profile in Profile::ALL {
-            let (pk, sig) = profile.sign(7, [9; 32]);
+            let (pk, sig) = profile.sign(7, &[9; 32]).unwrap();
             assert!(profile.verify(&pk, &[9; 32], &sig).is_some(), "{}", profile.name());
         }
     }
@@ -275,8 +285,10 @@ mod tests {
         for v in vectors().into_iter().filter(|v| v.profile != Profile::MlDsa44) {
             let program = &v.profile.compiled().0;
             let (result, claim) = match v.profile {
-                Profile::Falcon512 => prove_with_leaf::<falcon::Falcon512>(program, falcon::unchecked(&v.pk, &v.msg, &v.sig)),
-                _ => prove_with_leaf::<slhdsa::SlhDsa128s>(program, slhdsa::unchecked(&v.pk, &v.msg, &v.sig)),
+                Profile::Falcon512 => {
+                    prove_with_leaf::<falcon::Falcon512>(program, falcon::unchecked(&v.pk, v.msg[..].try_into().unwrap(), &v.sig))
+                }
+                _ => prove_with_leaf::<slhdsa::SlhDsa128s>(program, slhdsa::unchecked(&v.pk, v.msg[..].try_into().unwrap(), &v.sig)),
             };
             assert_eq!(result, v.leaf, "{}: {}", v.profile.name(), v.label);
             assert_eq!(claim, v.leaf_claim, "{}: {}", v.profile.name(), v.label);
@@ -289,39 +301,67 @@ mod tests {
         assert_eq!(keys.len(), Profile::ALL.len());
     }
 
-    fn accepted_vectors_prove(profile: Profile) {
+    /// Proves the profile's accepted vectors in leaves of `per_leaf`.
+    fn accepted_vectors_prove(profile: Profile, per_leaf: usize) {
         let accepted: Vec<Vector> = of(profile).into_iter().filter(|v| v.claim.is_some()).collect();
-        let signatures: Vec<_> = accepted.iter().map(|v| (&v.pk[..], v.msg, &v.sig[..])).collect();
-        let leaf = profile.prove(&signatures).expect("accepted signatures prove");
-        let mut claims: Vec<Claim> = accepted.iter().map(|v| v.claim.unwrap()).collect();
-        claims.sort();
-        assert_eq!(leaf.claims, claims);
-        assert!(verify_batch_leaf(Guest::Batched, &claims, &profile.key(), &leaf.witness));
+        for chunk in accepted.chunks(per_leaf) {
+            let signatures: Vec<_> = chunk.iter().map(|v| (&v.pk[..], &v.msg[..], &v.sig[..])).collect();
+            let leaf = profile.prove(&signatures).expect("accepted signatures prove");
+            let mut claims: Vec<Claim> = chunk.iter().map(|v| v.claim.unwrap()).collect();
+            claims.sort();
+            assert_eq!(leaf.claims, claims);
+            assert!(verify_batch_leaf(Guest::Batched, &claims, &profile.key(), &leaf.witness));
+        }
     }
 
     #[test]
     fn falcon_accepted_vectors_prove() {
-        accepted_vectors_prove(Profile::Falcon512);
+        accepted_vectors_prove(Profile::Falcon512, usize::MAX);
     }
 
     #[test]
     fn slhdsa_accepted_vectors_prove() {
-        accepted_vectors_prove(Profile::SlhDsa128s);
+        accepted_vectors_prove(Profile::SlhDsa128s, usize::MAX);
     }
 
     #[test]
-    #[ignore = "an ML-DSA-44 leaf of two signatures needs about 10 GB"]
+    #[ignore = "an ML-DSA-44 leaf of one signature needs about 5 GB"]
     fn mldsa_accepted_vectors_prove() {
-        accepted_vectors_prove(Profile::MlDsa44);
+        accepted_vectors_prove(Profile::MlDsa44, 1);
+    }
+
+    // Proving ML-DSA is too heavy for every vector, so the recorded results are checked by executing the leaf's witness: a
+    // rejection fails to execute, and every vector the leaf proves executes (its proof is `mldsa_accepted_vectors_prove`).
+    #[test]
+    fn mldsa_leaf_results_match_the_leaf() {
+        let program = &Profile::MlDsa44.compiled().0;
+        for v in of(Profile::MlDsa44).into_iter().filter(|v| v.leaf != LeafResult::Untested) {
+            let item = mldsa::unchecked(&v.pk, &v.msg, &v.sig).unwrap();
+            let executes = common::executes::<mldsa::MlDsa44>(program, vec![item]);
+            assert_eq!(executes, v.leaf == LeafResult::Proves, "mldsa: {}", v.label);
+        }
+    }
+
+    // Message lengths that end M' at each place a padded hash can: on and off a cell boundary, in a block pair's first or
+    // second block, and at the end of a block.
+    #[test]
+    fn mldsa_leaf_takes_every_message_padding() {
+        let program = &Profile::MlDsa44.compiled().0;
+        for len in [0, 14, 15, 69, 134, 135, 270, 271, mldsa::MAX_MESSAGE_LEN] {
+            let msg: Vec<u8> = (0..len).map(|i| (i * 31 + 7) as u8).collect();
+            let (pk, sig) = Profile::MlDsa44.sign(5, &msg).unwrap();
+            let item = mldsa::verified(&pk, &msg, &sig).expect("the native check accepts it");
+            assert!(common::executes::<mldsa::MlDsa44>(program, vec![item]), "{len} bytes");
+        }
     }
 
     #[test]
     fn prove_refuses_rejected_signatures_repeated_claims_and_empty_leaves() {
         for v in vectors().iter().filter(|v| v.claim.is_none()) {
-            assert!(v.profile.prove(&[(&v.pk, v.msg, &v.sig)]).is_err(), "{}: {}", v.profile.name(), v.label);
+            assert!(v.profile.prove(&[(&v.pk, &v.msg, &v.sig)]).is_err(), "{}: {}", v.profile.name(), v.label);
         }
         let honest = &of(Profile::SlhDsa128s)[0];
-        let signature = (&honest.pk[..], honest.msg, &honest.sig[..]);
+        let signature = (&honest.pk[..], &honest.msg[..], &honest.sig[..]);
         assert!(Profile::SlhDsa128s.prove(&[signature, signature]).is_err());
         assert!(Profile::SlhDsa128s.prove(&[]).is_err());
     }
@@ -329,12 +369,12 @@ mod tests {
     #[test]
     fn the_leaf_rejects_signatures_the_native_check_rejects() {
         for v in of(Profile::SlhDsa128s).iter().filter(|v| v.label.starts_with("altered") && v.label != "altered message") {
-            let item = slhdsa::unchecked(&v.pk, &v.msg, &v.sig).unwrap();
+            let item = slhdsa::unchecked(&v.pk, v.msg[..].try_into().unwrap(), &v.sig).unwrap();
             let proved = prove_items::<slhdsa::SlhDsa128s>(&Profile::SlhDsa128s.compiled().0, vec![item], None);
             assert!(proved.is_err(), "slhdsa: {}", v.label);
         }
         for v in of(Profile::Falcon512).iter().filter(|v| matches!(v.label, "altered nonce" | "altered s2" | "signature over another message")) {
-            let item = falcon::unchecked(&v.pk, &v.msg, &v.sig).unwrap();
+            let item = falcon::unchecked(&v.pk, v.msg[..].try_into().unwrap(), &v.sig).unwrap();
             let proved = prove_items::<falcon::Falcon512>(&Profile::Falcon512.compiled().0, vec![item], None);
             assert!(proved.is_err(), "falcon: {}", v.label);
         }

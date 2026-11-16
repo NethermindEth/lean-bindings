@@ -10,16 +10,21 @@ leaf proving; they are not consensus code. This example measures their capacity 
 
 | scheme | claim | program |
 | --- | --- | --- |
-| ML-DSA-44 (FIPS 204, pure, empty context) | `keccak256("EIP8288:mldsa44:" ‖ tr ‖ 0x0000 ‖ M ‖ 0^14)`, `tr = SHAKE256(pk, 64)` | 1,889 instructions |
-| Falcon-512 (round 3, PADDED 666-byte signatures natively) | `keccak256("EIP8288:fn512:v1" ‖ M ‖ pk)` | 1,966 instructions |
-| SLH-DSA-SHAKE-128s (FIPS 205, pure, empty context) | `keccak256("EIP8288:slh128s1" ‖ PK.seed ‖ PK.root ‖ M)` | 1,638 instructions |
+| ML-DSA-44 (FIPS 204, pure, empty context) | `keccak256("EIP8288:mldsa44:" ‖ tr ‖ keccak256(0x0000 ‖ M))`, `tr = SHAKE256(pk, 64)` | 2,013 instructions |
+| Falcon-512 (round 3, PADDED 666-byte signatures natively) | `keccak256("EIP8288:fn512:v1" ‖ M ‖ pk)` | 1,997 instructions |
+| SLH-DSA-SHAKE-128s (FIPS 205, pure, empty context) | `keccak256("EIP8288:slh128s1" ‖ PK.seed ‖ PK.root ‖ M)` | 1,669 instructions |
 
-`M` is a 32-byte message. Every program pads to 2^11, the bound `MAX_GENERIC_BYTECODE_LOG` sets; the shared skeleton
-(`leaf.py`: count, claim digest, publication) is 349 of those instructions. Each verifier proves acceptance from the
-signature as a witness:
+`M` is a 32-byte message for Falcon and SLH-DSA, and up to 1,024 bytes for ML-DSA. Every program pads to 2^11, the bound
+`MAX_GENERIC_BYTECODE_LOG` sets; the shared skeleton (`leaf.py`: count, claim digest, publication, and the padded Keccak
+sponge ML-DSA reuses) is 380 of those instructions. Each verifier proves acceptance from the signature as a witness:
 
 - ML-DSA recomputes `c~` from `mu` and `w1` (with the NTT of a hinted `w'` checked against `A z − c t1·2^d`) and checks
-  the norm of `z` and the weight of `h`.
+  the norm of `z` and the weight of `h`. `M' = 0x0000 ‖ M` is hinted as cells after `tr`, its last cell's bytes past it
+  checked zero, and hashed twice: into `mu = SHAKE256(tr ‖ M', 64)` and into the claim's `keccak256(M')`, which an
+  account holding `tr` recomputes from WebAuthn's `authenticatorData ‖ sha256(clientDataJSON)`. The claim hashes `M'`,
+  not `M`: `M` starts two bytes into a cell, and realigning it costs about 160 instructions the bound does not leave. A
+  one-signature leaf runs 6,103,662 cycles over a 32-byte message and 6,105,510 over 1,024 bytes, against 6,102,277 for
+  the fixed 32-byte leaf it replaces.
 - Falcon checks `s1 = c − s2·h` and the norm bound for `s2` given as coefficients.
 - SLH-DSA recomputes the FORS roots and the hypertree up to `PK.root`.
 
@@ -48,8 +53,8 @@ recomputes. It then proves a 2-signature leaf and checks that:
 `prove` prints one JSON line per timed run with cycles, the committed witness, peak RSS and, with `--agg`, the cycles of
 the aggregation step.
 
-One-signature leaves on a 12-core Apple M-series laptop: ML-DSA-44 4.0 s and 9.5 GB peak RSS, Falcon-512 0.6 s and
-2.5 GB, SLH-DSA-SHAKE-128s 0.1 s and 0.27 GB.
+One-signature leaves on a 12-core Apple M-series laptop: ML-DSA-44 4.4 s and 5.1 GB peak RSS, Falcon-512 0.7 s and
+2.1 GB, SLH-DSA-SHAKE-128s 0.1 s and 0.26 GB.
 
 GCP measurements (per-signature slopes, the largest N within the 2^29.5 trace bound, the aggregation step) are run by
 the calibration suite (`calib.py pq-leaves`, lean-bindings#13). Its results are recorded in that PR.

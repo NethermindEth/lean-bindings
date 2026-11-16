@@ -13,14 +13,21 @@ namespace Nethermind.Crypto.Lean.Tests;
 public partial class NativeLibraryTests
 {
     private const string Library = "nethermind_lean";
-    private const uint ExpectedAbi = 18;
-    // EIP-8288's guest (0), the ABI 12 package's unchanged, and the one with ethereum/EIPs#12664 batched generic proof dependencies (1).
-    private const string ExpectedAggregatedVk = "f6f37690cf7241c9ea24392f349867acc1c8e06034e8ce149e2f11a25eec56f9";
-    private const string ExpectedBatchedAggregatedVk = "3f87249262b6fc9c5776514d9d2ba8bca372ad169b22b39d426d416446fd5a5e";
-    // Proof bytes, dependencies, inner proofs per step, NiceTry v2 witness bytes, aggregation input bytes, leanSTARK
-    // dependencies per list (guest 0) or claims per batch leaf (guest 1), leanSTARK instructions.
-    private static readonly uint[] ExpectedLimits = [8 * 1024 * 1024, 256, 16, 32 + 6176, 18 * 1024 * 1024, 16, 2048];
-    private static readonly uint[] ExpectedBatchedLimits = [8 * 1024 * 1024, 256, 16, 32 + 6176, 18 * 1024 * 1024, 256, 2048];
+    private const uint ExpectedAbi = 22;
+    // EIP-8288's guest (0) and the one with ethereum/EIPs#12664 batched generic proof dependencies (1).
+    private const string ExpectedAggregatedVk = "e09e5acfcfe87832f337eb42acac98246d160bb915b55c55fbd8118b203cbb81";
+    private const string ExpectedBatchedAggregatedVk = "6a2e13dab57ca0558170a9a047039221ce10ebdcd94beb53cf75f7d89ce65af9";
+    private const uint MaxProofBytes = 8 * 1024 * 1024;
+    // EIP-8288's output capacity: EIP-7934 MAX_RLP_BLOCK_SIZE // 96.
+    private const uint MaxDependencies = (10 * 1024 * 1024 - 2 * 1024 * 1024) / 96;
+    // Framing; 16 inner proofs, each with a leaf's key and claims, a full dependency list and a largest proof or witness;
+    // guest 0's 16 raw leanSTARK witnesses; 256 raw signatures; a full discard list.
+    private const uint MaxInputBytes = 4 * 4 + 16 * (3 * 4 + 32 + 256 * 32 + MaxDependencies * 96 + MaxProofBytes)
+        + 16 * MaxProofBytes + 256 * (96 + 4 + 32 + 6176) + MaxDependencies * 96;
+    // Proof bytes, dependencies, inner proofs per step, NiceTry v2 witness bytes, aggregation input bytes, raw leanSTARK
+    // proofs per node (guest 0) or claims per batch leaf (guest 1), leanSTARK instructions.
+    private static readonly uint[] ExpectedLimits = [MaxProofBytes, MaxDependencies, 16, 32 + 6176, MaxInputBytes, 16, 2048];
+    private static readonly uint[] ExpectedBatchedLimits = [MaxProofBytes, MaxDependencies, 16, 32 + 6176, MaxInputBytes, 256, 2048];
 
     // A project reference leaves the library under runtimes/<rid>/native; a package consumer gets it beside the binary.
     static NativeLibraryTests() => NativeLibrary.SetDllImportResolver(typeof(NativeLibraryTests).Assembly, static (name, assembly, searchPath) =>

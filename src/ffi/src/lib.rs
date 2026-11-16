@@ -10,7 +10,7 @@ use rec_aggregation::{
     BatchLeaf, EthereumClaims, EthereumProof, Guest, MAX_CLAIMS_PER_BATCH_LEAF,
     MAX_GENERIC_BYTECODE_LOG, MAX_INNER_PROOFS_PER_STEP, valid_batch_claims, verify_batch_leaf,
 };
-use signatures::lean_sphincs::{self, LeanSphincsPublicKey, LeanSphincsSignature};
+use lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,9 +18,30 @@ use std::sync::{Barrier, Mutex, OnceLock};
 use std::thread::ThreadId;
 
 pub const MAX_BYTES: usize = 8 * 1024 * 1024;
-pub const MAX_INPUT_BYTES: usize = 18 * 1024 * 1024;
-/// A local bound: one guest node proves this many signatures in about 9 GiB.
-const MAX_DEPS: usize = 256;
+/// EIP-7934 `MAX_RLP_BLOCK_SIZE`: `MAX_BLOCK_SIZE` (10 MiB) less `SAFETY_MARGIN` (2 MiB).
+const MAX_RLP_BLOCK_SIZE: usize = 10 * 1024 * 1024 - 2 * 1024 * 1024;
+/// An encoded dependency triple.
+const DEP_BYTES: usize = 96;
+/// The most dependencies a list holds: EIP-8288's output capacity, `MAX_RLP_BLOCK_SIZE // 96`.
+const MAX_DEPS: usize = MAX_RLP_BLOCK_SIZE / DEP_BYTES;
+/// A local bound on the raw witnesses one call proves: one guest node proves this many signatures in about 9 GiB.
+/// EIP-8288 bounds a step only by its resources; the guests' own bound is their memory.
+const MAX_RAW_PER_NODE: usize = 256;
+/// The framing of one length-prefixed field.
+const LEN_BYTES: usize = 4;
+/// Each inner proof, a child or a batch leaf, with a leaf's key and claims, a full dependency list and its largest proof
+/// or witness; guest 0's raw leanSTARK witnesses, which it counts apart from its children; the raw signatures; and a
+/// full discard list.
+pub const MAX_INPUT_BYTES: usize = 4 * LEN_BYTES
+    + MAX_INNER_PROOFS_PER_STEP * (3 * LEN_BYTES + 32 + MAX_CLAIMS_PER_BATCH_LEAF * 32 + MAX_DEPS * DEP_BYTES + MAX_BYTES)
+    + rec_aggregation_base::MAX_GENERIC_DEPENDENCIES * MAX_BYTES
+    + MAX_RAW_PER_NODE * (DEP_BYTES + LEN_BYTES + lean_sphincs::PUB_KEY_SIZE + lean_sphincs::SIG_SIZE)
+    + MAX_DEPS * DEP_BYTES;
+// Either guest's children are inner proofs of the bound above.
+const _: () = assert!(
+    rec_aggregation::MAX_RECURSIONS <= MAX_INNER_PROOFS_PER_STEP
+        && rec_aggregation_base::MAX_RECURSIONS <= MAX_INNER_PROOFS_PER_STEP
+);
 // The upstream prover's timings assume its allocator: jemalloc keeps a proof's freed pages mapped for the next one.
 // It serves this library's allocations only, and holds their peak until the process exits.
 #[global_allocator]
@@ -52,7 +73,7 @@ static ACTIVE_ABI_CALLS: AtomicUsize = AtomicUsize::new(0);
 static ABI_WORKERS: OnceLock<Vec<ThreadId>> = OnceLock::new();
 thread_local! { static IN_ABI: Cell<bool> = const { Cell::new(false) }; }
 thread_local! { static LAST_PANIC: RefCell<String> = const { RefCell::new(String::new()) }; }
-type Dep = [u8; 96];
+type Dep = [u8; DEP_BYTES];
 const LEAN_SPHINCS: u8 = 0x10;
 /// EIP-8288 reserves this scheme; accepting it is an experimental extension of this stack.
 const LEAN_STARK: u8 = 0x11;
@@ -129,7 +150,7 @@ impl<'a> Reader<'a> {
         self.take(n)
     }
     fn dep(&mut self) -> Result<Dep, ()> {
-        let d: Dep = self.take(96)?.try_into().map_err(|_| ())?;
+        let d: Dep = self.take(DEP_BYTES)?.try_into().map_err(|_| ())?;
         if !known_scheme(&d) {
             return Err(());
         }
@@ -297,7 +318,11 @@ pub fn prove_aggregate(guest: Guest, hash: &[u8; 32], input: &[u8]) -> Result<Ve
     // EIP-8288 MAX_INNER_PROOFS_PER_STEP: every supplied leanSTARK proof, a direct one as a singleton leaf, and every
     // child, discarded or redundant ones included; leanSPHINCS witnesses do not count.
     let mut inner_proofs = 0;
-    for _ in 0..r.count()? {
+    let raw_count = r.count()?;
+    if raw_count > MAX_RAW_PER_NODE {
+        return Err(());
+    }
+    for _ in 0..raw_count {
         let dep = r.dep()?;
         inner_proofs += usize::from(dep[31] != LEAN_SPHINCS);
         raw.push((dep, r.blob()?));
@@ -521,7 +546,7 @@ fn checked(f: impl FnOnce() -> Result<bool, ()>) -> i32 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn nlean_abi_version() -> u32 {
-    18
+    22
 }
 /// Copies up to `len` bytes of the calling thread's last contained panic message into `out` and returns its full
 /// length; empty unless that thread's latest `checked` call returned -1.
@@ -686,8 +711,8 @@ pub unsafe extern "C" fn nlean_prove_recursive(
         Ok(true)
     })
 }
-/// A raw signature's input bound: ML-DSA-44's and Falcon-512's keys and signatures, and SLH-DSA-SHAKE-128s's 7,856-byte
-/// signature, fit with room to spare, under EIP-8437's 16 KiB raw-entry limit.
+/// A raw signature's input bound: ML-DSA-44's and Falcon-512's keys, messages and signatures, and SLH-DSA-SHAKE-128s's
+/// 7,856-byte signature, fit with room to spare, under EIP-8437's 16 KiB raw-entry limit.
 const MAX_RAW_PART_BYTES: usize = 16 * 1024;
 /// Writes the EIP-8288 verification key hash of recognized program `profile` ([`pq::Profile`]: 1 ML-DSA-44, 2 Falcon-512,
 /// 3 SLH-DSA-SHAKE-128s).
@@ -707,17 +732,19 @@ pub unsafe extern "C" fn nlean_recognized_key(profile: u32, out: *mut u8) -> i32
         Ok(true)
     })
 }
-/// Checks a raw signature over the 32-byte `msg` as recognized program `profile` would, natively, and writes its claim:
-/// 1 when both the scheme's reference verification and the leaf's host computation accept, 0 otherwise.
+/// Checks a raw signature over `msg` as recognized program `profile` would, natively, and writes its claim: 1 when both
+/// the scheme's reference verification and the leaf's host computation accept, 0 otherwise. ML-DSA-44 takes messages of
+/// up to [`pq::mldsa::MAX_MESSAGE_LEN`] bytes, Falcon-512 and SLH-DSA-SHAKE-128s of 32.
 ///
 /// # Safety
-/// Input pointers must reference their declared lengths, `msg` 32 bytes; `claim` must reference 32 writable bytes.
+/// Input pointers must reference their declared lengths; `claim` must reference 32 writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn nlean_verify_raw(
     profile: u32,
     pk: *const u8,
     pk_len: usize,
     msg: *const u8,
+    msg_len: usize,
     sig: *const u8,
     sig_len: usize,
     claim: *mut u8,
@@ -727,10 +754,10 @@ pub unsafe extern "C" fn nlean_verify_raw(
     }
     checked(|| {
         let profile = pq::Profile::from_id(profile).ok_or(())?;
-        let msg: [u8; 32] = unsafe { bytes(msg, 32)? }.try_into().map_err(|_| ())?;
         let pk = unsafe { bytes_with_limit(pk, pk_len, MAX_RAW_PART_BYTES)? };
+        let msg = unsafe { bytes_with_limit(msg, msg_len, MAX_RAW_PART_BYTES)? };
         let sig = unsafe { bytes_with_limit(sig, sig_len, MAX_RAW_PART_BYTES)? };
-        let Some(found) = profile.verify(pk, &msg, sig) else {
+        let Some(found) = profile.verify(pk, msg, sig) else {
             return Ok(false);
         };
         unsafe {
@@ -741,7 +768,7 @@ pub unsafe extern "C" fn nlean_verify_raw(
 }
 /// Proves one leaf of recognized program `profile` over raw signatures and returns its witness, which the batched guest
 /// verifies under [`nlean_recognized_key`] against `get_batch_hash` of the signatures' sorted claims. The input is a u32
-/// count, then per signature a u32-length public key, the 32-byte message and a u32-length signature, little-endian.
+/// count, then per signature a u32-length public key, message and signature, little-endian.
 /// Every signature must pass [`nlean_verify_raw`]'s check and have a distinct claim.
 ///
 /// # Safety
@@ -793,7 +820,8 @@ fn raw_signatures(mut bytes: &[u8]) -> Result<Vec<pq::RawSignature<'_>>, ()> {
     for _ in 0..count {
         let n = length(&mut bytes)?;
         let pk = take(&mut bytes, n)?;
-        let msg: [u8; 32] = take(&mut bytes, 32)?.try_into().map_err(|_| ())?;
+        let n = length(&mut bytes)?;
+        let msg = take(&mut bytes, n)?;
         let n = length(&mut bytes)?;
         signatures.push((pk, msg, take(&mut bytes, n)?));
     }
@@ -820,7 +848,8 @@ mod tests {
         for (pk, msg, sig) in signatures {
             input.extend((pk.len() as u32).to_le_bytes());
             input.extend(*pk);
-            input.extend(msg);
+            input.extend((msg.len() as u32).to_le_bytes());
+            input.extend(*msg);
             input.extend((sig.len() as u32).to_le_bytes());
             input.extend(*sig);
         }
@@ -829,14 +858,15 @@ mod tests {
 
     #[test]
     fn raw_signature_input_parses_exactly() {
-        let signature: pq::RawSignature = (&[1, 2, 3], [7; 32], &[4, 5]);
+        let signature: pq::RawSignature = (&[1, 2, 3], &[7; 40], &[4, 5]);
         let input = raw_input(&[signature, signature]);
         assert_eq!(raw_signatures(&input).unwrap(), vec![signature, signature]);
         assert!(raw_signatures(&[&input[..], &[0]].concat()).is_err());
         assert!(raw_signatures(&input[..input.len() - 1]).is_err());
         assert!(raw_signatures(&raw_input(&[])).is_err());
         let oversized = vec![0; MAX_RAW_PART_BYTES + 1];
-        assert!(raw_signatures(&raw_input(&[(&oversized, [0; 32], &[])])).is_err());
+        assert!(raw_signatures(&raw_input(&[(&oversized, &[0; 32], &[])])).is_err());
+        assert!(raw_signatures(&raw_input(&[(&[], &oversized, &[])])).is_err());
     }
 
     #[test]
@@ -844,7 +874,16 @@ mod tests {
         for v in pq::vectors() {
             let mut claim = [0; 32];
             let verdict = unsafe {
-                nlean_verify_raw(v.profile as u32, v.pk.as_ptr(), v.pk.len(), v.msg.as_ptr(), v.sig.as_ptr(), v.sig.len(), claim.as_mut_ptr())
+                nlean_verify_raw(
+                    v.profile as u32,
+                    v.pk.as_ptr(),
+                    v.pk.len(),
+                    v.msg.as_ptr(),
+                    v.msg.len(),
+                    v.sig.as_ptr(),
+                    v.sig.len(),
+                    claim.as_mut_ptr(),
+                )
             };
             assert_eq!(verdict, i32::from(v.claim.is_some()), "{}: {}", v.profile.name(), v.label);
             if let Some(expected) = v.claim {
@@ -863,7 +902,7 @@ mod tests {
     #[test]
     fn a_one_signature_raw_leaf_is_a_direct_witness_of_its_dependency() {
         let honest = pq::vectors().into_iter().find(|v| v.profile == pq::Profile::SlhDsa128s && v.claim.is_some()).unwrap();
-        let input = raw_input(&[(&honest.pk, honest.msg, &honest.sig)]);
+        let input = raw_input(&[(&honest.pk, &honest.msg, &honest.sig)]);
         let (mut out, mut len) = (std::ptr::null_mut(), 0);
         assert_eq!(unsafe { nlean_prove_raw_leaf(3, input.as_ptr(), input.len(), &mut out, &mut len) }, 1);
         let witness = unsafe { std::slice::from_raw_parts(out, len) }.to_vec();
@@ -886,8 +925,10 @@ mod tests {
         dep
     }
     fn signed(index: u8) -> (Dep, Vec<u8>) {
-        let (sk, pk) = lean_sphincs::key_gen_from_seed([index; 32]);
-        let message = keccak(&[index]);
+        signed_by([index; 32], keccak(&[index]))
+    }
+    fn signed_by(seed: [u8; 32], message: [u8; 32]) -> (Dep, Vec<u8>) {
+        let (sk, pk) = lean_sphincs::key_gen_from_seed(seed);
         let mut dep = [0; 96];
         dep[31] = 0x10;
         dep[32..64].copy_from_slice(&message);
@@ -989,7 +1030,7 @@ mod tests {
 
     #[test]
     fn exported_abi_and_limits() {
-        assert_eq!(nlean_abi_version(), 18);
+        assert_eq!(nlean_abi_version(), 22);
         let mut limits = [0u32; 7];
         assert_eq!(unsafe { nlean_limits(1, limits.as_mut_ptr(), 7) }, 1);
         assert_eq!(limits[2], 16, "MAX_INNER_PROOFS_PER_STEP");
@@ -997,10 +1038,9 @@ mod tests {
         assert_eq!(limits[6], 2048, "leanSTARK instructions");
         assert_eq!(unsafe { nlean_limits(1, limits.as_mut_ptr(), 6) }, 0);
         assert_eq!(unsafe { nlean_limits(2, limits.as_mut_ptr(), 7) }, 0);
-        // EIP-8288's guest keeps the ABI 12 package's limits.
         let mut base = [0u32; 7];
         assert_eq!(unsafe { nlean_limits(0, base.as_mut_ptr(), 7) }, 1);
-        assert_eq!(base, [8 << 20, 256, 16, base[3], 18 << 20, 16, 2048]);
+        assert_eq!(base, [8 << 20, MAX_DEPS as u32, 16, base[3], MAX_INPUT_BYTES as u32, 16, 2048]);
         // One key per guest, and no third guest.
         let mut keys = [[0u8; 32]; 3];
         let verdicts = [0, 1, 2]
@@ -1009,11 +1049,11 @@ mod tests {
         assert_eq!(keys[0], base::aggregated_vk());
         assert_eq!(keys[1], aggregated_vk(BATCHED));
         assert_ne!(keys[0], keys[1]);
-        // Guest 0 is EIP-8288's guest as the ABI 12 package pins it.
+        // Guest 0 is EIP-8288's guest, pinned.
         let base: Vec<u8> = (0..32)
             .map(|i| {
                 u8::from_str_radix(
-                    &"f6f37690cf7241c9ea24392f349867acc1c8e06034e8ce149e2f11a25eec56f9"
+                    &"e09e5acfcfe87832f337eb42acac98246d160bb915b55c55fbd8118b203cbb81"
                         [2 * i..2 * i + 2],
                     16,
                 )
@@ -1213,6 +1253,32 @@ mod tests {
         }
     }
 
+    /// Guest 0 verifies at most `MAX_GENERIC_DEPENDENCIES` raw leanSTARK witnesses a call; children carry more between
+    /// them.
+    #[test]
+    fn guest_0_merges_children_past_the_raw_leanstark_cap() {
+        let raw: Vec<_> = (0..=rec_aggregation_base::MAX_GENERIC_DEPENDENCIES as u8)
+            .map(|i| {
+                let message = keccak(&[0x52, i]);
+                let (witness, key) = prove_stark(BASE, ANY_INPUT_PROGRAM, &message).unwrap();
+                (leanstark_dependency(&message, &key), witness)
+            })
+            .collect();
+        let hash = |deps: &[Dep]| base::commitment(&canonical(deps.to_vec()));
+        let all: Vec<Dep> = raw.iter().map(|(dep, _)| *dep).collect();
+        assert!(base::prove_aggregate(&hash(&all), &input(&raw, &[], &[])).is_err());
+        let (left, right) = raw.split_at(raw.len() / 2);
+        let leaf = |raw: &[(Dep, Vec<u8>)]| {
+            let deps = canonical(raw.iter().map(|(dep, _)| *dep).collect());
+            let proof = base::prove_aggregate(&hash(&deps), &input(raw, &[], &[])).unwrap();
+            (deps, proof)
+        };
+        let ((left, left_proof), (right, right_proof)) = (leaf(left), leaf(right));
+        let children = [(&left[..], &left_proof[..]), (&right[..], &right_proof[..])];
+        let merged = base::prove_aggregate(&hash(&all), &input(&[], &children, &[])).unwrap();
+        assert!(base::verify_aggregate(&hash(&all), &merged).is_ok());
+    }
+
     /// EIP-8288 lays a leanSPHINCS key out as `PK.seed ‖ PK.root`; the former `PK.root ‖ PK.seed` names another key.
     #[test]
     fn sphincs_key_is_seed_then_root() {
@@ -1334,6 +1400,80 @@ mod tests {
         .unwrap();
         assert!(verify_aggregate(BASE, &hash_of(&kept), &merged).is_ok());
         assert!(verify_aggregate(BASE, &hash_of(&[stark, other, sig]), &merged).is_err());
+    }
+
+    type Prove = Box<dyn Fn(&[u8; 32], &[u8]) -> Result<Vec<u8>, ()>>;
+    type Verify = Box<dyn Fn(&[u8; 32], &[u8]) -> Result<(), ()>>;
+    type Hash = Box<dyn Fn(&[Dep]) -> [u8; 32]>;
+    /// The ABI's guest 0 ([`base`]) and guest 1 entry points, each with its own commitment.
+    fn abi_guests() -> [(&'static str, Prove, Verify, Hash); 2] {
+        [
+            (
+                "guest 0",
+                Box::new(base::prove_aggregate),
+                Box::new(base::verify_aggregate),
+                Box::new(|deps| base::commitment(&canonical(deps.to_vec()))),
+            ),
+            (
+                "guest 1",
+                Box::new(|hash, input| prove_aggregate(BATCHED, hash, input)),
+                Box::new(|hash, proof| verify_aggregate(BATCHED, hash, proof)),
+                Box::new(hash_of),
+            ),
+        ]
+    }
+
+    /// An aggregate holds more dependencies than one call takes raw witnesses: leaves whose union exceeds
+    /// `MAX_RAW_PER_NODE` merge and verify under both ABI guests, while the same witnesses raw in one call are refused.
+    #[test]
+    fn merges_past_the_raw_witness_bound() {
+        const LEAVES: usize = 3;
+        const PER_LEAF: u16 = 86;
+        let raw: Vec<_> = (0..LEAVES as u16 * PER_LEAF)
+            .map(|i| signed_by(keccak(&[b"many".as_slice(), &i.to_le_bytes()].concat()), keccak(&i.to_le_bytes())))
+            .collect();
+        let all: Vec<Dep> = raw.iter().map(|(dep, _)| *dep).collect();
+        assert!(all.len() > MAX_RAW_PER_NODE);
+        for (name, prove, verify, hash) in abi_guests() {
+            assert!(prove(&hash(&all), &input(&raw, &[], &[])).is_err(), "{name}");
+            let leaves: Vec<_> = raw
+                .chunks(PER_LEAF.into())
+                .map(|raw| {
+                    let deps = canonical(raw.iter().map(|(dep, _)| *dep).collect());
+                    let proof = prove(&hash(&deps), &input(raw, &[], &[])).unwrap();
+                    (deps, proof)
+                })
+                .collect();
+            let children: Vec<_> = leaves.iter().map(|(deps, proof)| (&deps[..], &proof[..])).collect();
+            let merged = prove(&hash(&all), &input(&[], &children, &[])).unwrap();
+            assert!(verify(&hash(&all), &merged).is_ok(), "{name}");
+        }
+    }
+
+    /// Guest 0 verifies every raw witness, even when discards leave nothing to prove, and takes at most
+    /// `MAX_GENERIC_DEPENDENCIES` leanSTARK ones a call, discarded ones included.
+    #[test]
+    fn guest_0_verifies_and_counts_discarded_raw_witnesses() {
+        let (dep, witness) = signed(1);
+        let mut forged = witness.clone();
+        forged[100] ^= 1;
+        let empty = base::commitment(&[]);
+        assert!(base::prove_aggregate(&empty, &input(&[(dep, witness)], &[], &[dep])).unwrap().is_empty());
+        assert!(base::prove_aggregate(&empty, &input(&[(dep, forged)], &[], &[dep])).is_err());
+
+        let starks: Vec<_> = (0..=rec_aggregation_base::MAX_GENERIC_DEPENDENCIES as u8)
+            .map(|i| {
+                let message = keccak(&[0x53, i]);
+                let (witness, key) = prove_stark(BASE, ANY_INPUT_PROGRAM, &message).unwrap();
+                (leanstark_dependency(&message, &key), witness)
+            })
+            .collect();
+        let discard = |raw: &[(Dep, Vec<u8>)]| {
+            let deps: Vec<Dep> = raw.iter().map(|(dep, _)| *dep).collect();
+            base::prove_aggregate(&empty, &input(raw, &[], &deps))
+        };
+        assert!(discard(&starks[..rec_aggregation_base::MAX_GENERIC_DEPENDENCIES]).unwrap().is_empty());
+        assert!(discard(&starks).is_err());
     }
 
     #[test]

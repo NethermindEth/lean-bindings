@@ -2,13 +2,12 @@
 
 use super::cells::{count, pack_16_bytes};
 use super::error::AggregationError;
+use lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
 use leanvm_core::cpu::Program;
-use primitives::field::F192;
-use signatures::lean_sphincs;
-use signatures::lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
+use primitives::field::F128;
 
 /// Named hint entries for a single sub-proof, ordered within each stream.
-pub(super) type SubHints = Vec<(&'static str, Vec<F192>)>;
+pub(super) type SubHints = Vec<(&'static str, Vec<F128>)>;
 
 /// An edit to a node's hints: how a test hands the guest a witness the honest host
 /// would not.
@@ -33,10 +32,10 @@ thread_local! {
 /// One `hint_witness` stream: a name and its entries, in the order the guest
 /// pops them.
 #[derive(Default)]
-pub(super) struct Hints(Vec<(String, Vec<Vec<F192>>)>);
+pub(super) struct Hints(Vec<(String, Vec<Vec<F128>>)>);
 
 impl Hints {
-    pub(super) fn push(&mut self, name: &str, entry: Vec<F192>) {
+    pub(super) fn push(&mut self, name: &str, entry: Vec<F128>) {
         match self.0.iter_mut().find(|(n, _)| n == name) {
             Some((_, entries)) => entries.push(entry),
             None => self.0.push((name.to_string(), vec![entry])),
@@ -45,7 +44,7 @@ impl Hints {
 
     /// Entry `i` of stream `name`, for a test to forge.
     #[cfg(test)]
-    pub(super) fn entry_mut(&mut self, name: &str, i: usize) -> &mut Vec<F192> {
+    pub(super) fn entry_mut(&mut self, name: &str, i: usize) -> &mut Vec<F128> {
         let (_, entries) = self.0.iter_mut().find(|(n, _)| n == name).expect("a hinted stream");
         &mut entries[i]
     }

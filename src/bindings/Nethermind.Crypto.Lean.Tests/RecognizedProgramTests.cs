@@ -25,7 +25,7 @@ public partial class RecognizedProgramTests
     private static unsafe partial int nlean_recognized_key(uint profile, byte* output);
 
     [LibraryImport(Library)]
-    private static unsafe partial int nlean_verify_raw(uint profile, byte* pk, nuint pkLength, byte* message, byte* signature, nuint signatureLength, byte* claim);
+    private static unsafe partial int nlean_verify_raw(uint profile, byte* pk, nuint pkLength, byte* message, nuint messageLength, byte* signature, nuint signatureLength, byte* claim);
 
     [LibraryImport(Library)]
     private static unsafe partial int nlean_prove_raw_leaf(uint profile, byte* input, nuint inputLength, byte** output, nuint* outputLength);
@@ -126,19 +126,20 @@ public partial class RecognizedProgramTests
         fixed (byte* m = vector.Message)
         fixed (byte* s = vector.Signature)
         fixed (byte* c = claim)
-            return (nlean_verify_raw(profile, pk, (nuint)vector.PublicKey.Length, m, s, (nuint)vector.Signature.Length, c), claim);
+            return (nlean_verify_raw(profile, pk, (nuint)vector.PublicKey.Length, m, (nuint)vector.Message.Length, s, (nuint)vector.Signature.Length, c), claim);
     }
 
     private static unsafe (int Result, byte[] Witness) ProveLeaf(uint profile, Vector vector)
     {
-        byte[] input = new byte[4 + 4 + vector.PublicKey.Length + 32 + 4 + vector.Signature.Length];
+        byte[] input = new byte[4 + 4 + vector.PublicKey.Length + 4 + vector.Message.Length + 4 + vector.Signature.Length];
         BinaryPrimitives.WriteUInt32LittleEndian(input, 1);
         int at = 4;
-        BinaryPrimitives.WriteUInt32LittleEndian(input.AsSpan(at), (uint)vector.PublicKey.Length);
-        vector.PublicKey.CopyTo(input, at += 4);
-        vector.Message.CopyTo(input, at += vector.PublicKey.Length);
-        BinaryPrimitives.WriteUInt32LittleEndian(input.AsSpan(at += 32), (uint)vector.Signature.Length);
-        vector.Signature.CopyTo(input, at + 4);
+        foreach (byte[] part in (byte[][])[vector.PublicKey, vector.Message, vector.Signature])
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(input.AsSpan(at), (uint)part.Length);
+            part.CopyTo(input, at += 4);
+            at += part.Length;
+        }
         byte* output = null;
         nuint length = 0;
         int result;

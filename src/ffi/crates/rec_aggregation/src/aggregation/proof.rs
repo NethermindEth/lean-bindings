@@ -1,6 +1,6 @@
 //! The aggregate, its wire format and its native verification.
 
-use super::deferred::{DeferredClaim, scalar_bytecode};
+use super::deferred::{DeferredBytecodeClaim, scalar_bytecode};
 use super::error::{AggregateVerifyError, SnarkVerifyError};
 use super::cells::cell_bytes;
 use super::guest::{Guest, unified_guest};
@@ -8,7 +8,7 @@ use super::statement::{deps_digest_cells, statement_digest, statement_digest_of}
 use fiat_shamir::merkle::hash_to_scalars;
 use super::{GenericClaim, LeanSphincsClaim};
 use leanvm_core::cpu::{public_input_bytes, scalar_proof};
-use primitives::field::F192;
+use primitives::field::F128;
 
 /// What an aggregate attests: every `(data_hash, vk)` in [`Self::generic`] is backed by a valid
 /// leanVM execution proof of the program `vk` commits to on public input `data_hash`, every
@@ -44,11 +44,11 @@ pub struct EthereumProof {
     pub(super) claims: EthereumClaims,
     /// What this aggregate defers to whoever discharges it: its parent, in
     /// circuit, or [`Self::verify`], natively.
-    pub(super) defer: DeferredClaim,
+    pub(super) defer: DeferredBytecodeClaim,
     pub(super) proof: leanvm_core::cpu::Proof,
 }
 
-// The wire format: the deferred point as a little-endian u64 count of limb triples `c0, c1, c2`,
+// The wire format: the deferred point as a little-endian u64 count of limb pairs `c0, c1`,
 // each a little-endian u64, then the VM proof in its own encoding, to the end. The claims are not
 // sent: the receiver knows what it expects a proof to attest, and supplies it.
 //
@@ -56,7 +56,7 @@ pub struct EthereumProof {
 // proof's decoder rejects trailing bytes. Otherwise anything downstream that dedupes or indexes on the
 // serialized bytes could be made to see one aggregate as many.
 
-pub(super) fn encode(point: &[F192], proof: &[u8]) -> Vec<u8> {
+pub(super) fn encode(point: &[F128], proof: &[u8]) -> Vec<u8> {
     let mut out = (point.len() as u64).to_le_bytes().to_vec();
     out.extend(point.iter().flat_map(|x| x.to_limbs()).flat_map(u64::to_le_bytes));
     out.extend(proof);
@@ -65,16 +65,13 @@ pub(super) fn encode(point: &[F192], proof: &[u8]) -> Vec<u8> {
 
 /// The deferred point and the VM proof's bytes. The point's limbs are cut from the input before
 /// any is read, so a forged count allocates nothing.
-pub(super) fn decode(bytes: &[u8]) -> Option<(Vec<F192>, &[u8])> {
+pub(super) fn decode(bytes: &[u8]) -> Option<(Vec<F128>, &[u8])> {
     let (count, rest) = bytes.split_first_chunk::<8>()?;
     let count = usize::try_from(u64::from_le_bytes(*count)).ok()?;
-    let (limbs, proof) = rest.split_at_checked(count.checked_mul(24)?)?;
+    let (limbs, proof) = rest.split_at_checked(count.checked_mul(16)?)?;
     let limb = |bytes: &[u8; 8]| u64::from_le_bytes(*bytes);
-    let triples = limbs.as_chunks::<8>().0.as_chunks::<3>().0;
-    let point = triples
-        .iter()
-        .map(|[c0, c1, c2]| F192::new(limb(c0), limb(c1), limb(c2)))
-        .collect();
+    let pairs = limbs.as_chunks::<8>().0.as_chunks::<2>().0;
+    let point = pairs.iter().map(|[c0, c1]| F128::new(limb(c0), limb(c1))).collect();
     Some((point, proof))
 }
 
@@ -123,22 +120,20 @@ pub fn aggregated_vk(guest: Guest) -> [u8; 32] {
 
 /// The VM public input of a dependency-only aggregate with dependency digest `deps_hash`:
 /// `keccak256(AGGREGATED_VK ‖ deps_hash ‖ 0^32 ‖ deferred cells)`.
-fn deps_public_input(guest: Guest, deps_hash: &[u8; 32], defer: &DeferredClaim) -> [F192; 2] {
+fn deps_public_input(guest: Guest, deps_hash: &[u8; 32], defer: &DeferredBytecodeClaim) -> [F128; 2] {
     statement_digest_of(guest, hash_to_scalars(deps_hash), [0; 32], defer)
 }
 
 /// The 32-byte VM public input [`verify_deps_hash`] checks `proof_bytes` against, and the deferred
-/// cells' bytes that end its preimage (three little-endian limbs a cell, zero-padded to an even count).
+/// cells' bytes that end its preimage (each cell's two little-endian limbs).
 pub fn deps_public_input_bytes(
     guest: Guest,
     deps_hash: &[u8; 32],
     proof_bytes: &[u8],
 ) -> Result<([u8; 32], Vec<u8>), AggregateVerifyError> {
     let (point, _) = decode(proof_bytes).ok_or(AggregateVerifyError::MalformedEncoding)?;
-    let defer = DeferredClaim::recompute_scalar(guest, point)?;
-    let mut cells = defer.cells();
-    cells.resize(cells.len().next_multiple_of(2), F192::ZERO);
-    let tail = cells.iter().flat_map(|x| x.to_limbs()).flat_map(u64::to_le_bytes).collect();
+    let defer = DeferredBytecodeClaim::recompute_scalar(guest, point).ok_or(AggregateVerifyError::MalformedClaim)?;
+    let tail = cell_bytes(defer.cells());
     Ok((public_input_bytes(&deps_public_input(guest, deps_hash, &defer)), tail))
 }
 
@@ -154,7 +149,7 @@ pub fn verify_deps_hash(guest: Guest, deps_hash: &[u8; 32], proof_bytes: &[u8]) 
     }
     let (point, proof) = decode(proof_bytes).ok_or(AggregateVerifyError::MalformedEncoding)?;
     let proof = leanvm_core::cpu::Proof::from_bytes(proof).ok_or(AggregateVerifyError::MalformedEncoding)?;
-    let defer = DeferredClaim::recompute_scalar(guest, point)?;
+    let defer = DeferredBytecodeClaim::recompute_scalar(guest, point).ok_or(AggregateVerifyError::MalformedClaim)?;
     let pi = deps_public_input(guest, deps_hash, &defer);
     verifier::verify_execution(scalar_bytecode(guest), &public_input_bytes(&pi), &scalar_proof(&proof))
         .map(|_| ())
@@ -163,7 +158,7 @@ pub fn verify_deps_hash(guest: Guest, deps_hash: &[u8; 32], proof_bytes: &[u8]) 
 
 impl EthereumProof {
     /// The VM's public input for this aggregate: the digest of its claims and its deferred claim.
-    pub(super) fn vm_public_input(&self) -> [F192; 2] {
+    pub(super) fn vm_public_input(&self) -> [F128; 2] {
         let da = verifier::da::digest(self.claims.da_commitment);
         statement_digest(self.guest, &self.claims.generic, &self.claims.lean_sphincs, da, &self.defer)
     }
@@ -201,7 +196,7 @@ impl EthereumProof {
             guest,
             claims,
             // The wire carries no value, only the point to derive it from.
-            defer: DeferredClaim::recompute_scalar(guest, bytecode_point)?,
+            defer: DeferredBytecodeClaim::recompute_scalar(guest, bytecode_point).ok_or(AggregateVerifyError::MalformedClaim)?,
             proof,
         })
     }
@@ -223,7 +218,8 @@ impl EthereumProof {
         // to be the true evaluation, or the recursion below proves nothing about
         // the bytecode.
         let _s = tracing::info_span!("Recompute deferred claims").entered();
-        let defer = DeferredClaim::recompute_scalar(self.guest, self.defer.bytecode_point.clone())?;
+        let defer = DeferredBytecodeClaim::recompute_scalar(self.guest, self.defer.bytecode_point.clone())
+            .ok_or(AggregateVerifyError::MalformedClaim)?;
         drop(_s);
         if defer != self.defer {
             return Err(AggregateVerifyError::MalformedClaim);

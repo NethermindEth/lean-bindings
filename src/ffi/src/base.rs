@@ -1,10 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Demerzel Solutions Limited
 // SPDX-License-Identifier: MIT
 
-//! Guest 0: EIP-8288's recursive guest and its host exactly as the ABI 12 package 0.12.1 ships them, so a chain without batch pricing
-//! keeps that package's `AGGREGATED_VK`, limits and input encoding.
+//! Guest 0: EIP-8288's recursive guest and its host as the ABI 12 package 0.12.1 ships them, ported to F128 and with
+//! leanSTARK lists no longer capped at 16, so a chain without batch pricing keeps that package's input encoding (its
+//! `AGGREGATED_VK` changes with the field).
 
-use crate::{Dep, LEAN_SPHINCS, LEAN_STARK, LOG_INV_RATE, MAX_BYTES, MAX_DEPS, MAX_INPUT_BYTES};
+use crate::{
+    DEP_BYTES, Dep, LEAN_SPHINCS, LEAN_STARK, LOG_INV_RATE, MAX_BYTES, MAX_DEPS, MAX_INPUT_BYTES, MAX_RAW_PER_NODE,
+};
 use rec_aggregation_base::{EthereumClaims, EthereumProof, MAX_GENERIC_DEPENDENCIES};
 use std::collections::{BTreeSet, HashSet};
 
@@ -12,13 +15,13 @@ pub fn aggregated_vk() -> [u8; 32] {
     rec_aggregation_base::aggregated_vk()
 }
 
-/// The ABI 12 limits, in `nlean_limits` order.
+/// Guest 0's limits, in `nlean_limits` order.
 pub fn limits() -> [u32; 7] {
     [
         MAX_BYTES as u32,
         MAX_DEPS as u32,
         rec_aggregation_base::MAX_RECURSIONS as u32,
-        (signatures::lean_sphincs::PUB_KEY_SIZE + signatures::lean_sphincs::SIG_SIZE) as u32,
+        (lean_sphincs::PUB_KEY_SIZE + lean_sphincs::SIG_SIZE) as u32,
         MAX_INPUT_BYTES as u32,
         MAX_GENERIC_DEPENDENCIES as u32,
         1 << rec_aggregation_base::MAX_GENERIC_BYTECODE_LOG,
@@ -52,7 +55,7 @@ impl<'a> Reader<'a> {
         self.take(n)
     }
     fn dep(&mut self) -> Result<Dep, ()> {
-        let d: Dep = self.take(96)?.try_into().map_err(|_| ())?;
+        let d: Dep = self.take(DEP_BYTES)?.try_into().map_err(|_| ())?;
         if d[..31].iter().any(|b| *b != 0) || !matches!(d[31], LEAN_SPHINCS | LEAN_STARK) {
             return Err(());
         }
@@ -86,9 +89,6 @@ fn claims(deps: &[Dep]) -> EthereumClaims {
 pub fn commitment(ds: &[Dep]) -> [u8; 32] {
     let claims = claims(ds);
     rec_aggregation_base::deps_hash(&claims.lean_sphincs, &claims.generic)
-}
-fn generic_count(ds: &[Dep]) -> usize {
-    ds.iter().filter(|dep| dep[31] == LEAN_STARK).count()
 }
 fn canonical(ds: Vec<Dep>) -> Vec<Dep> {
     ds.into_iter()
@@ -136,10 +136,18 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
     let mut r = Reader { bytes: input };
     let mut all = Vec::new();
     let mut raw = Vec::new();
-    for _ in 0..r.count()? {
+    let raw_count = r.count()?;
+    if raw_count > MAX_RAW_PER_NODE {
+        return Err(());
+    }
+    for _ in 0..raw_count {
         let dep = r.dep()?;
         raw.push((dep, r.blob()?));
         all.push(dep);
+    }
+    // Every supplied leanSTARK witness counts, discarded or redundant ones included, so none is verified past the cap.
+    if raw.iter().filter(|(dep, _)| dep[31] == LEAN_STARK).count() > MAX_GENERIC_DEPENDENCIES {
+        return Err(());
     }
     let child_count = r.count()?;
     if child_count > rec_aggregation_base::MAX_RECURSIONS {
@@ -154,9 +162,6 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
                 return Err(());
             }
             continue;
-        }
-        if generic_count(&declared) > MAX_GENERIC_DEPENDENCIES {
-            return Err(());
         }
         children.push((decode_child(&declared, proof)?, proof, declared.clone()));
         all.extend(declared);
@@ -173,14 +178,8 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    if deps.len() > MAX_DEPS
-        || generic_count(&deps) > MAX_GENERIC_DEPENDENCIES
-        || commitment(&deps) != *hash
-    {
+    if deps.len() > MAX_DEPS || commitment(&deps) != *hash {
         return Err(());
-    }
-    if deps.is_empty() {
-        return Ok(vec![]);
     }
     let kept: HashSet<_> = deps.iter().copied().collect();
     children.retain(|(_, _, declared)| declared.iter().any(|dep| kept.contains(dep)));
@@ -198,6 +197,9 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
         .any(|(dep, witness)| !verify_witness(dep, witness))
     {
         return Err(());
+    }
+    if deps.is_empty() {
+        return Ok(vec![]);
     }
     if let Some((_, bytes, _)) = children.iter().find(|(_, _, declared)| *declared == deps) {
         return Ok(bytes.to_vec());
