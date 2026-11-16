@@ -50,12 +50,13 @@ dispatcher, where the ABI catches them.
 ## Prototype wire format
 
 All framing integers are unsigned 32-bit little-endian. The native backend bounds proofs and
-individual witnesses to 8 MiB and aggregation input to 17 full dependency lists with their largest proofs (about
-272 MiB); managed callers first apply
+individual witnesses to 8 MiB and aggregation input to every child's full list and largest proof, the raw witnesses
+and a full discard list (about 394 MiB); managed callers first apply
 the local 1.25 MiB pinned-prover bound (`Eip8288Constants.MaxAggregateProofBytes`, not an EIP-8288
 constant) to every aggregate proof. This is an input-buffer limit, not a process memory bound.
 Dependency lists are bounded to EIP-8288's output capacity, `MAX_RLP_BLOCK_SIZE // 96` (87,381, EIP-7934), and recursive
-children to 16; raw witnesses are bounded by the input bytes alone. This format and the
+children to 16. One call takes at most 256 raw witnesses, a local proving-resource bound (one guest node proves 256
+signatures in about 9 GiB); larger sets merge through children. This format and the
 pinned key are prototype protocol choices, pending finalized EIP-8288 encodings.
 
 The serialized mixed guest proof is the whole `stark_proof`; an empty dependency list has an

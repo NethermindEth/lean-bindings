@@ -20,9 +20,18 @@ const MAX_RLP_BLOCK_SIZE: usize = 10 * 1024 * 1024 - 2 * 1024 * 1024;
 const DEP_BYTES: usize = 96;
 /// The most dependencies a list holds: EIP-8288's output capacity, `MAX_RLP_BLOCK_SIZE // 96`.
 const MAX_DEPS: usize = MAX_RLP_BLOCK_SIZE / DEP_BYTES;
-/// Room for every child's full dependency list and largest proof, and as much again for raw witnesses and discards.
-/// Raw witnesses are bounded by these bytes alone, not by [`MAX_DEPS`].
-pub const MAX_INPUT_BYTES: usize = (rec_aggregation::MAX_RECURSIONS + 1) * (MAX_DEPS * DEP_BYTES + MAX_BYTES);
+/// A local bound on the raw witnesses one call proves: one guest node proves this many signatures in about 9 GiB.
+/// EIP-8288 bounds a step only by its resources; the guest's own bound is its memory.
+const MAX_RAW_PER_NODE: usize = 256;
+/// The framing of one length-prefixed field.
+const LEN_BYTES: usize = 4;
+/// Every child's full dependency list and largest proof, the raw witnesses (each signature's, and each leanSTARK one up to
+/// [`MAX_BYTES`]), and a full discard list.
+pub const MAX_INPUT_BYTES: usize = 3 * LEN_BYTES
+    + rec_aggregation::MAX_RECURSIONS * (2 * LEN_BYTES + MAX_DEPS * DEP_BYTES + MAX_BYTES)
+    + MAX_RAW_PER_NODE * (DEP_BYTES + LEN_BYTES + lean_sphincs::PUB_KEY_SIZE + lean_sphincs::SIG_SIZE)
+    + MAX_GENERIC_DEPENDENCIES * MAX_BYTES
+    + MAX_DEPS * DEP_BYTES;
 // The upstream prover's timings assume its allocator: jemalloc keeps a proof's freed pages mapped for the next one.
 // It serves this library's allocations only, and holds their peak until the process exits.
 #[global_allocator]
@@ -226,7 +235,11 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
     let mut r = Reader { bytes: input };
     let mut all = Vec::new();
     let mut raw = Vec::new();
-    for _ in 0..r.count()? {
+    let raw_count = r.count()?;
+    if raw_count > MAX_RAW_PER_NODE {
+        return Err(());
+    }
+    for _ in 0..raw_count {
         let dep = r.dep()?;
         raw.push((dep, r.blob()?));
         all.push(dep);
@@ -733,9 +746,10 @@ mod tests {
         assert!(verify_aggregate(&hash_of(&all), &merged).is_ok());
     }
 
-    /// An aggregate holds more than the former 256-dependency bound: leaves whose union exceeds it merge and verify.
+    /// An aggregate holds more dependencies than one call takes raw witnesses: leaves whose union exceeds
+    /// `MAX_RAW_PER_NODE` merge and verify, while the same witnesses raw in one call are refused.
     #[test]
-    fn merges_past_256_dependencies() {
+    fn merges_past_the_raw_witness_bound() {
         const LEAVES: usize = 3;
         const PER_LEAF: u16 = 86;
         let raw: Vec<_> = (0..LEAVES as u16 * PER_LEAF)
@@ -751,7 +765,8 @@ mod tests {
             .collect();
         let children: Vec<_> = leaves.iter().map(|(deps, proof)| (&deps[..], &proof[..])).collect();
         let all: Vec<Dep> = raw.iter().map(|(dep, _)| *dep).collect();
-        assert!(all.len() > 256);
+        assert!(all.len() > MAX_RAW_PER_NODE);
+        assert!(prove_aggregate(&hash_of(&all), &input(&raw, &[], &[])).is_err());
         let merged = prove_aggregate(&hash_of(&all), &input(&[], &children, &[])).unwrap();
         assert!(verify_aggregate(&hash_of(&all), &merged).is_ok());
     }
