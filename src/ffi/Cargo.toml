@@ -40,7 +40,7 @@ needless_range_loop = "allow"
 too_many_arguments = "allow"
 
 # Unmodified leanEthereum/leanVM, pinned. crates/rec_aggregation is vendored from the same revision and carries the
-# EIP-8288 guest; crates/lean_sphincs is NiceTry v2 in place of upstream's leanSPHINCS.
+# EIP-8288 guest.
 [workspace.dependencies]
 primitives = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
 fiat_shamir = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
@@ -54,7 +54,7 @@ parallel = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae52
 verifier = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
 lean_xmss = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
 rec_aggregation = { path = "crates/rec_aggregation" }
-lean_sphincs = { path = "crates/lean_sphincs" }
+lean_sphincs = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
 rand = "0.9"
 tracing = "0.1.26"
 

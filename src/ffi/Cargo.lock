@@ -116,10 +116,9 @@ dependencies = [
 [[package]]
 name = "lean_sphincs"
 version = "0.1.0"
+source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
 dependencies = [
- "parallel",
  "primitives",
- "rand",
 ]
 
 [[package]]
