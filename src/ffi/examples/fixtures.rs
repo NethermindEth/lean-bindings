@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Demerzel Solutions Limited
 // SPDX-License-Identifier: MIT
 use nethermind_lean::{ANY_INPUT_PROGRAM, aggregated_vk, keccak, prove_stark, verification_key};
-use lean_sphincs::{key_gen_from_seed, sign};
+use lean_sphincs::{key_gen, sign};
 fn main() {
     let directory = std::env::args().nth(1).expect("fixture output directory");
     if directory == "--sign-message" || directory == "--prove-stark" {
@@ -14,13 +14,13 @@ fn main() {
         }
         let output = arguments.next().expect("witness output file");
         assert!(arguments.next().is_none(), "unexpected fixture arguments");
-        // `key ‖ witness`: a NiceTry v2 signature, or a leanSTARK proof of the accept-all program on the message.
+        // `key ‖ witness`: a leanSPHINCS signature, or a leanSTARK proof of the accept-all program on the message.
         let output_bytes = if directory == "--prove-stark" {
             let (witness, key) = prove_stark(ANY_INPUT_PROGRAM, &message).unwrap();
             [&key[..], &witness[..]].concat()
         } else {
-            let (sk, pk) = key_gen_from_seed([42; 32]);
-            let signature = sign(&sk, &message).unwrap();
+            let (sk, pk) = ([42; 32], key_gen(&[42; 32]));
+            let signature = sign(&sk, &message);
             [&verification_key(&pk)[..], &signature.to_bytes()[..]].concat()
         };
         std::fs::write(output, output_bytes).unwrap();
@@ -29,9 +29,9 @@ fn main() {
     std::fs::create_dir_all(&directory).unwrap();
     let save =
         |name: &str, bytes: &[u8]| std::fs::write(format!("{directory}/{name}"), bytes).unwrap();
-    let (sk, pk) = key_gen_from_seed([42; 32]);
+    let (sk, pk) = ([42; 32], key_gen(&[42; 32]));
     let message = [7; 32];
-    let sig = sign(&sk, &message).unwrap();
+    let sig = sign(&sk, &message);
     save("sphincs-key.bin", &verification_key(&pk));
     save("sphincs-message.bin", &message);
     save(
@@ -43,18 +43,18 @@ fn main() {
         let message = keccak(&index.to_le_bytes());
         multi.extend_from_slice(&message);
         multi.extend_from_slice(&verification_key(&pk));
-        multi.extend_from_slice(&sign(&sk, &message).unwrap().to_bytes());
+        multi.extend_from_slice(&sign(&sk, &message).to_bytes());
     }
     save("sphincs-multi.bin", &multi);
     let mut multi_keys = Vec::new();
     for index in 0u8..16 {
         let mut seed = [42; 32];
         seed[0] = index;
-        let (sk, pk) = key_gen_from_seed(seed);
+        let pk = key_gen(&seed);
         let message = keccak(&[index]);
         multi_keys.extend_from_slice(&message);
         multi_keys.extend_from_slice(&verification_key(&pk));
-        multi_keys.extend_from_slice(&sign(&sk, &message).unwrap().to_bytes());
+        multi_keys.extend_from_slice(&sign(&seed, &message).to_bytes());
     }
     save("sphincs-multi-keys.bin", &multi_keys);
     let public_input = [9; 32];

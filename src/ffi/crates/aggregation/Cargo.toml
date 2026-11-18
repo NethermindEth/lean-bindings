@@ -1,5 +1,5 @@
 [package]
-name = "rec_aggregation"
+name = "aggregation"
 version.workspace = true
 edition.workspace = true
 publish = false
@@ -8,23 +8,22 @@ publish = false
 workspace = true
 
 [dependencies]
-primitives.workspace = true
-fiat_shamir.workspace = true
-parallel.workspace = true
-pcs.workspace = true
-keccak_gkr.workspace = true
-leanvm_core.workspace = true
-lean_compiler.workspace = true
+isa.workspace = true
+verifier.workspace = true
+keccak256.workspace = true
+fiat_shamir_prover.workspace = true
+zkdsl_compiler.workspace = true
 lean_xmss.workspace = true
 lean_sphincs.workspace = true
 lean_da.workspace = true
-verifier.workspace = true
+# The protocol's structure (bus blocks, stacking, grinds, the stacked bytecode), from the reference prover.
+lean_vm_core.workspace = true
+pcs.workspace = true
+primitives.workspace = true
 rand = { workspace = true, optional = true }
 tracing.workspace = true
 
 [features]
-# Malicious-host switches for the rejection tests. Never enable in a prover that ships.
-forge = []
 # `signers_cache`: cached benchmark signers, for tests and the CLI.
 signers-cache = ["dep:rand"]
 

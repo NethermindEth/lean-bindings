@@ -1,15 +1,13 @@
 //! The guest's claim pool and its coordinate terms.
 
 use super::cells::count;
-use leanvm_core::cpu::keccak_value;
-use leanvm_core::leaf::{Block, Coord};
+use super::child::{block_sources, is_table_source};
+use lean_vm_core::cpu::keccak_value;
+use lean_vm_core::leaf::{Block, Coord};
 use primitives::field::F128;
-use std::collections::BTreeMap;
-
-/// Why the guest reads every `q_keccak` slot claim's instance point off `chi`: a
-/// virtual value column is referenced only by its own table's bus blocks, which
-/// the table sumcheck settles, so no framework block can raise one at `zeta`.
-const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
+use std::collections::{BTreeMap, HashMap};
+use verifier::layout::{GLOBAL_COLUMN_BASES, TABLE_WIDTHS};
+use verifier::layout::{MEMORY_0, MEMORY_1};
 
 /// One entry of the guest's claim pool.
 pub(super) enum ClaimSite {
@@ -17,7 +15,7 @@ pub(super) enum ClaimSite {
     Framework { column: usize, source: (usize, usize) },
     /// A table column, a KECCAK value lane's ([`keccak_value`]) included.
     TableColumn { column: usize, table: usize },
-    /// One of the two PI memory limbs (MEM_LO, MEM_HI).
+    /// One of the two PI memory limbs (MEMORY_0, MEMORY_1).
     MemoryLimb { column: usize },
 }
 
@@ -110,47 +108,45 @@ pub(super) fn coord_difference(a: &[Term], b: &[Term]) -> Vec<Term> {
     out
 }
 
-/// Visit the claim pool in the exact order the guest indexes it: the framework
-/// bus claims (deduped by `(column, kappa)`, as `leaf.rs` pools them), then every
-/// table's committed columns, then the PI memory triple. The placeholder map's
-/// claim descriptors follow this order.
-pub(super) fn walk_claims(layout: &leanvm_core::cpu::Layout, mut visit: impl FnMut(ClaimSite)) {
-    let sides: [&[Block]; 3] = [&layout.push, &layout.pull, &layout.count];
-    // Only the framework blocks raise claims: a table's coords are settled inside
-    // the table sumcheck.
-    let sources = super::child::block_sources();
-    let mut seen: std::collections::HashSet<(usize, usize)> = Default::default();
-    let mut bi = 0usize;
-    for blocks in sides.iter() {
-        for blk in blocks.iter() {
-            let source = sources[bi];
-            bi += 1;
-            if (2..2 + leanvm_core::tables::N_TABLES).contains(&source.0) {
-                continue;
-            }
-            for c in &blk.coords {
-                if let Coord::Col(i) | Coord::GCol(i, _) = c {
-                    if !seen.insert((*i, blk.kappa)) {
-                        continue; // deduped: pooled once at its first occurrence
-                    }
-                    assert!(keccak_value(*i).is_none(), "{VALCOL_FRAMEWORK}");
-                    visit(ClaimSite::Framework { column: *i, source });
+/// The claim pool in the exact order the guest indexes it: the framework bus
+/// claims (deduped by `(column, kappa)`, as `leaf.rs` pools them), then every
+/// table's committed columns, then the PI memory limbs. With it, for every
+/// coordinate of every block in order, `(fresh, slot)`: whether it raises its
+/// framework claim first, and that claim's slot; zero for one that raises none.
+pub(super) fn claim_pool(sides: &[Vec<Block>; 3]) -> (Vec<ClaimSite>, Vec<(usize, usize)>) {
+    let (mut pool, mut coords) = (Vec::new(), Vec::new());
+    let mut slot_of: HashMap<(usize, usize), usize> = HashMap::new();
+    for (blk, &source) in sides.iter().flatten().zip(&block_sources()) {
+        for c in &blk.coords {
+            // Only the framework blocks raise claims: a table's coords are settled inside
+            // the table sumcheck.
+            let column = match c {
+                Coord::Col(i) | Coord::GCol(i, _) if !is_table_source(source.0) => *i,
+                _ => {
+                    coords.push((0, 0));
+                    continue;
                 }
+            };
+            let key = (column, blk.kappa);
+            let fresh = !slot_of.contains_key(&key);
+            if fresh {
+                // Why the guest reads every `q_keccak` slot claim's instance point off `chi`: a virtual value column
+                // is referenced only by its own table's bus blocks, which the table sumcheck settles.
+                assert!(
+                    keccak_value(column).is_none(),
+                    "a framework block must not reference a virtual value column"
+                );
+                slot_of.insert(key, pool.len());
+                pool.push(ClaimSite::Framework { column, source });
             }
+            coords.push((usize::from(fresh), slot_of[&key]));
         }
     }
-    let sch = leanvm_core::cpu::schema();
-    for (t, table) in leanvm_core::tables::tables().iter().enumerate() {
-        for c in 0..table.n_committed_columns() {
-            visit(ClaimSite::TableColumn {
-                column: sch.base[t] + c,
-                table: t,
-            });
-        }
+    for (t, (&base, &width)) in GLOBAL_COLUMN_BASES.iter().zip(&TABLE_WIDTHS).enumerate() {
+        pool.extend((base..base + width).map(|column| ClaimSite::TableColumn { column, table: t }));
     }
-    for &column in &[leanvm_core::cpu::MEM_LO, leanvm_core::cpu::MEM_HI] {
-        visit(ClaimSite::MemoryLimb { column });
-    }
+    pool.extend([MEMORY_0, MEMORY_1].map(|column| ClaimSite::MemoryLimb { column }));
+    (pool, coords)
 }
 
 pub(super) struct Term {
