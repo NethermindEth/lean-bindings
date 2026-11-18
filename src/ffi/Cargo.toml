@@ -15,14 +15,17 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # dlopen cannot place jemalloc's default initial-exec TLS in a host process such as dotnet.
 tikv-jemallocator = { version = "0.7", features = ["disable_initial_exec_tls"] }
-rec_aggregation.workspace = true
+aggregation.workspace = true
 lean_sphincs.workspace = true
-primitives.workspace = true
+isa.workspace = true
+verifier.workspace = true
+keccak256.workspace = true
 parallel.workspace = true
 bench.workspace = true
-lean_compiler.workspace = true
-leanvm_core.workspace = true
-fiat_shamir.workspace = true
+zkdsl_compiler.workspace = true
+lean_vm_core.workspace = true
+experimental_lean_vm_core = { git = "https://github.com/leanEthereum/leanVM", rev = "f37c5e5e74ac718ab188653d5a0175bfdad25b06" }
+fiat_shamir_prover.workspace = true
 
 [workspace]
 members = ["crates/*"]
@@ -36,22 +39,23 @@ edition = "2024"
 needless_range_loop = "allow"
 too_many_arguments = "allow"
 
-# Unmodified leanEthereum/leanVM, pinned. crates/rec_aggregation is vendored from the same revision and carries the
-# EIP-8288 guest; crates/lean_sphincs is NiceTry v2 in place of upstream's leanSPHINCS.
+# Unmodified leanEthereum/leanVM, pinned, on its stable prover. crates/aggregation is vendored from the same revision
+# and carries the EIP-8288 guest (guests/lean_ethereum.py).
 [workspace.dependencies]
-primitives = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
-fiat_shamir = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
-pcs = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
-keccak_gkr = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
-leanvm_core = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
-lean_compiler = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
-bench = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
-lean_da = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
-parallel = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
-verifier = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
-lean_xmss = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
-rec_aggregation = { path = "crates/rec_aggregation" }
-lean_sphincs = { path = "crates/lean_sphincs" }
+isa = { git = "https://github.com/leanEthereum/leanVM", rev = "f37c5e5e74ac718ab188653d5a0175bfdad25b06" }
+verifier = { git = "https://github.com/leanEthereum/leanVM", rev = "f37c5e5e74ac718ab188653d5a0175bfdad25b06" }
+keccak256 = { git = "https://github.com/leanEthereum/leanVM", rev = "f37c5e5e74ac718ab188653d5a0175bfdad25b06" }
+fiat_shamir_prover = { git = "https://github.com/leanEthereum/leanVM", rev = "f37c5e5e74ac718ab188653d5a0175bfdad25b06" }
+zkdsl_compiler = { git = "https://github.com/leanEthereum/leanVM", rev = "f37c5e5e74ac718ab188653d5a0175bfdad25b06" }
+lean_xmss = { git = "https://github.com/leanEthereum/leanVM", rev = "f37c5e5e74ac718ab188653d5a0175bfdad25b06" }
+lean_sphincs = { git = "https://github.com/leanEthereum/leanVM", rev = "f37c5e5e74ac718ab188653d5a0175bfdad25b06" }
+lean_da = { git = "https://github.com/leanEthereum/leanVM", rev = "f37c5e5e74ac718ab188653d5a0175bfdad25b06" }
+bench = { git = "https://github.com/leanEthereum/leanVM", rev = "f37c5e5e74ac718ab188653d5a0175bfdad25b06" }
+lean_vm_core = { package = "stable_lean_vm_core", git = "https://github.com/leanEthereum/leanVM", rev = "f37c5e5e74ac718ab188653d5a0175bfdad25b06" }
+pcs = { package = "stable_pcs", git = "https://github.com/leanEthereum/leanVM", rev = "f37c5e5e74ac718ab188653d5a0175bfdad25b06" }
+primitives = { package = "stable_primitives", git = "https://github.com/leanEthereum/leanVM", rev = "f37c5e5e74ac718ab188653d5a0175bfdad25b06" }
+parallel = { package = "stable_parallel", git = "https://github.com/leanEthereum/leanVM", rev = "f37c5e5e74ac718ab188653d5a0175bfdad25b06" }
+aggregation = { path = "crates/aggregation" }
 rand = "0.9"
 tracing = "0.1.26"
 

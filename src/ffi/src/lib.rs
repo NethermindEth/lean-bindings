@@ -3,10 +3,12 @@
 
 //! Pinned LeanVM verification and recursive aggregation of complete dependency sets.
 
-use rec_aggregation::{
-    EthereumClaims, EthereumProof, MAX_GENERIC_BYTECODE_LOG, MAX_GENERIC_DEPENDENCIES,
+use aggregation::{
+    AggregateClaims, AggregateProof, MAX_GENERIC_BYTECODE_LOG, MAX_GENERIC_DEPENDENCIES, OutputClaims,
 };
+use isa::Prover;
 use lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
+use experimental_lean_vm_core::ExperimentalProver as StableProver;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -28,7 +30,7 @@ const LEN_BYTES: usize = 4;
 /// Every child's full dependency list and largest proof, the raw witnesses (each signature's, and each leanSTARK one up to
 /// [`MAX_BYTES`]), and a full discard list.
 pub const MAX_INPUT_BYTES: usize = 3 * LEN_BYTES
-    + rec_aggregation::MAX_RECURSIONS * (2 * LEN_BYTES + MAX_DEPS * DEP_BYTES + MAX_BYTES)
+    + aggregation::MAX_RECURSIONS * (2 * LEN_BYTES + MAX_DEPS * DEP_BYTES + MAX_BYTES)
     + MAX_RAW_PER_NODE * (DEP_BYTES + LEN_BYTES + lean_sphincs::PUB_KEY_SIZE + lean_sphincs::SIG_SIZE)
     + MAX_GENERIC_DEPENDENCIES * MAX_BYTES
     + MAX_DEPS * DEP_BYTES;
@@ -39,12 +41,12 @@ static ALLOCATOR: bench::Jemalloc = bench::Jemalloc;
 const LOG_INV_RATE: usize = 1;
 static PROVER: Mutex<()> = Mutex::new(());
 
-/// Takes the prover for one proof: `rec_aggregation::aggregate` allows one call at a time per process.
+/// Takes the prover for one proof, so a leanSTARK proof and an aggregate never share the pool.
 fn begin_proof() -> std::sync::MutexGuard<'static, ()> {
     let guard = PROVER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    parallel::init();
+    StableProver::init();
     guard
 }
 
@@ -69,11 +71,11 @@ const LEAN_SPHINCS: u8 = 0x10;
 const LEAN_STARK: u8 = 0x11;
 
 pub fn keccak(bytes: &[u8]) -> [u8; 32] {
-    primitives::hash::hash(bytes)
+    keccak256::hash(bytes)
 }
 
 pub fn aggregated_vk() -> [u8; 32] {
-    rec_aggregation::aggregated_vk()
+    aggregation::aggregated_vk()
 }
 
 struct Reader<'a> {
@@ -135,9 +137,9 @@ fn data(dep: &Dep) -> [u8; 32] {
 fn key(dep: &Dep) -> [u8; 32] {
     dep[64..].try_into().unwrap()
 }
-fn claims(deps: &[Dep]) -> EthereumClaims {
+fn claims(deps: &[Dep]) -> AggregateClaims {
     let of = |scheme| deps.iter().filter(move |dep| dep[31] == scheme);
-    EthereumClaims {
+    AggregateClaims {
         lean_sphincs: of(LEAN_SPHINCS)
             .map(|dep| (data(dep), public_key(&key(dep))))
             .collect(),
@@ -146,10 +148,10 @@ fn claims(deps: &[Dep]) -> EthereumClaims {
     }
 }
 /// The dependency digest of a canonical list, as the recursive guest commits to it: EIP-8288 `get_deps_hash` for a
-/// leanSPHINCS-only list, and the split-domain digest of `rec_aggregation::deps_hash` once it holds a leanSTARK entry.
+/// leanSPHINCS-only list, and the split-domain digest of `aggregation::deps_hash` once it holds a leanSTARK entry.
 pub fn commitment(ds: &[Dep]) -> [u8; 32] {
     let claims = claims(ds);
-    rec_aggregation::deps_hash(&claims.lean_sphincs, &claims.generic)
+    aggregation::deps_hash(&claims.lean_sphincs, &claims.generic)
 }
 fn canonical(ds: Vec<Dep>) -> Vec<Dep> {
     ds.into_iter()
@@ -169,11 +171,11 @@ fn parse_sphincs(
     Ok((public_key(vk), sig))
 }
 fn verify_sphincs(hash: &[u8; 32], vk: &[u8; 32], witness: &[u8]) -> bool {
-    parse_sphincs(vk, witness).is_ok_and(|(pk, sig)| lean_sphincs::verify(&pk, hash, &sig).is_ok())
+    parse_sphincs(vk, witness).is_ok_and(|(pk, sig)| lean_sphincs::verify(&pk, hash, &sig))
 }
 fn verify_witness(dep: &Dep, witness: &[u8]) -> bool {
     if dep[31] == LEAN_STARK {
-        rec_aggregation::verify_generic(&data(dep), &key(dep), witness)
+        aggregation::verify_generic(&data(dep), &key(dep), witness)
     } else {
         verify_sphincs(&data(dep), &key(dep), witness)
     }
@@ -186,19 +188,13 @@ pub const ANY_INPUT_PROGRAM: &str = "def main():\n    h = StackBuf(2)\n    hint_
 /// leanSTARK witness and verification key of the dependency `(hash, key)`. For tests and fixtures.
 pub fn prove_stark(source: &str, hash: &[u8; 32]) -> Result<(Vec<u8>, [u8; 32]), ()> {
     let _guard = begin_proof();
-    let mut program = lean_compiler::compile(&lean_compiler::parse(source).map_err(|_| ())?);
-    let table: Vec<u64> = leanvm_core::cpu::bytecode_table(program.prog())
-        .iter()
-        .map(|word| word.0)
-        .collect();
-    let key = rec_aggregation::generic_verification_key(&table).ok_or(())?;
-    let input = fiat_shamir::merkle::hash_to_scalars(hash);
-    program.set_witness("pi", vec![input.to_vec()]);
-    let (proof, _) = leanvm_core::cpu::prove(&program, input, LOG_INV_RATE).map_err(|_| ())?;
-    Ok((
-        rec_aggregation::generic_witness(&table, &proof).ok_or(())?,
-        key,
-    ))
+    let program = isa::Program::from(zkdsl_compiler::compile(&zkdsl_compiler::parse(source).map_err(|_| ())?));
+    let table = program.stacked_bytecode();
+    let key = aggregation::generic_verification_key(table).ok_or(())?;
+    let input: [verifier::E; 2] = fiat_shamir_prover::merkle::hash_to_scalars(hash);
+    let witness = [("pi".to_string(), vec![input.to_vec()])];
+    let (proof, _) = StableProver::prove(&program, &witness, input, LOG_INV_RATE).map_err(|_| ())?;
+    Ok((aggregation::generic_witness(table, &proof).ok_or(())?, key))
 }
 
 // EIP-8288 `stark_proof`: the guest proof alone, checked against `deps_hash` and the pinned key.
@@ -207,17 +203,20 @@ fn verify_aggregate(hash: &[u8; 32], proof: &[u8]) -> Result<(), ()> {
     if proof.is_empty() || proof.len() > MAX_BYTES {
         return Err(());
     }
-    rec_aggregation::verify_deps_hash(hash, proof).map_err(|_| ())
+    if aggregation::verify_deps_hash(hash, proof) { Ok(()) } else { Err(()) }
 }
 
 // A recursive child is proven against its declared dependencies, which the caller supplies.
-fn decode_child(deps: &[Dep], proof: &[u8]) -> Result<EthereumProof, ()> {
+fn decode_child(deps: &[Dep], proof: &[u8]) -> Result<(AggregateClaims, AggregateProof), ()> {
     if proof.is_empty() || proof.len() > MAX_BYTES {
         return Err(());
     }
-    let proof = EthereumProof::from_proof_bytes(proof, claims(deps)).map_err(|_| ())?;
-    proof.verify().map_err(|_| ())?;
-    Ok(proof)
+    let claims = claims(deps);
+    let proof = AggregateProof::from_bytes(proof).ok_or(())?;
+    if !proof.verify(&claims) {
+        return Err(());
+    }
+    Ok((claims, proof))
 }
 
 pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
@@ -249,7 +248,7 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
         return Err(());
     }
     let child_count = r.count()?;
-    if child_count > rec_aggregation::MAX_RECURSIONS {
+    if child_count > aggregation::MAX_RECURSIONS {
         return Err(());
     }
     let mut children = Vec::new();
@@ -314,16 +313,17 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
         }
     }
     let children: Vec<_> = children.into_iter().map(|(child, ..)| child).collect();
-    let proof = rec_aggregation::aggregate(
+    let claims = claims(&deps);
+    let (_, proof, _) = aggregation::aggregate::<StableProver>(
         &children,
         generic,
         signatures,
-        &[],
-        Some(&claims(&deps)),
+        None,
+        OutputClaims::Only(&claims),
         LOG_INV_RATE,
     )
-    .map_err(|_| ())?
-    .proof_bytes();
+    .map_err(|_| ())?;
+    let proof = proof.to_bytes();
     if proof.len() > MAX_BYTES {
         return Err(());
     }
@@ -433,7 +433,7 @@ pub unsafe extern "C" fn nlean_limits(out: *mut u32, len: usize) -> i32 {
     let limits = [
         MAX_BYTES as u32,
         MAX_DEPS as u32,
-        rec_aggregation::MAX_RECURSIONS as u32,
+        aggregation::MAX_RECURSIONS as u32,
         (lean_sphincs::PUB_KEY_SIZE + lean_sphincs::SIG_SIZE) as u32,
         MAX_INPUT_BYTES as u32,
         MAX_GENERIC_DEPENDENCIES as u32,
@@ -486,7 +486,7 @@ pub unsafe extern "C" fn nlean_verify_leanstark(
     len: usize,
 ) -> i32 {
     checked(|| {
-        Ok(rec_aggregation::verify_generic(
+        Ok(aggregation::verify_generic(
             unsafe { bytes(data, 32)? }.try_into().map_err(|_| ())?,
             unsafe { bytes(vk, 32)? }.try_into().map_err(|_| ())?,
             unsafe { bytes(witness, len)? },
@@ -560,13 +560,13 @@ mod tests {
     fn signed(index: u8) -> (Dep, Vec<u8>) {
         signed_by([index; 32], keccak(&[index]))
     }
-    fn signed_by(seed: [u8; 32], message: [u8; 32]) -> (Dep, Vec<u8>) {
-        let (sk, pk) = lean_sphincs::key_gen_from_seed(seed);
+    fn signed_by(sk: [u8; 32], message: [u8; 32]) -> (Dep, Vec<u8>) {
+        let pk = lean_sphincs::key_gen(&sk);
         let mut dep = [0; 96];
         dep[31] = 0x10;
         dep[32..64].copy_from_slice(&message);
         dep[64..].copy_from_slice(&verification_key(&pk));
-        let signature = lean_sphincs::sign(&sk, &message).unwrap();
+        let signature = lean_sphincs::sign(&sk, &message);
         (
             dep,
             [&verification_key(&pk)[..], &signature.to_bytes()[..]].concat(),
@@ -628,12 +628,13 @@ mod tests {
     #[test]
     fn sphincs_key_is_seed_then_root() {
         let (dep, witness) = signed(1);
-        let (_, pk) = lean_sphincs::key_gen_from_seed([1; 32]);
-        assert_eq!(key(&dep), [pk.public_param, pk.root].concat()[..]);
+        let pk = lean_sphincs::key_gen(&[1; 32]);
+        let (seed, root) = (lean_sphincs::internals::pk_seed(&pk), lean_sphincs::internals::pk_root(&pk));
+        assert_eq!(key(&dep), [&seed[..], &root[..]].concat()[..]);
         assert!(verify_witness(&dep, &witness));
         let mut swapped = dep;
-        swapped[64..80].copy_from_slice(&pk.root);
-        swapped[80..].copy_from_slice(&pk.public_param);
+        swapped[64..80].copy_from_slice(root);
+        swapped[80..].copy_from_slice(seed);
         let swapped_witness = [&swapped[64..], &witness[32..]].concat();
         assert!(!verify_witness(&swapped, &swapped_witness));
         assert!(
