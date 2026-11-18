@@ -1,17 +1,14 @@
 # Vendored leanVM crates
 
-`rec_aggregation` and `lean_sphincs` derive from [leanEthereum/leanVM](https://github.com/leanEthereum/leanVM) at
+`rec_aggregation` derives from [leanEthereum/leanVM](https://github.com/leanEthereum/leanVM) at
 `f7ba4999ae523b94c8d0969b32762c3effea4cbd`, the revision `../Cargo.toml` pins for every other leanVM crate. Upstream
-licenses them under MIT or Apache-2.0 (each crate's `LICENSE-MIT`, `LICENSE-APACHE`). The core (`leanvm_core`, `verifier`,
-`lean_compiler`, `fiat_shamir`, `pcs`, `primitives`) stays an unmodified git dependency.
+licenses it under MIT or Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`). The core (`leanvm_core`, `verifier`,
+`lean_compiler`, `fiat_shamir`, `pcs`, `primitives`) and `lean_sphincs` stay unmodified git dependencies.
 
 Changes against upstream, all EIP-8288 specific:
 
-- `lean_sphincs`: NiceTry v2 (SPHINCS- v2) parameters and encoding, the wallet's signature scheme, in place of upstream's
-  leanSPHINCS, with the public key `PK.seed ‖ PK.root`. Upstream's tests and known-answer vectors are for its own scheme
-  and are not vendored; the crate checks NiceTry's reference vector instead. leanXMSS is upstream's `lean_xmss`, unvendored.
 - `rec_aggregation`: the aggregation guest (`guests/lean_ethereum.py`) commits to the EIP-8288 dependency digest with
-  Keccak-256, verifies NiceTry v2 signatures (scheme `0x10`) and leanVM execution proofs of programs up to 2^11
+  Keccak-256, verifies upstream leanSPHINCS signatures (scheme `0x10`) and leanVM execution proofs of programs up to 2^11
   instructions (scheme `0x11`, `src/aggregation/generic.rs`), and merges or discards child aggregates.
 
 `crates/upstream.sh diff` prints every change against upstream at the pinned revision; `crates/upstream.sh update <rev>`

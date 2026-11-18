@@ -39,7 +39,7 @@ fn the_wire_layout_is_pinned() {
 #[test]
 fn aggregated_vk_is_pinned() {
     let hex = super::proof::aggregated_vk().iter().map(|b| format!("{b:02x}")).collect::<String>();
-    assert_eq!(hex, "e09e5acfcfe87832f337eb42acac98246d160bb915b55c55fbd8118b203cbb81");
+    assert_eq!(hex, "d25362444ad74bab24ca0542674e916d57ee0216fe4d5113ad588a57dc7099ad");
 }
 
 /// The guest compiles to one program, always.
@@ -89,15 +89,16 @@ fn forged_lean_sphincs_hints_are_rejected() {
     let bump = |name: &'static str, i: usize| -> (&'static str, Forgery) {
         (name, Box::new(move |hints: &mut Hints| hints.entry_mut(name, i)[0] += F128::ONE))
     };
-    let digit = |i: usize| -> Forgery { Box::new(move |hints: &mut Hints| hints.entry_mut("sp_digits", i)[0] *= count(1)) };
+    let times_g = |name: &'static str, i: usize| -> (&'static str, Forgery) {
+        (name, Box::new(move |hints: &mut Hints| hints.entry_mut(name, i)[0] *= count(1)))
+    };
     let forgeries: Vec<(&str, Forgery)> = vec![
+        times_g("sp_unused", 0),
+        ("sp_fors_nodes", Box::new(|hints: &mut Hints| hints.entry_mut("sp_fors_nodes", 0).swap(0, 1))),
+        times_g("sp_counter", 1),
         bump("sp_rand", 0),
         bump("sp_fors_secrets", 0),
-        bump("sp_fors_paths", 0),
-        bump("sp_chain_starts", 0),
-        bump("sp_siblings", 0),
-        ("message digit", digit(0)),
-        ("checksum digit", digit(lean_sphincs::LEN1)),
+        bump("chain_starts", 0),
     ];
     for (name, forgery) in forgeries {
         FORGE.with(|forge| *forge.borrow_mut() = Some(forgery));
@@ -111,12 +112,13 @@ fn forged_lean_sphincs_hints_are_rejected() {
 /// here rather than cached, the cache holding one message per pubkey.
 #[test]
 fn aggregate_one_key_two_messages() {
-    let (secret_key, public_key) = lean_sphincs::key_gen_from_seed([77; lean_sphincs::SEED_LEN]);
+    let secret_key = [77; lean_sphincs::SECRET_KEY_LEN];
+    let public_key = lean_sphincs::key_gen(&secret_key);
     let raw: Vec<RawSphincs> = [3u8, 9]
         .into_iter()
         .map(|tag| {
             let signed: lean_sphincs::Message = std::array::from_fn(|i| tag.wrapping_mul(i as u8 + 1));
-            let signature = lean_sphincs::sign(&secret_key, &signed).expect("signs");
+            let signature = lean_sphincs::sign(&secret_key, &signed);
             (public_key, signed, signature)
         })
         .collect();
@@ -568,9 +570,10 @@ fn malformed_raw_lean_sphincs_signature_is_an_error() {
     let (public_key, signed, signature) = get_lean_sphincs_signers(1).pop().expect("one signer");
     // The bottom layer's counter follows the randomizer and the FORS openings.
     let mut bytes = signature.to_bytes();
-    bytes[lean_sphincs::RANDOMIZER_LEN + lean_sphincs::K * (1 + lean_sphincs::A) * lean_sphincs::N] ^= 1;
+    use lean_sphincs::internals::{FORS_OPENING_SIZE, FORS_TREES, N};
+    bytes[N + FORS_TREES * FORS_OPENING_SIZE] ^= 1;
     let signature = LeanSphincsSignature::from_bytes(&bytes);
-    assert!(lean_sphincs::verify(&public_key, &signed, &signature).is_err());
+    assert!(!lean_sphincs::verify(&public_key, &signed, &signature));
     let raw = vec![(public_key, signed, signature)];
     assert_eq!(
         aggregate(&[], vec![], raw, &[], None, LOG_INV_RATE).err(),

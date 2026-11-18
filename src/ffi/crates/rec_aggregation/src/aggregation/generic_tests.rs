@@ -102,7 +102,7 @@ fn claim(raw: &RawGeneric) -> GenericClaim {
 fn independent_deps_hash(sphincs: &[LeanSphincsClaim], generic: &[GenericClaim]) -> [u8; 32] {
     let s_bytes: Vec<u8> = sphincs
         .iter()
-        .flat_map(|(m, pk)| m.iter().chain(&pk.public_param).chain(&pk.root).copied())
+        .flat_map(|(m, pk)| m.iter().chain(&pk.to_bytes()).copied().collect::<Vec<_>>())
         .collect();
     let s = primitives::hash::hash(&s_bytes);
     if generic.is_empty() {
@@ -182,7 +182,7 @@ fn pure_lean_sphincs_digest_is_unchanged() {
     assert_eq!(deps_hash(&claims, &[]), independent_deps_hash(&claims, &[]));
     let entries: Vec<u8> = claims
         .iter()
-        .flat_map(|(m, pk)| m.iter().chain(&pk.public_param).chain(&pk.root).copied())
+        .flat_map(|(m, pk)| m.iter().chain(&pk.to_bytes()).copied().collect::<Vec<_>>())
         .collect();
     assert_eq!(deps_hash(&claims, &[]), primitives::hash::hash(&entries));
 }

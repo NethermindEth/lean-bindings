@@ -169,7 +169,7 @@ fn parse_sphincs(
     Ok((public_key(vk), sig))
 }
 fn verify_sphincs(hash: &[u8; 32], vk: &[u8; 32], witness: &[u8]) -> bool {
-    parse_sphincs(vk, witness).is_ok_and(|(pk, sig)| lean_sphincs::verify(&pk, hash, &sig).is_ok())
+    parse_sphincs(vk, witness).is_ok_and(|(pk, sig)| lean_sphincs::verify(&pk, hash, &sig))
 }
 fn verify_witness(dep: &Dep, witness: &[u8]) -> bool {
     if dep[31] == LEAN_STARK {
@@ -561,12 +561,12 @@ mod tests {
         signed_by([index; 32], keccak(&[index]))
     }
     fn signed_by(seed: [u8; 32], message: [u8; 32]) -> (Dep, Vec<u8>) {
-        let (sk, pk) = lean_sphincs::key_gen_from_seed(seed);
+        let pk = lean_sphincs::key_gen(&seed);
         let mut dep = [0; 96];
         dep[31] = 0x10;
         dep[32..64].copy_from_slice(&message);
         dep[64..].copy_from_slice(&verification_key(&pk));
-        let signature = lean_sphincs::sign(&sk, &message).unwrap();
+        let signature = lean_sphincs::sign(&seed, &message);
         (
             dep,
             [&verification_key(&pk)[..], &signature.to_bytes()[..]].concat(),
@@ -628,12 +628,13 @@ mod tests {
     #[test]
     fn sphincs_key_is_seed_then_root() {
         let (dep, witness) = signed(1);
-        let (_, pk) = lean_sphincs::key_gen_from_seed([1; 32]);
-        assert_eq!(key(&dep), [pk.public_param, pk.root].concat()[..]);
+        let pk = lean_sphincs::key_gen(&[1; 32]);
+        let (seed, root) = (lean_sphincs::internals::pk_seed(&pk), lean_sphincs::internals::pk_root(&pk));
+        assert_eq!(key(&dep), [*seed, *root].concat()[..]);
         assert!(verify_witness(&dep, &witness));
         let mut swapped = dep;
-        swapped[64..80].copy_from_slice(&pk.root);
-        swapped[80..].copy_from_slice(&pk.public_param);
+        swapped[64..80].copy_from_slice(root);
+        swapped[80..].copy_from_slice(seed);
         let swapped_witness = [&swapped[64..], &witness[32..]].concat();
         assert!(!verify_witness(&swapped, &swapped_witness));
         assert!(
