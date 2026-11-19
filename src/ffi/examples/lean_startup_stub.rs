@@ -7,7 +7,7 @@ pub extern "C" fn nlean_abi_version() -> u32 {
     if std::env::var("NETHERMIND_LEAN_STARTUP_PROBE").as_deref() == Ok("abi") {
         10
     } else {
-        21
+        22
     }
 }
 
@@ -28,7 +28,7 @@ pub unsafe extern "C" fn nlean_aggregated_vk(out: *mut u8) -> i32 {
             0x4a, 0x98, 0x11, 0x66,
         ]
     } else {
-        rec_aggregation::aggregated_vk()
+        rec_aggregation::aggregated_vk(rec_aggregation::Guest::Base)
     };
     unsafe {
         std::ptr::copy_nonoverlapping(key.as_ptr(), out, key.len());
