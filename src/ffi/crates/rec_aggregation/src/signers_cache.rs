@@ -251,9 +251,10 @@ const LEAN_SPHINCS_RECORD: usize = lean_sphincs::PUB_KEY_SIZE + lean_sphincs::ME
 
 fn compute_lean_sphincs_signer(index: usize) -> CachedSphincsSignature {
     let mut rng = StdRng::seed_from_u64(0x5F1A_C500 ^ index as u64);
-    let (secret_key, public_key) = lean_sphincs::key_gen_from_seed(rng.random());
+    let secret_key: lean_sphincs::SecretKey = rng.random();
+    let public_key = lean_sphincs::key_gen(&secret_key);
     let message = lean_sphincs_message(index);
-    let signature = lean_sphincs::sign(&secret_key, &message).expect("sign");
+    let signature = lean_sphincs::sign(&secret_key, &message);
     (public_key, message, signature)
 }
 
@@ -289,7 +290,7 @@ fn try_load_lean_sphincs_cache() -> Option<Vec<CachedSphincsSignature>> {
         let public_key = lean_sphincs::LeanSphincsPublicKey::from_bytes(key_bytes.try_into().unwrap());
         let message: lean_sphincs::Message = message_bytes.try_into().unwrap();
         let signature = lean_sphincs::LeanSphincsSignature::from_bytes(signature_bytes.try_into().unwrap());
-        if lean_sphincs::verify(&public_key, &message, &signature).is_err() {
+        if !lean_sphincs::verify(&public_key, &message, &signature) {
             eprintln!(
                 "warning: signers cache {} is stale (signer {} no longer verifies); regenerating from there",
                 lean_sphincs_cache_path().display(),

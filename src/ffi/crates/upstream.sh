@@ -18,7 +18,7 @@ git clone -q --filter=blob:none "${LEANVM_REPO:-https://github.com/leanEthereum/
 git -C "$work/repo" worktree add -q --detach "$work/base" "$old"
 
 if [ "$mode" = diff ]; then
-  for crate in rec_aggregation lean_sphincs; do
+  for crate in rec_aggregation; do
     git diff --no-index --stat=200 -- "$work/base/crates/$crate" "crates/$crate" | sed "s|$work/base||g" || true
     git diff --no-index -- "$work/base/crates/$crate" "crates/$crate" | sed "s|$work/base||g" || true
   done
@@ -29,7 +29,7 @@ new=$(git -C "$work/repo" rev-parse --verify "${2:?update needs a revision}^{com
 git -C "$work/repo" worktree add -q --detach "$work/next" "$new"
 
 conflicts=0
-for crate in rec_aggregation lean_sphincs; do
+for crate in rec_aggregation; do
   files=$(for tree in "$work/base" "$work/next" "$root"; do [ -d "$tree/crates/$crate" ] && (cd "$tree/crates/$crate" && find . -type f); done | sort -u)
   for f in $files; do
     ours=crates/$crate/$f base=$work/base/crates/$crate/$f next=$work/next/crates/$crate/$f

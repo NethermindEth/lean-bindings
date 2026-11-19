@@ -142,7 +142,7 @@ fn singles<'a>(deps: impl IntoIterator<Item = &'a RawGeneric>) -> Vec<BatchLeaf>
 /// ethereum/EIPs#12664 `get_deps_hash`, from raw bytes: the hash of the canonical 96-byte triples, scheme word included.
 fn independent_deps_hash(sphincs: &[LeanSphincsClaim], generic: &[GenericClaim]) -> [u8; 32] {
     let sphincs = sphincs.iter().flat_map(|(m, pk)| {
-        [&scheme_word(0x10)[..], m, &pk.public_param, &pk.root].concat()
+        [&scheme_word(0x10)[..], m, &pk.to_bytes()].concat()
     });
     let generic = generic.iter().flat_map(|(d, vk)| [&scheme_word(0x11)[..], d, vk].concat());
     primitives::hash::hash(&sphincs.chain(generic).collect::<Vec<u8>>())
