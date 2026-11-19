@@ -114,3 +114,12 @@ checksum = "a6c93f24f002f1f83604f5b728f6f7ef58dcfd9ab4d7201971b0dc8ceb36e09f"
 [[rec_aggregation.clarify.files]]
 path = "LICENSE-APACHE"
 checksum = "ef978bc43daeb1015261f2a57aaad1b76e564836209beca219f2f8d485950f37"
+
+[lean_sphincs.clarify]
+license = "MIT OR Apache-2.0"
+[[lean_sphincs.clarify.git]]
+path = "LICENSE-MIT"
+checksum = "a6c93f24f002f1f83604f5b728f6f7ef58dcfd9ab4d7201971b0dc8ceb36e09f"
+[[lean_sphincs.clarify.git]]
+path = "LICENSE-APACHE"
+checksum = "ef978bc43daeb1015261f2a57aaad1b76e564836209beca219f2f8d485950f37"
