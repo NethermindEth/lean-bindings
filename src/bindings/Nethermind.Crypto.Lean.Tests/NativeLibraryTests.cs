@@ -14,7 +14,7 @@ public partial class NativeLibraryTests
 {
     private const string Library = "nethermind_lean";
     private const uint ExpectedAbi = 24;
-    private const string ExpectedAggregatedVk = "7bc19d5358f76c4247e85d470681b5c2354c251b6e59f03854d852a9a4a4d0d6";
+    private const string ExpectedAggregatedVk = "645bc491d3d0728b8a0f556be143f845e2ff80aa59da060d750f32cfb05b800c";
     private const uint MaxProofBytes = 8 * 1024 * 1024;
     // EIP-8288's output capacity: EIP-7934 MAX_RLP_BLOCK_SIZE // 96.
     private const uint MaxDependencies = (10 * 1024 * 1024 - 2 * 1024 * 1024) / 96;
