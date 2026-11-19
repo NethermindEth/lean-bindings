@@ -23,7 +23,7 @@ dependencies = [
 [[package]]
 name = "bench"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "libc",
  "primitives",
@@ -51,7 +51,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 [[package]]
 name = "fiat_shamir"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "parallel",
  "primitives",
@@ -78,7 +78,7 @@ dependencies = [
 [[package]]
 name = "keccak_gkr"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "fiat_shamir",
  "parallel",
@@ -96,7 +96,7 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 [[package]]
 name = "lean_compiler"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "leanvm_core",
  "primitives",
@@ -105,7 +105,7 @@ dependencies = [
 [[package]]
 name = "lean_da"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "fiat_shamir",
  "pcs",
@@ -125,7 +125,7 @@ dependencies = [
 [[package]]
 name = "lean_xmss"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "primitives",
 ]
@@ -133,7 +133,7 @@ dependencies = [
 [[package]]
 name = "leanvm_core"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "fiat_shamir",
  "keccak_gkr",
@@ -173,7 +173,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "nethermind-lean"
-version = "0.21.0"
+version = "0.23.0"
 dependencies = [
  "bench",
  "fiat_shamir",
@@ -184,6 +184,7 @@ dependencies = [
  "primitives",
  "rec_aggregation",
  "tikv-jemallocator",
+ "verifier",
 ]
 
 [[package]]
@@ -204,7 +205,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 [[package]]
 name = "parallel"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "libc",
 ]
@@ -212,7 +213,7 @@ dependencies = [
 [[package]]
 name = "pcs"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "fiat_shamir",
  "parallel",
@@ -238,7 +239,7 @@ dependencies = [
 [[package]]
 name = "primitives"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 dependencies = [
  "parallel",
 ]
@@ -513,7 +514,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 [[package]]
 name = "verifier"
 version = "0.1.0"
-source = "git+https://github.com/leanEthereum/leanVM?rev=f7ba4999ae523b94c8d0969b32762c3effea4cbd#f7ba4999ae523b94c8d0969b32762c3effea4cbd"
+source = "git+https://github.com/Marchhill/leanVM?rev=3ceb898c5a4223b9d2527460ca1d08b482a3a85c#3ceb898c5a4223b9d2527460ca1d08b482a3a85c"
 
 [[package]]
 name = "wasip2"

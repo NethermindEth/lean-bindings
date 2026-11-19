@@ -29,4 +29,6 @@ forge = []
 signers-cache = ["dep:rand"]
 
 [dev-dependencies]
+leanvm_core = { workspace = true, features = ["forge"] }
+verifier = { workspace = true, features = ["forge"] }
 rand.workspace = true
