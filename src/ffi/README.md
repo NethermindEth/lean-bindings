@@ -34,7 +34,7 @@ signatures and proofs and prints the pinned recursive verification key; `fixture
 one message, and `fixtures --prove-stark <hex> <file>` proves a leanSTARK dependency on it. **Build Lean** packages the vectors,
 this tool and the `lean_startup_stub` example as opt-in test assets of `Nethermind.Crypto.Lean`.
 
-The C ABI is version 21, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
+The C ABI is version 22, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
 `nlean_limits` writes seven u32 values (proof bytes, dependencies, recursive children,
 SPHINCS witness bytes, aggregation input bytes, raw leanSTARK proofs per node, leanSTARK instructions); startup checks these against the managed protocol
 bounds before accepting work.
@@ -127,7 +127,7 @@ EIP, with the pinned guest's generic leanVM CPU proof as its leanSTARK profile:
   takes at most 16 leanSTARK witnesses a call, discarded or redundant ones included. Its lists are
   bounded by its memory, for both schemes; the native host bounds them to the output capacity.
 
-Startup checks ABI 21, the pinned key and the seven bounds together. New devnets require fresh
+Startup checks ABI 22, the pinned key and the seven bounds together. New devnets require fresh
 chain and database namespaces.
 
 The latest companion specification has no block dependency quota: blocks are bounded by gas, mode-0 wrappers by `MAX_LEANSIG_DEPS_PER_WRAPPER`, `MAX_LEANSTARK_DEPS_PER_WRAPPER` and `MAX_WRAPPER_BYTES`, and mode-1 wrappers by `MAX_WRAPPER_BYTES` and the dependency-list limit of the circuit behind `AGGREGATED_VK`, which EIP-8288 fixes from benchmarks before activation. The native host accepts lists up to EIP-8288's output capacity, `MAX_RLP_BLOCK_SIZE // 96`, of either scheme; the guest's own bound is its memory, so changing the host's does not change `AGGREGATED_VK`. Whether a full-capacity aggregate proves within a slot is a question of prover resources, not of this bound. Local inability to prove or retain a set is not an inclusion-list omission excuse. Full activation requires a verifier and proof format supporting every set the fork's gas rules permit, with the complete construction, including recursive merges and discards, benchmarked against the slot deadline.

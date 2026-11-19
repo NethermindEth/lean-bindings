@@ -13,7 +13,7 @@ namespace Nethermind.Crypto.Lean.Tests;
 public partial class NativeLibraryTests
 {
     private const string Library = "nethermind_lean";
-    private const uint ExpectedAbi = 21;
+    private const uint ExpectedAbi = 22;
     private const string ExpectedAggregatedVk = "d25362444ad74bab24ca0542674e916d57ee0216fe4d5113ad588a57dc7099ad";
     private const uint MaxProofBytes = 8 * 1024 * 1024;
     // EIP-8288's output capacity: EIP-7934 MAX_RLP_BLOCK_SIZE // 96.
