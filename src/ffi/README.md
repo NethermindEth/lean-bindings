@@ -3,8 +3,8 @@
 This adapter proves on [leanEthereum/leanVM](https://github.com/leanEthereum/leanVM), pinned to
 `f7ba4999ae523b94c8d0969b32762c3effea4cbd` in `Cargo.toml` and patched to Marchhill/leanVM `3ceb898c` for the committed
 bytecode key (one commit on that pin, not upstream yet); `Cargo.lock` pins every other dependency. The EIP-8288
-recursive guest and NiceTry v2 signatures live in `crates/`, vendored from the same revision with EIP-8288 changes on
-top (see `crates/README.md`). The guest verifies leanSPHINCS (NiceTry v2) signatures, generic leanVM execution proofs
+recursive guest lives in `crates/`, vendored from the same revision with EIP-8288 changes on
+top (see `crates/README.md`). The guest verifies upstream leanSPHINCS signatures, generic leanVM execution proofs
 and its own child proofs. Upstream replacement belongs behind the existing `ILeanProofVerifier` interface and thin C
 ABI. Proofs, guest key and native bounds must change together when the guest changes. No hash-based proof substitute
 is accepted.
@@ -35,7 +35,7 @@ signatures and proofs and prints the pinned recursive verification key; `fixture
 one message, and `fixtures --prove-stark <hex> <file>` proves a leanSTARK dependency on it. **Build Lean** packages the vectors,
 this tool and the `lean_startup_stub` example as opt-in test assets of `Nethermind.Crypto.Lean`.
 
-The C ABI is version 23, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
+The C ABI is version 24, with Cdecl calls, 32-byte hashes/keys and `size_t` buffer lengths.
 `nlean_limits` writes seven u32 values (proof bytes, dependencies, recursive children,
 SPHINCS witness bytes, aggregation input bytes, inner proofs per node, leanSTARK instructions); startup checks these against the managed protocol
 bounds before accepting work.
@@ -83,7 +83,7 @@ message or leanSTARK public commitment cannot be declared. Raw frame bytes remai
 signing and `FRAMEDATACOPY`; wrapper, inclusion-list and block proof statements carry the
 resolved dependency.
 
-* **SPHINCS witness:** public key (32 bytes), signature (6176 bytes). As in EIP-8288, the
+* **SPHINCS witness:** public key (32 bytes), signature (7740 bytes). As in EIP-8288, the
   dependency key is the public key itself, `PK.seed || PK.root`. Both the key and the
   signature over `data_hash` are checked.
 * **leanSTARK witness (`0x11`):** `kgen` (one byte, at most 11), the root and out-of-domain value of the program's
@@ -119,7 +119,7 @@ executing another recursive proving step.
   native host counts the same inputs, discarded or redundant ones included, and leanSPHINCS witnesses not at all. Its
   lists are bounded by its memory, for both schemes; the native host bounds them to the output capacity.
 
-Startup checks ABI 23, the pinned key and the seven bounds together. New devnets require fresh
+Startup checks ABI 24, the pinned key and the seven bounds together. New devnets require fresh
 chain and database namespaces.
 
 The latest companion specification has no block dependency quota: blocks are bounded by gas, mode-0 wrappers by `MAX_LEANSIG_DEPS_PER_WRAPPER`, `MAX_LEANSTARK_DEPS_PER_WRAPPER` and `MAX_WRAPPER_BYTES`, and mode-1 wrappers by `MAX_WRAPPER_BYTES` and the dependency-list limit of the circuit behind `AGGREGATED_VK`, which EIP-8288 fixes from benchmarks before activation. The native host accepts lists up to EIP-8288's output capacity, `MAX_RLP_BLOCK_SIZE // 96`, of either scheme; the guest's own bound is its memory, so changing the host's does not change `AGGREGATED_VK`. Whether a full-capacity aggregate proves within a slot is a question of prover resources, not of this bound. Local inability to prove or retain a set is not an inclusion-list omission excuse. Full activation requires a verifier and proof format supporting every set the fork's gas rules permit, with the complete construction, including recursive merges and discards, benchmarked against the slot deadline.
@@ -198,8 +198,8 @@ memory measurements belong in the stacked
 profile recorded for each capture.
 
 Required witness storage is bounded to 64 MiB / 32768 records. The record ceiling does not
-guarantee coverage for a full transaction pool: the byte bound fits about 10.6k distinct
-6208-byte SPHINCS witnesses plus their 96-byte dependency records, about 665 transactions
+guarantee coverage for a full transaction pool: the byte bound fits about 8.5k distinct
+7772-byte SPHINCS witnesses plus their 96-byte dependency records, about 533 transactions
 with 16 distinct witnesses each. Shared dependencies and larger proofs change that capacity.
 Each direct dependency has its own
 record, so rejected entries release their reserved witnesses. Recursive proofs are indivisible:

@@ -59,8 +59,8 @@ pub(super) fn lean_sphincs_claim_cells((message, pk): &LeanSphincsClaim) -> [F12
     [
         pack_16_bytes(&message[..16]),
         pack_16_bytes(&message[16..]),
-        pack_16_bytes(&pk.public_param),
-        pack_16_bytes(&pk.root),
+        pack_16_bytes(lean_sphincs::internals::pk_seed(pk)),
+        pack_16_bytes(lean_sphincs::internals::pk_root(pk)),
     ]
 }
 

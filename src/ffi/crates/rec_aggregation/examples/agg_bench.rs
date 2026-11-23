@@ -25,9 +25,10 @@ fn signers(n: usize) -> Vec<RawSphincs> {
     // Fresh keys and messages per run: the workload's shape, not its values, is what the bench measures.
     (0..n)
         .map(|_| {
-            let (sk, pk) = lean_sphincs::key_gen_from_seed(rand::random());
+            let sk: lean_sphincs::SecretKey = rand::random();
+            let pk = lean_sphincs::key_gen(&sk);
             let message = rand::random();
-            (pk, message, lean_sphincs::sign(&sk, &message).expect("signs"))
+            (pk, message, lean_sphincs::sign(&sk, &message))
         })
         .collect()
 }
