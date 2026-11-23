@@ -4,7 +4,7 @@
 //! Pinned LeanVM verification and recursive aggregation of complete dependency sets.
 
 use rec_aggregation::{
-    EthereumClaims, EthereumProof, MAX_GENERIC_BYTECODE_LOG, MAX_GENERIC_DEPENDENCIES,
+    EthereumClaims, EthereumProof, Guest, MAX_GENERIC_BYTECODE_LOG, MAX_INNER_PROOFS_PER_STEP,
 };
 use lean_sphincs::{LeanSphincsPublicKey, LeanSphincsSignature};
 use std::cell::{Cell, RefCell};
@@ -25,13 +25,16 @@ const MAX_DEPS: usize = MAX_RLP_BLOCK_SIZE / DEP_BYTES;
 const MAX_RAW_PER_NODE: usize = 256;
 /// The framing of one length-prefixed field.
 const LEN_BYTES: usize = 4;
-/// Every child's full dependency list and largest proof, the raw witnesses (each signature's, and each leanSTARK one up to
-/// [`MAX_BYTES`]), and a full discard list.
+/// Each inner proof, a child with its full dependency list or a raw leanSTARK witness, at its largest; each raw
+/// signature; and a full discard list.
 pub const MAX_INPUT_BYTES: usize = 3 * LEN_BYTES
-    + rec_aggregation::MAX_RECURSIONS * (2 * LEN_BYTES + MAX_DEPS * DEP_BYTES + MAX_BYTES)
+    + MAX_INNER_PROOFS_PER_STEP * (2 * LEN_BYTES + MAX_DEPS * DEP_BYTES + MAX_BYTES)
     + MAX_RAW_PER_NODE * (DEP_BYTES + LEN_BYTES + lean_sphincs::PUB_KEY_SIZE + lean_sphincs::SIG_SIZE)
-    + MAX_GENERIC_DEPENDENCIES * MAX_BYTES
     + MAX_DEPS * DEP_BYTES;
+// A child is an inner proof of the bound above.
+const _: () = assert!(rec_aggregation::MAX_RECURSIONS <= MAX_INNER_PROOFS_PER_STEP);
+/// EIP-8288's guest: a leanSTARK dependency is proved by a one-claim leaf.
+const GUEST: Guest = Guest::Base;
 // The upstream prover's timings assume its allocator: jemalloc keeps a proof's freed pages mapped for the next one.
 // It serves this library's allocations only, and holds their peak until the process exits.
 #[global_allocator]
@@ -65,7 +68,6 @@ thread_local! { static IN_ABI: Cell<bool> = const { Cell::new(false) }; }
 thread_local! { static LAST_PANIC: RefCell<String> = const { RefCell::new(String::new()) }; }
 type Dep = [u8; DEP_BYTES];
 const LEAN_SPHINCS: u8 = 0x10;
-/// EIP-8288 reserves this scheme; accepting it is an experimental extension of this stack.
 const LEAN_STARK: u8 = 0x11;
 
 pub fn keccak(bytes: &[u8]) -> [u8; 32] {
@@ -73,7 +75,13 @@ pub fn keccak(bytes: &[u8]) -> [u8; 32] {
 }
 
 pub fn aggregated_vk() -> [u8; 32] {
-    rec_aggregation::aggregated_vk()
+    rec_aggregation::aggregated_vk(GUEST)
+}
+
+/// EIP-8288 `get_claim_hash(data_hash) = keccak256(b"EIP8288:batch:v1" ‖ data_hash)`: the public statement a leanSTARK
+/// proof of the dependency on `data_hash` proves.
+pub fn claim_hash(data_hash: &[u8; 32]) -> [u8; 32] {
+    rec_aggregation::batch_hash(&[*data_hash])
 }
 
 struct Reader<'a> {
@@ -145,8 +153,8 @@ fn claims(deps: &[Dep]) -> EthereumClaims {
         ..Default::default()
     }
 }
-/// The dependency digest of a canonical list, as the recursive guest commits to it: EIP-8288 `get_deps_hash` for a
-/// leanSPHINCS-only list, and the split-domain digest of `rec_aggregation::deps_hash` once it holds a leanSTARK entry.
+/// The dependency digest of a canonical list, as the recursive guest commits to it: EIP-8288 `get_deps_hash`, Keccak-256
+/// over the 96-byte triples.
 pub fn commitment(ds: &[Dep]) -> [u8; 32] {
     let claims = claims(ds);
     rec_aggregation::deps_hash(&claims.lean_sphincs, &claims.generic)
@@ -169,7 +177,7 @@ fn parse_sphincs(
     Ok((public_key(vk), sig))
 }
 fn verify_sphincs(hash: &[u8; 32], vk: &[u8; 32], witness: &[u8]) -> bool {
-    parse_sphincs(vk, witness).is_ok_and(|(pk, sig)| lean_sphincs::verify(&pk, hash, &sig).is_ok())
+    parse_sphincs(vk, witness).is_ok_and(|(pk, sig)| lean_sphincs::verify(&pk, hash, &sig))
 }
 fn verify_witness(dep: &Dep, witness: &[u8]) -> bool {
     if dep[31] == LEAN_STARK {
@@ -182,17 +190,24 @@ fn verify_witness(dep: &Dep, witness: &[u8]) -> bool {
 /// A leanVM program that accepts every public input: the leanSTARK dependency anyone can prove. For tests and fixtures.
 pub const ANY_INPUT_PROGRAM: &str = "def main():\n    h = StackBuf(2)\n    hint_witness(h, \"pi\")\n    p = 1\n    p[1] = h[0]\n    p[GEN] = h[1]\n    return\n";
 
-/// Compiles `source`, a leanVM program reading its public input from the `pi` hint, and proves it on `hash`: the
-/// leanSTARK witness and verification key of the dependency `(hash, key)`. For tests and fixtures.
+/// Compiles `source`, a leanVM program reading its public input from the `pi` hint, and proves it on
+/// [`claim_hash`]`(hash)`: the leanSTARK witness and verification key of the dependency `(hash, key)`. For tests and
+/// fixtures.
 pub fn prove_stark(source: &str, hash: &[u8; 32]) -> Result<(Vec<u8>, [u8; 32]), ()> {
+    prove_statement(source, &claim_hash(hash))
+}
+
+/// Proves `source` on the public input `statement` under its committed bytecode key: the leanSTARK witness and EIP-8288
+/// `get_vk_hash` of that key.
+fn prove_statement(source: &str, statement: &[u8; 32]) -> Result<(Vec<u8>, [u8; 32]), ()> {
     let _guard = begin_proof();
-    let mut program = lean_compiler::compile(&lean_compiler::parse(source).map_err(|_| ())?);
+    let mut program = lean_compiler::compile(&lean_compiler::parse(source).map_err(|_| ())?).committed();
     let table: Vec<u64> = leanvm_core::cpu::bytecode_table(program.prog())
         .iter()
         .map(|word| word.0)
         .collect();
     let key = rec_aggregation::generic_verification_key(&table).ok_or(())?;
-    let input = fiat_shamir::merkle::hash_to_scalars(hash);
+    let input = fiat_shamir::merkle::hash_to_scalars(statement);
     program.set_witness("pi", vec![input.to_vec()]);
     let (proof, _) = leanvm_core::cpu::prove(&program, input, LOG_INV_RATE).map_err(|_| ())?;
     Ok((
@@ -207,7 +222,7 @@ fn verify_aggregate(hash: &[u8; 32], proof: &[u8]) -> Result<(), ()> {
     if proof.is_empty() || proof.len() > MAX_BYTES {
         return Err(());
     }
-    rec_aggregation::verify_deps_hash(hash, proof).map_err(|_| ())
+    rec_aggregation::verify_deps_hash(GUEST, hash, proof).map_err(|_| ())
 }
 
 // A recursive child is proven against its declared dependencies, which the caller supplies.
@@ -215,7 +230,7 @@ fn decode_child(deps: &[Dep], proof: &[u8]) -> Result<EthereumProof, ()> {
     if proof.is_empty() || proof.len() > MAX_BYTES {
         return Err(());
     }
-    let proof = EthereumProof::from_proof_bytes(proof, claims(deps)).map_err(|_| ())?;
+    let proof = EthereumProof::from_proof_bytes(GUEST, proof, claims(deps)).map_err(|_| ())?;
     proof.verify().map_err(|_| ())?;
     Ok(proof)
 }
@@ -244,12 +259,10 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
         raw.push((dep, r.blob()?));
         all.push(dep);
     }
-    // Every supplied leanSTARK witness counts, discarded or redundant ones included, so none is verified past the cap.
-    if raw.iter().filter(|(dep, _)| dep[31] == LEAN_STARK).count() > MAX_GENERIC_DEPENDENCIES {
-        return Err(());
-    }
+    // EIP-8288 MAX_INNER_PROOFS_PER_STEP: every supplied leanSTARK witness and child, discarded or redundant ones
+    // included, so none is verified past the cap; leanSPHINCS witnesses do not count.
     let child_count = r.count()?;
-    if child_count > rec_aggregation::MAX_RECURSIONS {
+    if raw.iter().filter(|(dep, _)| dep[31] == LEAN_STARK).count() + child_count > MAX_INNER_PROOFS_PER_STEP {
         return Err(());
     }
     let mut children = Vec::new();
@@ -307,7 +320,7 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
     let mut generic = Vec::new();
     for (dep, witness) in raw {
         if dep[31] == LEAN_STARK {
-            generic.push((data(&dep), key(&dep), witness.to_vec()));
+            generic.push((vec![data(&dep)], key(&dep), witness.to_vec()));
         } else {
             let (pk, signature) = parse_sphincs(&key(&dep), witness)?;
             signatures.push((pk, data(&dep), signature));
@@ -315,6 +328,7 @@ pub fn prove_aggregate(hash: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, ()> {
     }
     let children: Vec<_> = children.into_iter().map(|(child, ..)| child).collect();
     let proof = rec_aggregation::aggregate(
+        GUEST,
         &children,
         generic,
         signatures,
@@ -404,7 +418,7 @@ fn checked(f: impl FnOnce() -> Result<bool, ()>) -> i32 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn nlean_abi_version() -> u32 {
-    21
+    24
 }
 /// Copies up to `len` bytes of the calling thread's last contained panic message into `out` and returns its full
 /// length; empty unless that thread's latest `checked` call returned -1.
@@ -436,7 +450,7 @@ pub unsafe extern "C" fn nlean_limits(out: *mut u32, len: usize) -> i32 {
         rec_aggregation::MAX_RECURSIONS as u32,
         (lean_sphincs::PUB_KEY_SIZE + lean_sphincs::SIG_SIZE) as u32,
         MAX_INPUT_BYTES as u32,
-        MAX_GENERIC_DEPENDENCIES as u32,
+        MAX_INNER_PROOFS_PER_STEP as u32,
         1 << MAX_GENERIC_BYTECODE_LOG,
     ];
     unsafe {
@@ -561,12 +575,12 @@ mod tests {
         signed_by([index; 32], keccak(&[index]))
     }
     fn signed_by(seed: [u8; 32], message: [u8; 32]) -> (Dep, Vec<u8>) {
-        let (sk, pk) = lean_sphincs::key_gen_from_seed(seed);
+        let pk = lean_sphincs::key_gen(&seed);
         let mut dep = [0; 96];
         dep[31] = 0x10;
         dep[32..64].copy_from_slice(&message);
         dep[64..].copy_from_slice(&verification_key(&pk));
-        let signature = lean_sphincs::sign(&sk, &message).unwrap();
+        let signature = lean_sphincs::sign(&seed, &message);
         (
             dep,
             [&verification_key(&pk)[..], &signature.to_bytes()[..]].concat(),
@@ -598,11 +612,17 @@ mod tests {
         commitment(&canonical(deps.to_vec()))
     }
 
+    /// EIP-8288 `get_deps_hash`: Keccak-256 over the canonical 96-byte triples, scheme word included, whatever schemes
+    /// the list mixes.
     #[test]
-    fn commitment_is_keccak_of_the_64_byte_entries() {
-        let deps = canonical((0..3).map(|i| signed(i).0).collect());
-        let entries: Vec<u8> = deps.iter().flat_map(|d| d[32..].iter().copied()).collect();
-        assert_eq!(commitment(&deps), keccak(&entries));
+    fn commitment_is_keccak_of_the_96_byte_triples() {
+        let mut deps: Vec<Dep> = (0..3).map(|i| signed(i).0).collect();
+        let mut stark = deps[0];
+        stark[31] = LEAN_STARK;
+        deps.push(stark);
+        let deps = canonical(deps);
+        assert_eq!(commitment(&deps), keccak(&deps.concat()));
+        assert_eq!(commitment(&[stark]), keccak(&stark));
         assert_eq!(commitment(&[]), keccak(&[]));
     }
 
@@ -628,12 +648,13 @@ mod tests {
     #[test]
     fn sphincs_key_is_seed_then_root() {
         let (dep, witness) = signed(1);
-        let (_, pk) = lean_sphincs::key_gen_from_seed([1; 32]);
-        assert_eq!(key(&dep), [pk.public_param, pk.root].concat()[..]);
+        let pk = lean_sphincs::key_gen(&[1; 32]);
+        let (seed, root) = (lean_sphincs::internals::pk_seed(&pk), lean_sphincs::internals::pk_root(&pk));
+        assert_eq!(key(&dep), [*seed, *root].concat()[..]);
         assert!(verify_witness(&dep, &witness));
         let mut swapped = dep;
-        swapped[64..80].copy_from_slice(&pk.root);
-        swapped[80..].copy_from_slice(&pk.public_param);
+        swapped[64..80].copy_from_slice(root);
+        swapped[80..].copy_from_slice(seed);
         let swapped_witness = [&swapped[64..], &witness[32..]].concat();
         assert!(!verify_witness(&swapped, &swapped_witness));
         assert!(
@@ -672,29 +693,35 @@ mod tests {
         );
     }
 
+    /// EIP-8288 Test Case 2: a leanSTARK dependency's proof shows `(get_claim_hash(data_hash),)` under
+    /// `get_vk_hash(program_commitment)`. A proof of the bare `data_hash`, or one named by another key, satisfies nothing.
     #[test]
-    fn mixed_commitment_joins_both_lists_under_a_domain() {
-        let sphincs = canonical((0..2).map(|i| signed(i).0).collect());
-        let mut stark = sphincs[0];
-        stark[31] = LEAN_STARK;
-        let list = |deps: &[Dep]| {
-            keccak(
-                &deps
-                    .iter()
-                    .flat_map(|d| d[32..].iter().copied())
-                    .collect::<Vec<u8>>(),
-            )
-        };
-        let mut domain = [0u8; 32];
-        domain[..22].copy_from_slice(b"eip8288/leanstark-deps");
-        let joined =
-            |s: &[Dep], g: &[Dep]| keccak(&[&list(s)[..], &list(g)[..], &domain[..]].concat());
-        assert_eq!(
-            commitment(&canonical([&sphincs[..], &[stark]].concat())),
-            joined(&sphincs, &[stark])
-        );
-        assert_eq!(commitment(&[stark]), joined(&[], &[stark]));
-        assert_ne!(commitment(&[stark]), commitment(&sphincs[..1]));
+    fn leanstark_proofs_show_the_claim_hash_under_the_vk_hash() {
+        let (dep, witness) = proven(1);
+        let program = lean_compiler::compile(&lean_compiler::parse(ANY_INPUT_PROGRAM).unwrap()).committed();
+        let program_commitment = program.bytecode_commitment().unwrap().key;
+        assert_eq!(key(&dep), keccak(&[&b"EIP8288:vk:v1"[..], &program_commitment].concat()));
+        assert_eq!(claim_hash(&data(&dep)), keccak(&[&b"EIP8288:batch:v1"[..], &data(&dep)].concat()));
+        assert!(verify_witness(&dep, &witness));
+
+        let (bare, bare_key) = prove_statement(ANY_INPUT_PROGRAM, &data(&dep)).unwrap();
+        assert_eq!(bare_key, key(&dep));
+        assert!(!verify_witness(&dep, &bare));
+        assert!(prove_aggregate(&hash_of(&[dep]), &input(&[(dep, bare)], &[], &[])).is_err());
+
+        // The bare commitment, and the flat program digest that keyed a program before.
+        let table: Vec<u8> = leanvm_core::cpu::bytecode_table(program.prog())
+            .iter()
+            .flat_map(|word| word.0.to_le_bytes())
+            .collect();
+        for other in [program_commitment, keccak(&[verifier::TAG, &table[..]].concat())] {
+            let mut renamed = dep;
+            renamed[64..].copy_from_slice(&other);
+            assert!(!verify_witness(&renamed, &witness));
+            assert!(
+                prove_aggregate(&hash_of(&[renamed]), &input(&[(renamed, witness.clone())], &[], &[])).is_err()
+            );
+        }
     }
 
     #[test]
@@ -732,10 +759,11 @@ mod tests {
         assert!(verify_aggregate(&hash_of(&[stark, other, sig]), &merged).is_err());
     }
 
-    /// One call verifies at most `MAX_GENERIC_DEPENDENCIES` raw leanSTARK witnesses; children carry more between them.
+    /// One call verifies at most `MAX_INNER_PROOFS_PER_STEP` raw leanSTARK witnesses and children together; children
+    /// carry more leanSTARK dependencies between them.
     #[test]
-    fn merges_children_past_the_raw_leanstark_cap() {
-        let raw: Vec<_> = (0..=MAX_GENERIC_DEPENDENCIES as u8).map(proven).collect();
+    fn merges_children_past_the_inner_proof_cap() {
+        let raw: Vec<_> = (0..=MAX_INNER_PROOFS_PER_STEP as u8).map(proven).collect();
         let all = canonical(raw.iter().map(|(dep, _)| *dep).collect());
         assert!(prove_aggregate(&hash_of(&all), &input(&raw, &[], &[])).is_err());
         let (left, right) = raw.split_at(raw.len() / 2);
@@ -748,6 +776,12 @@ mod tests {
         let children = [(&left[..], &left_proof[..]), (&right[..], &right_proof[..])];
         let merged = prove_aggregate(&hash_of(&all), &input(&[], &children, &[])).unwrap();
         assert!(verify_aggregate(&hash_of(&all), &merged).is_ok());
+
+        // A child counts against the cap with the raw witnesses, redundant ones included.
+        let child = &children[..1];
+        let full = MAX_INNER_PROOFS_PER_STEP - 1;
+        assert!(prove_aggregate(&hash_of(&all), &input(&raw[raw.len() - full..], child, &[])).is_ok());
+        assert!(prove_aggregate(&hash_of(&all), &input(&raw[raw.len() - full - 1..], child, &[])).is_err());
     }
 
     /// An aggregate holds more dependencies than one call takes raw witnesses: leaves whose union exceeds
@@ -776,7 +810,7 @@ mod tests {
     }
 
     /// Every raw witness is verified, even when discards leave nothing to prove, and at most
-    /// `MAX_GENERIC_DEPENDENCIES` leanSTARK ones are taken, discarded ones included.
+    /// `MAX_INNER_PROOFS_PER_STEP` leanSTARK ones are taken, discarded ones included.
     #[test]
     fn discarded_raw_witnesses_are_verified_and_counted() {
         let (dep, witness) = signed(1);
@@ -786,12 +820,12 @@ mod tests {
         assert!(prove_aggregate(&empty, &input(&[(dep, witness)], &[], &[dep])).unwrap().is_empty());
         assert!(prove_aggregate(&empty, &input(&[(dep, forged)], &[], &[dep])).is_err());
 
-        let starks: Vec<_> = (0..=MAX_GENERIC_DEPENDENCIES as u8).map(|i| proven(0x80 + i)).collect();
+        let starks: Vec<_> = (0..=MAX_INNER_PROOFS_PER_STEP as u8).map(|i| proven(0x80 + i)).collect();
         let discard = |raw: &[(Dep, Vec<u8>)]| {
             let deps: Vec<Dep> = raw.iter().map(|(dep, _)| *dep).collect();
             prove_aggregate(&empty, &input(raw, &[], &deps))
         };
-        assert!(discard(&starks[..MAX_GENERIC_DEPENDENCIES]).unwrap().is_empty());
+        assert!(discard(&starks[..MAX_INNER_PROOFS_PER_STEP]).unwrap().is_empty());
         assert!(discard(&starks).is_err());
     }
 

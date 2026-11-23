@@ -5,7 +5,7 @@
 
 Native EIP-8288 Lean backend for [Nethermind](https://github.com/NethermindEth/nethermind), packaged for NuGet as `Nethermind.Crypto.Lean`.
 
-The library, `libnethermind_lean.so`, is built from the Rust crate in [`src/ffi`](https://github.com/nethermindeth/lean-bindings/tree/main/src/ffi), a thin C ABI over an unmodified, pinned [leanVM](https://github.com/leanEthereum/leanVM) and the EIP-8288 aggregation guest in `src/ffi/crates` (vendored from the same revision; see its README). This repository is the source of that code: consumers take the packages, not the source.
+The library, `libnethermind_lean.so`, is built from the Rust crate in [`src/ffi`](https://github.com/nethermindeth/lean-bindings/tree/main/src/ffi), a thin C ABI over a pinned [leanVM](https://github.com/leanEthereum/leanVM) (patched, for now, with the committed bytecode key's core changes; see `src/ffi/README.md`) and the EIP-8288 aggregation guest in `src/ffi/crates` (vendored from the same revision; see its README). This repository is the source of that code: consumers take the packages, not the source.
 
 ## Package
 

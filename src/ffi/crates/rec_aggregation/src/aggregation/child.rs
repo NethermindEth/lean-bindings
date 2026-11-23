@@ -199,8 +199,16 @@ pub(super) fn gen_verify(
         "a column group's columns are consecutive"
     );
 
-    // ---- Hints for the stacked WHIR opening ----
-    let query_hints = opening_hints(&stack, &proof.merkle);
+    // ---- Hints for the stacked WHIR opening, then a committed program's bytecode opening ----
+    let mut query_hints = opening_hints(&stack, &proof.merkle);
+    let main_levels = stack.config.queries.len();
+    if proof.merkle.len() > main_levels {
+        let bytecode_stack = whir_shape(
+            verifier::committed_bytecode_stack_log(program.prog().len() << leanvm_core::leaf::N_TUPLE_BITS),
+            verifier::COMMITTED_BYTECODE_LOG_INV_RATE,
+        );
+        query_hints.extend(opening_hints(&bytecode_stack, &proof.merkle[main_levels..]));
+    }
     let deferred = DeferredSubproof {
         public_input,
         bytecode_point,

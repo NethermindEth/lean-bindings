@@ -402,64 +402,164 @@ STMT_CELLS = STMT_DEFER_OFF + DEFER_STMT_CELLS
 # half cells, XORed into the previous KECCAK_STATE-cell sponge state before a KECCAK,
 # and the last output's first two cells are the digest. A hash of runtime length
 # carries that state through a heap run between loop frames, KECCAK_STATE cells a
-# step (`claim_list_digest`).
+# step (`deps_list_digest`).
 KECCAK_STATE = KECCAK_STATE_PLACEHOLDER
-# leanSTARK (0x11) dependencies: the most instructions (log) and raw proofs a node, and the
-# leanVM tag's first 8 bytes as a lane and its 9th byte, and the mixed dependency
-# digest's 32-byte domain as two cells.
+# leanSTARK (0x11) dependencies: the most instructions (log) of a program and claims of a
+# leaf (1 in EIP-8288's guest), the claim digest's 16-byte domain as a cell, a leaf digest's
+# cells a block pair, a committed key's first cell and its out-of-domain seed's per kgen, the
+# commitment's rate index and stack log, and get_vk_hash's 13-byte tag as a cell's low bytes.
 MAX_GENERIC_BYTECODE_LOG = MAX_GENERIC_BYTECODE_LOG_PLACEHOLDER
 GEN_KGEN_ARMS = MAX_GENERIC_BYTECODE_LOG + 1
-MAX_GENERIC_DEPENDENCIES = MAX_GENERIC_DEPENDENCIES_PLACEHOLDER
-TAG_LANE0 = TAG_LANE0_PLACEHOLDER
-TAG_BYTE8 = TAG_BYTE8_PLACEHOLDER
-DEPS_DOMAIN_0 = DEPS_DOMAIN_0_PLACEHOLDER
-DEPS_DOMAIN_1 = DEPS_DOMAIN_1_PLACEHOLDER
-# Claims a declared claim list absorbs a loop frame: 68 cells, four block pairs. The
-# list's bulk goes CLAIM_BIG claims a frame, BIG_GROUPS of those groups, so that the
-# sponge state's trip through the heap is paid once per CLAIM_BIG claims; the rest
-# CLAIM_GROUP a frame, then a `match` on the last group's count.
+MAX_CLAIMS_PER_BATCH_LEAF = MAX_CLAIMS_PER_BATCH_LEAF_PLACEHOLDER
+BATCH_DOMAIN = BATCH_DOMAIN_PLACEHOLDER
+LEAF_CHUNK = LEAF_CHUNK_PLACEHOLDER
+GEN_KEY_CELLS = GEN_KEY_CELLS_PLACEHOLDER
+GEN_OOD_CELLS = GEN_OOD_CELLS_PLACEHOLDER
+GEN_RATE_SEL = GEN_RATE_SEL_PLACEHOLDER
+GEN_STACK_LOG = GEN_STACK_LOG_PLACEHOLDER
+VK_TAG = VK_TAG_PLACEHOLDER
+# A dependency is EIP-8288's 96-byte triple, six cells: the scheme word (a zero cell, then
+# one of these), data_hash, then the key.
+DEP_CELLS = 6
+SPHINCS_SCHEME_CELL = SPHINCS_SCHEME_CELL_PLACEHOLDER
+STARK_SCHEME_CELL = STARK_SCHEME_CELL_PLACEHOLDER
+# Dependencies a digest absorbs a loop frame: 102 cells, six block pairs. The list's bulk
+# goes CLAIM_BIG a frame, BIG_GROUPS of those groups, so that the sponge state's trip through
+# the heap is paid once per CLAIM_BIG dependencies; the rest CLAIM_GROUP a frame, then a
+# `match` on the last group's count.
 CLAIM_GROUP = CLAIM_GROUP_PLACEHOLDER
 BIG_GROUPS = BIG_GROUPS_PLACEHOLDER
 CLAIM_BIG = CLAIM_GROUP * BIG_GROUPS
-# A child list's walk record: the sponge state, then a coverage slot and a table entry.
-MONO_REC = KECCAK_STATE + 2
+# A child list's walk record: a coverage slot, then a table entry.
+WALK_REC = 2
+
+# --------------------------------------------------------- WOTS+C (host-supplied)
+# Both schemes' one-time keys: chains of CHAIN_LENGTH positions, whose digits are
+# dispatched a group at a time (leanSPHINCS DIGIT_GROUP and the last chain alone,
+# leanXMSS LX_DIGIT_GROUP and the rest), and the leanXMSS address, a cell whose low
+# lane is lo:32 | hi:24 | type:5 | step:3; TW_* hold the type. Every 16-byte native
+# value is one cell.
+W = W_PLACEHOLDER
+CHAIN_LENGTH = 2 ** W
+CHAIN_STEPS = CHAIN_LENGTH - 1
+DIGIT_GROUP = DIGIT_GROUP_PLACEHOLDER
+DIGIT_GROUPS = CHAIN_LENGTH ** DIGIT_GROUP
+# The digit sum of group k, at k.
+DIGIT_SUMS = DIGIT_SUMS_PLACEHOLDER
+
+# ----------------------------------------------------- leanXMSS (host-supplied)
+# Two layers of trees of height LX_HEIGHT over keys of LX_V chains. A layer's digest
+# is a codeword when its first LX_V digits sum to LX_TARGET_SUM and the rest are
+# zero. An address is a cell whose low lane is lo:32 | hi:24 | type:5 | step:3, TW_*
+# holding the type; LX_TOP is the top layer's flag where an address holds it.
+TW_CHAIN = TW_CHAIN_PLACEHOLDER
+TW_LEAF = TW_LEAF_PLACEHOLDER
+TW_NODE = TW_NODE_PLACEHOLDER
+TW_MSG = TW_MSG_PLACEHOLDER
+HI_MUL = 2 ** 32
+STEP_MUL = 2 ** 61
+LX_V = LX_V_PLACEHOLDER
+LX_TARGET_SUM = LX_TARGET_SUM_PLACEHOLDER
+LX_HEIGHT = LX_HEIGHT_PLACEHOLDER
+LX_TOP = LX_TOP_PLACEHOLDER
+# The path is dispatched LX_WINDOW index bits at a time (`lx_window`), LX_LAYER_WINDOWS a layer.
+LX_WINDOW = LX_WINDOW_PLACEHOLDER
+LX_LAYER_WINDOWS = LX_HEIGHT // LX_WINDOW
+LX_WINDOWS = 2 * LX_LAYER_WINDOWS
+LX_WINDOW_ARMS = 2 ** LX_WINDOW
+# A layer's codeword digits are dispatched LX_DIGIT_GROUP at a time, then the LX_DIGIT_TAIL left.
+LX_DIGIT_GROUP = LX_DIGIT_GROUP_PLACEHOLDER
+LX_DIGIT_GROUPS = CHAIN_LENGTH ** LX_DIGIT_GROUP
+LX_DIGIT_TAIL = LX_V % LX_DIGIT_GROUP
+LX_TAIL_GROUPS = CHAIN_LENGTH ** LX_DIGIT_TAIL
+LX_DIGIT_DISPATCHES = LX_V // LX_DIGIT_GROUP + 1
+LX_GROUP_SIZES = LX_GROUP_SIZES_PLACEHOLDER
+# Where a chain index lives (`walk`): the zero cell for 0, powers[LX_TAG_LOG[i]] for a power
+# of two (slot 0), else LX_TAG_SLOT[i] - 1 of the LX_N_TAGS carried tags.
+LX_TAG_SLOT = LX_TAG_SLOT_PLACEHOLDER
+LX_TAG_LOG = LX_TAG_LOG_PLACEHOLDER
+LX_N_TAGS = LX_N_TAGS_PLACEHOLDER
 
 # -------------------------------------------------- leanSPHINCS (host-supplied)
-# NiceTry SPHINCS- v2 (prototype): standard FORS under a d-layer WOTS+ hypertree,
-# every hash keccak over 32-byte words (pp|0, the 32-byte ADRS, value|0).
-SP_K = SP_K_PLACEHOLDER               # FORS trees
-SP_A = SP_A_PLACEHOLDER               # FORS tree height
-SP_D = SP_D_PLACEHOLDER               # hypertree layers, layer 0 at the bottom
-SP_HP = SP_HP_PLACEHOLDER             # a layer's tree height, h'
-SP_H = SP_H_PLACEHOLDER               # total height, d h'
-SP_W = SP_W_PLACEHOLDER               # Winternitz parameter, 16
-SP_LEN1 = SP_LEN1_PLACEHOLDER         # message digits
-SP_LEN2 = SP_LEN2_PLACEHOLDER         # checksum digits
-SP_L = SP_LEN1 + SP_LEN2              # chains
-SP_MAX_CSUM = SP_MAX_CSUM_PLACEHOLDER  # len1 (w - 1): digit sum plus checksum
-SP_CHAIN_STEPS = SP_W - 1
-SP_HT_OFF = SP_K * SP_A
-SP_BIT_LANES = 3
-SP_BIT_CELLS = SP_BIT_LANES * BASE_FIELD_BITS
-# Digest bit b (the digest a big-endian 256-bit integer) as an index into the bit
-# run of its last three lanes.
-SP_BIT_INDEX = SP_BIT_INDEX_PLACEHOLDER
-SP_ONES = 340282366920938463463374607431768211455  # 2^128 - 1
-# ADRS cell bytes: a cell's byte b holds its bits 8b..8b+7.
-SP_BYTE3 = 2 ** 24
-SP_BYTE11 = 2 ** 88
-SP_BYTE15 = 2 ** 120
-SP_WOTS_PK = 1
-SP_TREE = 2
-SP_FORS_TREE = 3
-SP_FORS_ROOTS = 4
+# The scheme's own letters, prefixed SP_: under each bottom leaf a FORS instance of
+# SP_FORS_TREES trees of height SP_FORS_HEIGHT, and above them three layers of trees
+# over WOTS+C keys of SP_V chains, of heights SP_HEIGHT_0, SP_HEIGHT_1 and SP_HEIGHT_2
+# from the bottom. An addressed hash is PK.seed, FIPS 205's 32-byte address (two
+# cells), then the payload.
+SP_V = SP_V_PLACEHOLDER
+SP_TARGET_SUM = SP_TARGET_SUM_PLACEHOLDER
+SP_HEIGHT_0 = SP_HEIGHT_0_PLACEHOLDER
+SP_HEIGHT_1 = SP_HEIGHT_1_PLACEHOLDER
+SP_HEIGHT_2 = SP_HEIGHT_2_PLACEHOLDER
+SP_H = SP_HEIGHT_0 + SP_HEIGHT_1 + SP_HEIGHT_2
+SP_FORS_TREES = SP_FORS_TREES_PLACEHOLDER
+SP_FORS_HEIGHT = SP_FORS_HEIGHT_PLACEHOLDER
+# The message digest is H_msg's two calls: the first call's two cells, then the low
+# two bytes of the second call's first cell. Its first SP_MD_BYTES bytes are the
+# FORS leaves, SP_FORS_HEIGHT bits each, most significant first; then the tree index,
+# three bytes big endian of which the low SP_H - SP_HEIGHT_0 bits count, the high byte
+# holding the 2 bits the others leave; then the bottom leaf, one byte.
+SP_CELL_BITS = 2 * BASE_FIELD_BITS
+SP_MD_BYTES = SP_FORS_TREES * SP_FORS_HEIGHT // 8
+SP_DIGEST_BYTES = SP_DIGEST_BYTES_PLACEHOLDER
+# The digest's bytes in the second call's first cell: the middle leaf, then the bottom
+# leaf, one byte each.
+SP_TAIL_BYTES = SP_DIGEST_BYTES - 32
+# The layers' leaves one after the other, bottom first: the middle leaf's first bit,
+# the top leaf's, and the top leaf's bits in the tree index's high byte, whose other
+# bits are unused.
+SP_MID = SP_HEIGHT_0
+SP_TOP = SP_HEIGHT_0 + SP_HEIGHT_1
+SP_TOP_HIGH_BITS = SP_HEIGHT_2 - 8
+SP_PAD_BITS = 8 - SP_TOP_HIGH_BITS
+# The cell bits of the first call's second cell where the tree index's high byte
+# (digest byte SP_MD_BYTES) and middle byte (the next) start.
+SP_TREE_HI_BIT = 8 * (SP_MD_BYTES - 16)
+SP_TREE_MID_BIT = SP_TREE_HI_BIT + 8
+# A codeword's digits in each byte of its encoding digest, base_2b.
+SP_DIGITS_PER_BYTE = 8 // W
+# Each H_msg call's input: R, PK.seed, PK.root and the 32-byte M, five cells, then
+# the counter BE_32(i), a cell of its own whose byte 3 is i.
+SP_HMSG_LEN = 5 * 16 + 4
+SP_COUNTER_ONE = 2 ** 24
+# FIPS 205's address is two cells, A0 the layer and the tree words and A1 the type
+# and the three words after it, each word big endian, so a value's low byte is its
+# word's last. The cell bit each such byte starts at:
+SP_LAYER_MUL = SP_LAYER_MUL_PLACEHOLDER  # A0's byte 3: the layer
+SP_TREE_MUL_0 = SP_TREE_MUL_0_PLACEHOLDER  # A0's bytes 15, 14 and 13: the tree's three low bytes
+SP_TREE_MUL_1 = SP_TREE_MUL_1_PLACEHOLDER
+SP_TREE_MUL_2 = SP_TREE_MUL_2_PLACEHOLDER
+SP_KEY_MUL_0 = SP_KEY_MUL_0_PLACEHOLDER  # A1's bytes 23 and 22: the key pair's two low bytes
+SP_KEY_MUL_1 = SP_KEY_MUL_1_PLACEHOLDER
+SP_WORD2_MUL = SP_WORD2_MUL_PLACEHOLDER  # A1's byte 27: a chain index or a tree height
+SP_WORD3_MUL_0 = SP_WORD3_MUL_0_PLACEHOLDER  # A1's bytes 31 and 30: a hash address or a tree index
+SP_WORD3_MUL_1 = SP_WORD3_MUL_1_PLACEHOLDER
+# The address types as A1 holds them; WOTS_HASH is zero.
+SP_WOTS_PK = SP_WOTS_PK_PLACEHOLDER
+SP_TREE = SP_TREE_PLACEHOLDER
+SP_FORS_TREE = SP_FORS_TREE_PLACEHOLDER
+SP_FORS_ROOTS = SP_FORS_ROOTS_PLACEHOLDER
+SP_WOTS_ENC = SP_WOTS_ENC_PLACEHOLDER
+# Values bounded a byte at a time: each byte hinted in the exponent, range checked,
+# and read as the bits it spells off a table of the SP_BYTE_VALUES bytes.
+SP_BYTE_VALUES = 256
+# The encoding counter, BE_32 in the low four bytes of its cell: bounded by
+# rebuilding it from exactly that many bytes, so the guest accepts no preimage the
+# native verifier cannot parse.
+SP_COUNTER_BYTES = 4
+# An encoding's input: PK.seed, the address, the value it signs, then the counter.
+SP_ENCODING_BYTES = 16 * 4 + SP_COUNTER_BYTES
+# The second call's low lane past the digest: bytes, likewise.
+SP_UNUSED_BYTES = 8 - SP_TAIL_BYTES
 
 # --------------------------------------------------------------- node capacities
 # The coverage table's slots, both schemes' declared claims and their duplicates, are
 # bounded by the memory itself: each count is a g-power address (`assert_gpow`), so its
 # log is below the announced memory size, at most 2^30, and sums of a few never wrap.
-# MAX_RECURSIONS is the arity of an aggregation tree.
+# MAX_RECURSIONS is the arity of an aggregation tree; EIP-8288's MAX_INNER_PROOFS_PER_STEP
+# bounds a node's batch leaves and children together.
 MAX_RECURSIONS = MAX_RECURSIONS_PLACEHOLDER
+MAX_INNER_PROOFS_PER_STEP = MAX_INNER_PROOFS_PER_STEP_PLACEHOLDER
 
 
 # ---------------------------------- LeanDA ------------------------------------------
@@ -3634,306 +3734,649 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_kbc, g_squares):
 
 
 # ========================= leanSTARK (0x11) dependency verification ========================
-# A claim is data_hash | vk, four cells: the program whose stacked bytecode table hashes to
-# vk accepts data_hash as its public input. vk is upstream's own program digest,
-# keccak256(TAG | table) with TAG the 9-byte "leanvm-v1" and the table 16 * 2^kgen words,
-# little endian: the very Fiat-Shamir IV the dependency's proof was made under, so the
-# guest seeds verify_sub with the claim's vk cells and nothing about the program is
-# hinted unbound. The table is hinted as bytes, which this rehashes into vk and folds
-# into the bytecode claim's value: settled here, never deferred.
-#
-# Why the bytes hashed are the words evaluated: each byte is a cell of the 256-entry
-# table t8 read at a hinted g^b with log(g^b) < 256 checked, so it is the polynomial of
-# an integer below 256, of degree below 8. A word is DEFINED as sum_b x^(8b) byte_b and
-# a hash lane as its bytes' sum at the lane's own shifts, every product of degree below
-# 64, so neither reduces modulo the field polynomial: a word's 64 coefficients are its
-# bytes' bits, and so are the lanes', byte for byte. No split of a word is hinted.
-# With the tag 9 bytes long, lane i + 1 (i >= 0) is word i - 1's top byte (the tag's
-# last byte for i = 0) under word i's low 7 bytes, and the last lane word N - 1's top byte.
+# A claim is data_hash | vk, four cells: the program whose stacked bytecode table commits to a
+# root accepts data_hash as its public input, vk = get_vk_hash(c) = keccak256(VK_TAG | c) naming its
+# program commitment c = keccak256(COMMITTED_TAG | kgen | root | ood) (`verifier::committed_key`). c is
+# the Fiat-Shamir IV the dependency's proof was made under, so the guest rehashes the hinted kgen,
+# root and ood into c (KECCAK rejects a cell with a top limb, so their cells are canonical), checks
+# vk names it, and seeds verify_sub with c: nothing about the program is hinted unbound. ood's two
+# cells are the table's values at the two out-of-domain points a sponge seeded with the root draws
+# (`verifier::committed_ood_points`), which leave one codeword of the root's list. The proof sends
+# the table's value at the bus's point (bc_value) and closes by opening the root's stack there and
+# at the out-of-domain points, which this verifies: one opening of a 2^GEN_STACK_LOG stack,
+# whatever kgen.
 
 
-def gen_table(t8, zeta, alpha, k: Const):
-    # The table of a 2^k-instruction program, hinted a 16-word row (128 bytes in the
-    # exponent) a frame: keccak256(TAG | table), and its multilinear at the bytecode
-    # claim's point (zeta's first k coordinates, then the 4 alphas, LSB first). The
-    # first fold rides the row loop; the rest halve a heap run per coordinate.
-    n_cells = 8 * 2 ** k + 1
-    pre = HeapBuf(GEN ** n_cells)
-    pt = StackBuf(MAX_GENERIC_BYTECODE_LOG + 4)
+def committed_bytecode_eq(zeta, alpha, point1, k: Const):
+    # eq((zeta[..k], alpha, 0, .., 0), point) over the commitment's stack, point1 = 1 + point.
+    v = 1
     for j in unroll(0, k):
-        pt[j] = zeta[GEN ** j]
+        v = v * (zeta[GEN ** j] + point1[GEN ** j])
     for j in unroll(0, 4):
-        pt[k + j] = alpha[GEN ** j]
-    r0 = pt[0]
-    v = HeapBuf(GEN ** (8 * 2 ** k))
-    # Per row boundary: the last word's top byte and the last lane, carried to the next row.
-    carry = HeapBuf(GEN ** (2 * 2 ** k + 2))
-    carry[GEN ** 0] = TAG_BYTE8
-    carry[GEN ** 1] = TAG_LANE0
-    for x in mul_range(1, GEN ** (2 ** k)):
-        rb = StackBuf(128)
-        hint_witness(rb, "gen_bytes")
-        cin = carry * x ** 2
-        hi_prev = cin[GEN ** 0]
-        lanes = StackBuf(17)
-        lanes[0] = cin[GEN ** 1]
-        words = StackBuf(16)
-        for j in unroll(0, 16):
-            lo = 0
-            for b in unroll(0, 7):
-                d = rb[8 * j + b]
-                assert log(d) < 256
-                lo += (2 ** (8 * b)) * t8[d]
-            d7 = rb[8 * j + 7]
-            assert log(d7) < 256
-            h = t8[d7]
-            words[j] = lo + (2 ** 56) * h
-            lanes[j + 1] = hi_prev + 256 * lo
-            hi_prev = h
-        c = pre * x ** 8
-        f = v * x ** 8
-        for q in unroll(0, 8):
-            c[GEN ** q] = lanes[2 * q] + Y_TOWER * lanes[2 * q + 1]
-            a = words[2 * q]
-            bw = words[2 * q + 1]
-            f[GEN ** q] = a + r0 * (a + bw)
-        cout = cin * GEN ** 2
-        cout[GEN ** 0] = hi_prev
-        cout[GEN ** 1] = lanes[16]
-    last = carry * GEN ** (2 * 2 ** k)
-    pre[GEN ** (n_cells - 1)] = last[GEN ** 1] + Y_TOWER * last[GEN ** 0]
-    for rd in unroll(1, k + 4):
-        r = pt[rd]
-        half = 2 ** (k + 3 - rd)
-        nxt = HeapBuf(GEN ** half)
-        for i in mul_range(1, GEN ** half):
-            a = v[i * i]
-            b = v[i * i * GEN]
-            nxt[i] = a + r * (a + b)
-        v = nxt
-    # TAG | table, 17 cells (two KECCAKs) a frame, then the last 1..17 cells padded.
-    pairs = (n_cells - 1) // 17
-    chain = HeapBuf(GEN ** ((pairs + 1) * KECCAK_STATE))
-    zero_state(chain)
-    for xq in mul_range(1, GEN ** pairs):
-        st = chain * xq ** KECCAK_STATE
-        nxt_st = st * GEN ** KECCAK_STATE
-        blk = pre * xq ** 17
-        keccak_cells(blk[0:17], nxt_st[0:KECCAK_STATE], state=st[0:KECCAK_STATE], final=0)
-    state = chain * GEN ** (pairs * KECCAK_STATE)
-    digest = StackBuf(2)
-    rest = n_cells - 17 * pairs
-    tail = pre * GEN ** (17 * pairs)
-    keccak_cells(tail[0:rest], digest, state=state[0:KECCAK_STATE], len=16 * rest - 7)
-    return digest[0], digest[1], v[1]
+        v = v * (alpha[GEN ** j] + point1[GEN ** (k + j)])
+    for j in unroll(k + 4, GEN_STACK_LOG):
+        v = v * point1[GEN ** j]
+    return v
 
 
-def verify_generic(slot, g_squares):
-    # One 0x11 claim, slot = data_hash | vk (four cells); vk seeds the sub-proof's transcript.
+def verify_generic(pi_0, pi_1, vk_0, vk_1, t8, g_squares):
+    # One leanSTARK proof of the statement (pi_0, pi_1) under vk; the commitment vk names seeds the
+    # sub-proof's transcript.
     g_kgen = hint_witness("gen_kbc")
     assert log(g_kgen) < MAX_GENERIC_BYTECODE_LOG + 1
-    zeta, bc_point, bc_value, _e0, _e1, _e2, _e3, _e4, _ec = verify_sub(slot[GEN ** 0], slot[GEN ** 1], slot[GEN ** 2], slot[GEN ** 3], g_kgen, g_squares)
-    t8 = HeapBuf(256)
-    for b in unroll(0, 256):
-        t8[GEN ** b] = b
-    d0, d1, value = match(log(g_kgen), range(0, GEN_KGEN_ARMS), lambda k: gen_table(t8, zeta, bc_point, k))
-    assert d0 == slot[GEN ** 2]
-    assert d1 == slot[GEN ** 3]
-    assert value == bc_value
+    root = StackBuf(2)
+    hint_witness(root, "gen_root")
+    ood = StackBuf(2)
+    hint_witness(ood, "gen_ood")
+    key_cells = HeapBuf(GEN_KGEN_ARMS)
+    ood_cells = HeapBuf(GEN_KGEN_ARMS)
+    for k in unroll(0, GEN_KGEN_ARMS):
+        key_cells[GEN ** k] = GEN_KEY_CELLS[k]
+        ood_cells[GEN ** k] = GEN_OOD_CELLS[k]
+    commitment = StackBuf(2)
+    keccak_cells([key_cells[g_kgen], root[0], root[1], ood[0], ood[1]], commitment)
+    check_vk_hash(commitment[0], commitment[1], vk_0, vk_1, t8)
+    zeta, bc_point, bc_value, fs0, fs1, fs2, fs3, fs4, cursor = verify_sub(pi_0, pi_1, commitment[0], commitment[1], g_kgen, g_squares)
+    # The out-of-domain points: the sponge seeded with the root as IV and the seed cell as public
+    # input, GEN_STACK_LOG challenges each.
+    no_rate = StackBuf(8)
+    osp = StackBuf(KECCAK_STATE)
+    keccak_cells([root[0], root[1], ood_cells[g_kgen], 0], osp, final=0)
+    ood_points = StackBuf(2 * GEN_STACK_LOG)
+    for j in unroll(0, 2 * GEN_STACK_LOG):
+        osp, c = squeeze(osp, no_rate, 0)
+        ood_points[j] = c
+    # verify_stacked_opening over the bus claim and the two out-of-domain claims: their batching
+    # challenge lam, then WHIR at target bc_value + lam * ood[0] + lam^2 * ood[1].
+    sp = fs_cap(fs0, fs1, fs2, fs3, fs4)
+    sp, lam = squeeze(sp, no_rate, 0)
+    lam2 = lam * lam
+    tabs = g_squares * GEN ** WIN_TAB_AT
+    target, point, point1, inner_total, yr_at_tail, e0, e1, e2, e3, e4, end_cursor = open_stacked(GEN_STACK_LOG - LIG_MIN_LOG_SIZE, GEN ** GEN_RATE_SEL, sp[8], sp[9], sp[10], sp[11], sp[12], bc_value + lam * ood[0] + lam2 * ood[1], root[0], root[1], cursor, tabs)
+    weight = match(log(g_kgen), range(0, GEN_KGEN_ARMS), lambda k: committed_bytecode_eq(zeta, bc_point, point1, k))
+    ood_weight_0 = 1
+    ood_weight_1 = 1
+    for j in unroll(0, GEN_STACK_LOG):
+        ood_weight_0 = ood_weight_0 * (ood_points[j] + point1[GEN ** j])
+        ood_weight_1 = ood_weight_1 * (ood_points[GEN_STACK_LOG + j] + point1[GEN ** j])
+    assert (weight + lam * ood_weight_0 + lam2 * ood_weight_1 + inner_total) * yr_at_tail == target
     return
 
 
-# ================= NiceTry SPHINCS- v2 signature verification (prototype) ================
+def check_vk_hash(c_0, c_1, vk_0, vk_1, t8):
+    # vk = get_vk_hash(c) = keccak256(VK_TAG | c) over the 13-byte tag and the 32-byte commitment c,
+    # cells c_0 | c_1. c's bytes, hinted and range-checked, are re-cut 3 bytes on.
+    c = HeapBuf(2)
+    c[1] = c_0
+    c[GEN] = c_1
+    cb = HeapBuf(32)
+    batch_claim_bytes(c, cb, t8)
+    h0 = shifted_cell(cb, t8, VK_TAG, 0, 0, 5, 3, 0)
+    h1 = shifted_cell(cb, t8, 0, 0, 8, 0, 8, 3)
+    h2 = shifted_cell(cb, t8, 0, 0, 8, 0, 5, 19)
+    out = StackBuf(2)
+    keccak_cells([h0, h1, h2], out, len=45)
+    assert out[0] == vk_0
+    assert out[1] == vk_1
+    return
+
+
+def shifted_cell(hb, t8, base, first: Const, lo_count: Const, hi_first: Const, hi_count: Const, src: Const):
+    # base plus bytes of hb from `src`: lo_count at a cell's low-lane positions from `first`, then
+    # hi_count at its high-lane positions from `hi_first`.
+    lo = 0
+    hi = 0
+    for k in unroll(0, lo_count):
+        lo += (2 ** (8 * (first + k))) * t8[hb[GEN ** (src + k)]]
+    for k in unroll(0, hi_count):
+        hi += (2 ** (8 * (hi_first + k))) * t8[hb[GEN ** (src + lo_count + k)]]
+    return base + lo + Y_TOWER * hi
+
+
+# ================================ EIP-8288 batch leaves ===============================
+# A leanSTARK proof is a leaf: its statement is get_batch_hash(claims) = keccak256(BATCH_DOMAIN |
+# claims) over 1 to MAX_CLAIMS_PER_BATCH_LEAF 32-byte claims under the leaf's one vk,
+# get_claim_hash for one claim (ethereum/EIPs#12664). The leaf program need not order its claims;
+# this checks that they strictly increase byte-lexicographically, from bytes hinted in the
+# exponent and range-checked, so a claim's bytes are the bytes of its two cells. Each claim
+# establishes its own dependency (0x11, claim, vk).
+
+
+def verify_leaf(table, cover, slots_g, mark, t8, g_squares):
+    # Covers one slot per established dependency with the marks from `mark` on, and returns the
+    # mark past them. A claim the node does not publish establishes nothing.
+    last_g = hint_witness("leaf_claims")  # g^(claims - 1)
+    assert log(last_g) < MAX_CLAIMS_PER_BATCH_LEAF
+    n_g = last_g * GEN
+    vk = StackBuf(2)
+    hint_witness(vk, "leaf_vk")
+    # The digest's preimage: the domain cell, then each claim's two cells.
+    pre = HeapBuf(GEN * n_g ** 2)
+    pre[1] = BATCH_DOMAIN
+    claims = pre * GEN
+    claim_bytes = HeapBuf(n_g ** 32)
+    for c in mul_range(1, n_g):
+        claim = claims * c ** 2
+        hint_witness(claim[0:2], "leaf_claim")
+        batch_claim_bytes(claim, claim_bytes * c ** 32, t8)
+    for c in mul_range(GEN, n_g):
+        batch_increasing(claim_bytes * (c / GEN) ** 32, claim_bytes * c ** 32)
+    d_0, d_1 = leaf_digest(pre, n_g)
+    est_g = hint_witness("leaf_establishes")
+    assert log(est_g) < log(slots_g * GEN)
+    for e in mul_range(1, est_g):
+        idx = hint_witness("raw_index")
+        assert log(idx) < log(slots_g)
+        cover[idx] = mark * e
+        slot = table * (idx ** 4)
+        p = hint_witness("leaf_claim_index")
+        assert log(p) < log(n_g)
+        claim = claims * p ** 2
+        assert slot[GEN ** 0] == claim[GEN ** 0]
+        assert slot[GEN ** 1] == claim[GEN ** 1]
+        assert slot[GEN ** 2] == vk[0]
+        assert slot[GEN ** 3] == vk[1]
+    verify_generic(d_0, d_1, vk[0], vk[1], t8, g_squares)
+    return mark * est_g
+
+
+def batch_claim_bytes(claim, claim_bytes, t8):
+    # A claim's 32 bytes, each a g-power below g^256, are its two cells: a cell is two lanes of
+    # eight bytes at their own shifts, the second lane above Y_TOWER. t8[d] is the polynomial of
+    # an integer below 256, of degree below 8, so no lane reduces modulo the field polynomial: its
+    # 64 coefficients are its bytes' bits, and no split of a cell is hinted.
+    hint_witness(claim_bytes[0:32], "batch_bytes")
+    for h in unroll(0, 2):
+        lo = 0
+        hi = 0
+        for b in unroll(0, 8):
+            d = claim_bytes[GEN ** (16 * h + b)]
+            e = claim_bytes[GEN ** (16 * h + 8 + b)]
+            assert log(d) < 256
+            assert log(e) < 256
+            lo += (2 ** (8 * b)) * t8[d]
+            hi += (2 ** (8 * b)) * t8[e]
+        assert claim[GEN ** h] == lo + Y_TOWER * hi
+    return
+
+
+def batch_increasing(prev, cur):
+    # prev < cur byte-lexicographically: at the first byte where they differ, cur's is larger,
+    # so the quotient of the two g-powers is a small g-power.
+    equal = StackBuf(33)
+    equal[0] = 1
+    for j in unroll(0, 32):
+        p = prev[GEN ** j]
+        q = cur[GEN ** j]
+        if equal[j] == 1:
+            if p == q:
+                equal[j + 1] = 1
+            else:
+                assert log(q / p) < 256
+                equal[j + 1] = 0
+        else:
+            equal[j + 1] = 0
+    assert equal[32] == 0
+    return
+
+
+def leaf_digest(pre, n_g):
+    # keccak256 of the 1 + 2N cells at pre, LEAF_CHUNK cells (a block pair) a loop frame, the
+    # sponge state carried through a heap chain as in `deps_list_digest`, then the rest.
+    split = StackBuf(2)
+    hint_witness(split, "leaf_digest_split")
+    chunks = split[0]
+    rest = split[1]
+    assert log(rest) < LEAF_CHUNK
+    assert_gpow(chunks)
+    assert chunks ** LEAF_CHUNK * rest == GEN * n_g ** 2
+    chain = HeapBuf((chunks * GEN) ** KECCAK_STATE)
+    zero_state(chain)
+    for xq in mul_range(1, chunks):
+        st = chain * xq ** KECCAK_STATE
+        nxt = st * GEN ** KECCAK_STATE
+        blk = pre * xq ** LEAF_CHUNK
+        keccak_cells(blk[0:LEAF_CHUNK], nxt[0:KECCAK_STATE], state=st[0:KECCAK_STATE], final=0)
+    last = chain * chunks ** KECCAK_STATE
+    d0, d1 = match(log(rest), range(0, LEAF_CHUNK), lambda k: leaf_digest_last(last, pre * chunks ** LEAF_CHUNK, k))
+    return d0, d1
+
+
+def leaf_digest_last(state, blk, k: Const):
+    digest = StackBuf(2)
+    if const(k == 0):
+        keccak_cells([0], digest, state=state[0:KECCAK_STATE], len=0)
+    else:
+        keccak_cells(blk[0:k], digest, state=state[0:KECCAK_STATE])
+    return digest[0], digest[1]
+
+
+# =============================== WOTS+C, both schemes ===============================
+# Every addressed hash input is P | A | M with P, each value of M and each half of A
+# 16 bytes (A is one cell in leanXMSS, two in leanSPHINCS), so each is one cell: a
+# hash's output feeds the next hash where it lands, and a hinted value needs no check
+# of its own, every cell being a 16-byte value. A chain's steps land in
+# fixed slots of a `walks` run, so its tip is one cell whatever the digit, read there
+# by the leaf's hash.
 
 
 @inline
-def sp_bind_lane(bits, off: Const, value):
-    # One 64-bit lane's advice bits, each pinned boolean (a second write of its cell,
-    # one MUL), tied back to the lane and copied into the shared run at `off`.
-    lane_bits = StackBuf(BASE_FIELD_BITS)
-    hint_decompose_bits(lane_bits, value, BASE_FIELD_BITS)
-    acc = 0
-    for i in unroll(0, BASE_FIELD_BITS):
-        b = lane_bits[i]
-        lane_bits[i] = b * b
-        bits[off + i] = b
-        acc += b * COORD_BASIS[i]
-    assert acc == value
+def is_child(node, kids, k: Const, bit):
+    # A node is not ordered against its sibling: the two children are hinted in
+    # order, at kids[k] and kids[k + 1], and `node` is checked to be the one `bit`
+    # names, the left one at 0, the right one at 1. One product, stored where the
+    # left child's difference already is, which is the assert.
+    check = StackBuf(1)
+    check[0] = node + kids[k]
+    check[0] = bit * (kids[k] + kids[k + 1])
     return
 
 
 @inline
-def sp_field(bits, off: Const, n: Const, lsb_byte: Const):
-    # The integer digest bits [off, off+n) spell, as the big-endian ADRS field
-    # whose least significant byte is cell byte lsb_byte: value bit j lands on
-    # cell bit 8 (lsb_byte - j/8) + j mod 8. One multiply-add a bit.
-    acc = 0
-    for j in unroll(0, n):
-        acc += bits[SP_BIT_INDEX[off + j]] * COORD_BASIS[8 * (lsb_byte - j // 8) + j % 8]
-    return acc
+def chain_tip(walks, i: Const):
+    # Chain i's tip, in the last of its CHAIN_STEPS slots of `walks`.
+    tip = walks[(i + 1) * CHAIN_STEPS - 1]
+    return tip
 
 
 @inline
-def sp_index(v: Const):
-    # A compile-time word3 (tree index or hash address) below 2^16, big-endian at
-    # cell bytes 14 and 15.
-    return const((v % 256) * SP_BYTE15 + (v // 256) * 2 ** 112)
-
-
-def sp_walk(value, adrs_a, adrs_b, pp, k: Const):
-    # Chain steps k..w-2 from position k: value' = F(pp, ADRS(hash address s), value),
-    # keccak(pp | 0 | ADRS | value | 0), 96 bytes.
-    word = value
-    for s in unroll(k, SP_CHAIN_STEPS):
-        out = StackBuf(1)
-        keccak([pp, 0], [adrs_a, adrs_b + const(s * SP_BYTE15)], out, tail=[word, 0, 0, 0], len=96)
-        word = out[0]
-    return word, k
+def walk(at, pp, walks, tags, powers, i: Const, k: Const, lx: Const):
+    # Walk chain i from position k to its end, the step leaving position s landing in
+    # chain i's slot s of `walks`, so the tip is chain_tip(walks, i) whatever k is. A
+    # leanSPHINCS step's address is at[0] and at[1] with i and s added, the value last;
+    # a leanXMSS one carries only s, at[s] computed once per key, i riding after the
+    # value, read off a cell set outside the dispatch (the zero cell, `powers` or
+    # `tags`), so an arm names it rather than setting it again.
+    if const(lx == 1):
+        if const(i == 0):
+            tag = 0
+        elif const(LX_TAG_SLOT[i] == 0):
+            tag = powers[LX_TAG_LOG[i]]
+        else:
+            tag = tags[LX_TAG_SLOT[i] - 1]
+    if const(k == CHAIN_STEPS):
+        hint_witness(walks[(i + 1) * CHAIN_STEPS - 1:(i + 1) * CHAIN_STEPS], "chain_starts")
+    else:
+        value = hint_witness("chain_starts")
+        for s in unroll(k, CHAIN_STEPS):
+            o = CHAIN_STEPS * i + s
+            if const(lx == 1):
+                keccak([pp, at[s]], [value, tag], walks[o:o + 1])
+            else:
+                keccak([pp, at[0]], [at[1] + const(i * SP_WORD2_MUL + s * SP_WORD3_MUL_0), value], walks[o:o + 1])
+            value = walks[o]
+    return
 
 
 @inline
-def sp_tl_word(pp, a0, a1, run, j: Const):
-    # Word j of a T_l input: pp | 0 | ADRS | value_0 | 0 | value_1 | 0 | ...
-    w = 0
-    if const(j == 0):
-        w = pp
-    if const(j == 2):
-        w = a0
-    if const(j == 3):
-        w = a1
-    if const(j // 4 != 0):
-        if const(j % 2 == 0):
-            w = run[(j - 4) // 2]
+def walk_group(at, pp, walks, tags, first: Const, n: Const, k: Const, lx: Const, powers, product, encoded):
+    # The n chains from `first` on, at the digits of k (its low n), one dispatch for
+    # all of them. Folds the digits' sum into `product`, in the exponent (`powers[s]` is
+    # GEN ** s), and the digits into `encoded`, where the encoding digest holds them:
+    # leanXMSS's low first, leanSPHINCS's most significant first in each byte (base_2b).
+    for r in unroll(0, n):
+        walk(at, pp, walks, tags, powers, first + r, (k // CHAIN_LENGTH ** r) % CHAIN_LENGTH, lx)
+    if const(lx == 1):
+        digits = const(k % CHAIN_LENGTH ** n * CHAIN_LENGTH ** first)
+    else:
+        digits = 0
+        for r in unroll(0, n):
+            digits = digits + const(((k // CHAIN_LENGTH ** r) % CHAIN_LENGTH) * 2 ** (8 * ((first + r) // SP_DIGITS_PER_BYTE) + W * (SP_DIGITS_PER_BYTE - 1 - (first + r) % SP_DIGITS_PER_BYTE)))
+    return product * powers[DIGIT_SUMS[k % CHAIN_LENGTH ** n]], encoded + digits
+
+
+@inline
+def leaf_word(p0, p1, walks, j: Const):
+    # Word j of a one-time leaf's input: the prefix (p0, p1), then the chain tips.
+    w = p0
+    if const(j == 1):
+        w = p1
+    if const(j != 0):
+        if const(j != 1):
+            w = chain_tip(walks, j - 2)
     return w
 
 
-def sp_wots_pk(adrs_a, kp, pp, msg):
-    # One layer's WOTS+ verification: `msg`'s len1 base-16 digits and the len2 digits
-    # of their checksum, the chains walked from the revealed values, and the key they
-    # compress to.
-    tips = StackBuf(SP_L)
-    exponent = 1
-    acc = 0
-    for i in unroll(0, SP_LEN1):
-        digit = hint_witness("sp_digits")
-        assert log(digit) < SP_W
-        chain_start = hint_witness("sp_chain_starts")
-        adrs_b = kp + const(i * SP_BYTE11)
-        tips[i], e = match(log(digit), range(0, SP_W), lambda k: sp_walk(chain_start, adrs_a, adrs_b, pp, k))
-        exponent = exponent * digit
-        acc += e * COORD_BASIS[8 * (i // 2) + 4 * (1 - i % 2)]
-    assert acc == msg
-    for j in unroll(0, SP_LEN2):
-        digit = hint_witness("sp_digits")
-        assert log(digit) < SP_W
-        chain_start = hint_witness("sp_chain_starts")
-        adrs_b = kp + const((SP_LEN1 + j) * SP_BYTE11)
-        tips[SP_LEN1 + j], e = match(log(digit), range(0, SP_W), lambda k: sp_walk(chain_start, adrs_a, adrs_b, pp, k))
-        exponent = exponent * digit ** (SP_W ** (SP_LEN2 - 1 - j))
-    assert exponent == GEN ** SP_MAX_CSUM
-
-    # The WOTS key: keccak(pp | ADRS(WOTS_PK) | 35 tips), 1184 bytes.
-    key = StackBuf(1)
-    pk_b = kp + const(SP_WOTS_PK * SP_BYTE3)
-    keccak_cells([sp_tl_word(pp, adrs_a, pk_b, tips, j) for j in unroll(0, 4 + 2 * SP_L)], key)
-    return key[0]
-
-
-def verify_sig_lean_sphincs(signer):
-    # `signer` is one 4-cell entry of the coverage table, an EIP-8288 dependency entry:
-    # the 32-byte data_hash (the message), then pkSeed, pkRoot.
-    pp = signer[GEN ** 2]
-    root = signer[GEN ** 3]
-
-    # H_msg = keccak(0xFF..FF | R | pkSeed | pkRoot | M), 112 bytes in one block.
-    r = hint_witness("sp_rand")
-    digest = StackBuf(2)
-    keccak([SP_ONES, SP_ONES], [r, pp], digest, tail=[root, signer[1], signer[GEN], 0], len=112)
-
-    # Every index below is a bit field of that digest, so its last 24 bytes are
-    # advice-decomposed here and bound lane by lane.
-    bits = StackBuf(SP_BIT_CELLS)
-    lo = StackBuf(1)
-    hint_f128_limbs(lo, digest[0])
-    hi = (digest[0] + lo[0]) * Y_INV
-    assert_in_k(lo[0], hi)
-    tail = StackBuf(1)
-    hint_f128_limbs(tail, digest[1])
-    tail_hi = (digest[1] + tail[0]) * Y_INV
-    assert_in_k(tail[0], tail_hi)
-    lanes = [hi, tail[0], tail_hi]
-    for lane in unroll(0, SP_BIT_LANES):
-        sp_bind_lane(bits, lane * BASE_FIELD_BITS, lanes[lane])
-
-    # ---- FORS: one opened leaf per tree ----
-    fors_a = sp_field(bits, SP_HT_OFF + SP_HP, SP_H - SP_HP, 15)
-    fors_kp = sp_field(bits, SP_HT_OFF, SP_HP, 7)
-    fors_b = fors_kp + const(SP_FORS_TREE * SP_BYTE3)
-    roots = StackBuf(SP_K)
-    for i in unroll(0, SP_K):
-        secret = hint_witness("sp_fors_secrets")
-        placed = sp_field(bits, i * SP_A, SP_A, 15)
-        leaf = StackBuf(1)
-        keccak([pp, 0], [fors_a, fors_b + placed + sp_index(i * 2 ** SP_A)], leaf, tail=[secret, 0, 0, 0], len=96)
-        node = leaf[0]
-        b0 = bits[SP_BIT_INDEX[i * SP_A]]
-        b8 = bits[SP_BIT_INDEX[i * SP_A + SP_A - 1]]
-        shifted = (placed + b0 * COORD_BASIS[120] + b8 * COORD_BASIS[112]) / GEN + b8 * COORD_BASIS[127]
-        for z in unroll(1, SP_A + 1):
-            sibling = hint_witness("sp_fors_paths")
-            m = bits[SP_BIT_INDEX[i * SP_A + z - 1]] * (node + sibling)
-            adrs_b = fors_b + shifted + const(z * SP_BYTE11 + (i * 2 ** (SP_A - z)) % 256 * SP_BYTE15 + (i * 2 ** (SP_A - z)) // 256 * 2 ** 112)
-            parent = StackBuf(1)
-            keccak([pp, 0], [fors_a, adrs_b], parent, tail=[node + m, 0, sibling + m, 0])
-            node = parent[0]
-            if const(z != SP_A):
-                shifted = (shifted + bits[SP_BIT_INDEX[i * SP_A + z]] * COORD_BASIS[120]) / GEN
-        roots[i] = node
-    # The FORS key: keccak(pp | ADRS(FORS_ROOTS) | 19 roots), 672 bytes.
-    fors_key = StackBuf(1)
-    roots_b = fors_kp + const(SP_FORS_ROOTS * SP_BYTE3)
-    keccak_cells([sp_tl_word(pp, fors_a, roots_b, roots, j) for j in unroll(0, 4 + 2 * SP_K)], fors_key)
-    signed = fors_key[0]
-
-    # ---- the hypertree, bottom layer first ----
-    for layer in unroll(0, SP_D):
-        leaf_off = SP_HT_OFF + layer * SP_HP
-        adrs_a = const(layer * SP_BYTE3) + sp_field(bits, leaf_off + SP_HP, SP_H - (layer + 1) * SP_HP, 15)
-        kp = sp_field(bits, leaf_off, SP_HP, 7)
-        node = sp_wots_pk(adrs_a, kp, pp, signed)
-        for z in unroll(1, SP_HP + 1):
-            sibling = hint_witness("sp_siblings")
-            m = bits[SP_BIT_INDEX[leaf_off + z - 1]] * (node + sibling)
-            adrs_b = const(SP_TREE * SP_BYTE3 + z * SP_BYTE11) + sp_field(bits, leaf_off + z, SP_HP - z, 15)
-            parent = StackBuf(1)
-            keccak([pp, 0], [adrs_a, adrs_b], parent, tail=[node + m, 0, sibling + m, 0])
-            node = parent[0]
-        signed = node
-    assert signed == root
+@inline
+def wots_leaf(p0, p1, walks, n: Const, leaf):
+    # The hash of the prefix (p0, p1) and the n chain tips, each read where its walk left it.
+    keccak_cells([leaf_word(p0, p1, walks, j) for j in unroll(0, n + 2)], leaf)
     return
 
-# ========================== statements and the claim lists ==========================
+
+# ======================== leanSPHINCS signature verification ======================
 
 
-def deps_digest(gd_0, gd_1, sd_0, sd_1, n_gen_g):
-    # The EIP-8288 dependency digest of the two lists: the leanSPHINCS list's digest
-    # alone without leanSTARK claims (the published get_deps_hash), else
-    # keccak256(S | G | DEPS_DOMAIN), a 96-byte preimage no list of 64-byte entries has.
-    out = StackBuf(2)
-    if n_gen_g == 1:
-        out[0] = sd_0
-        out[1] = sd_1
+@inline
+def sp_from_bytes(byte_bits, marks, n: Const):
+    # The integer whose n bytes, low first, are hinted in the exponent at marks[k]: each
+    # range checked and read off `byte_bits` as the bits it spells.
+    for t in unroll(0, n):
+        k = n - 1 - t
+        assert log(marks[k]) < SP_BYTE_VALUES
+        if const(t == 0):
+            value = byte_bits[marks[k]]
+        else:
+            value = byte_bits[marks[k]] + value * GEN ** 8
+    return value
+
+
+@inline
+def sp_md_bit(bits0, bits1, p: Const):
+    # Bit p of the digest read most significant first, as base_2b reads it: bit
+    # 7 - p % 8 of byte p // 8, from the bit runs of the first call's two cells.
+    b = bits0[(8 * (p // 8) + 7 - p % 8) % SP_CELL_BITS]
+    if const(p // SP_CELL_BITS == 1):
+        b = bits1[8 * (p // 8) + 7 - p % 8 - SP_CELL_BITS]
+    return b
+
+
+@inline
+def sp_fors_field(bits0, bits1, vals, c: Const):
+    # FORS tree c's leaf, the digest's SP_FORS_HEIGHT bits from bit SP_FORS_HEIGHT c,
+    # and its right shifts, each with tree c's place across the trees: vals[SP_FORS_HEIGHT
+    # c + z] is the FIPS 205 tree index of the leaf's ancestor at height z, c 2^(height - z)
+    # plus its index in tree c.
+    vals[SP_FORS_HEIGHT * c + SP_FORS_HEIGHT - 1] = sp_md_bit(bits0, bits1, SP_FORS_HEIGHT * c) + const(2 * c)
+    for r in unroll(1, SP_FORS_HEIGHT):
+        vals[SP_FORS_HEIGHT * c + SP_FORS_HEIGHT - 1 - r] = sp_md_bit(bits0, bits1, SP_FORS_HEIGHT * c + r) + GEN * vals[SP_FORS_HEIGHT * c + SP_FORS_HEIGHT - r]
+    return
+
+
+@inline
+def sp_md_byte(vals, i: Const):
+    # Digest byte i < SP_MD_BYTES where its cell holds it, from the shifts of field c,
+    # the one its first bit is in, and of c + 1 if it reaches it. A byte inside c is c
+    # shifted past the bits after the byte, masked to eight bits; a byte across both is
+    # c's low bits raised past c + 1's high ones. It keeps the trees' places vals carries,
+    # which the caller takes out.
+    c = 8 * i // SP_FORS_HEIGHT
+    if const(c == (8 * i + 7) // SP_FORS_HEIGHT):
+        v = vals[SP_FORS_HEIGHT * (2 * c + 1) - 8 * i - 8]
+        if const(8 * i != SP_FORS_HEIGHT * c):
+            v = v + vals[SP_FORS_HEIGHT * (2 * c + 1) - 8 * i] * GEN ** 8
+        v = v * const(2 ** (8 * (i % 16)))
     else:
-        keccak([sd_0, sd_1], [gd_0, gd_1], out, tail=[DEPS_DOMAIN_0, DEPS_DOMAIN_1, 0, 0], len=96)
-    return out[0], out[1]
+        v = (vals[SP_FORS_HEIGHT * c] + vals[SP_FORS_HEIGHT * (2 * c + 1) - 8 * i] * GEN ** (SP_FORS_HEIGHT * (c + 1) - 8 * i)) * const(2 ** (8 * (i % 16) + 8 * i + 8 - SP_FORS_HEIGHT * (c + 1)))
+        v = v + vals[SP_FORS_HEIGHT * (2 * c + 3) - 8 * i - 8] * const(2 ** (8 * (i % 16)))
+    return v
+
+
+@inline
+def sp_leaf_bit(bits1, bits2, b: Const):
+    # Bit b of the three layers' leaves one after the other, bottom first, which the
+    # digest's last four bytes hold: the bottom leaf the last byte (the second call's
+    # byte 1), the middle one the byte before (its byte 0), and the top one the tree
+    # index's high bits (the first call's byte 31, then the low two bits of 30).
+    x = bits2[(b + SP_MID) % (8 * SP_TAIL_BYTES)]
+    if const(b // 8 == SP_TOP // 8):
+        x = bits1[b - SP_TOP + SP_TREE_MID_BIT]
+    if const(b // 8 == SP_TOP // 8 + 1):
+        x = bits1[b - SP_TOP - 8 + SP_TREE_HI_BIT]
+    return x
+
+
+@inline
+def sp_leaf_shifts(bits1, bits2, lvals, off: Const, n: Const):
+    # The leaf of n bits from leaf bit `off` and its right shifts: lvals[off + z] is the
+    # index of its ancestor at height z.
+    lvals[off + n - 1] = sp_leaf_bit(bits1, bits2, off + n - 1)
+    for r in unroll(1, n):
+        lvals[off + n - 1 - r] = sp_leaf_bit(bits1, bits2, off + n - 1 - r) + GEN * lvals[off + n - r]
+    return
+
+
+@inline
+def sp_be16(vals, at: Const, n: Const):
+    # The n-bit value vals[at] as the last two bytes of an A1 word, big endian: its low
+    # byte masked and placed last, its high bits before it.
+    if const((n + 7) // 8 == 2):
+        v = vals[at] * const(SP_WORD3_MUL_0) + vals[at + 8] * (GEN ** 8 * const(SP_WORD3_MUL_0) + const(SP_WORD3_MUL_1))
+    else:
+        v = vals[at] * const(SP_WORD3_MUL_0)
+    return v
+
+
+@inline
+def sp_fors_at(a1, vals, c: Const, z: Const):
+    # The A1 of tree c's node at height z on the opened leaf's path, `a1` being the
+    # trees' with neither: z, then the node's tree index across the trees in the word's
+    # last two bytes, big endian. vals holds the index below the root, whose high byte is
+    # c's part alone from height SP_FORS_HEIGHT - 8 on, a constant added first so that trees
+    # sharing it share the sum; at the root the index is c.
+    at = a1 + const(z * SP_WORD2_MUL)
+    if const(z == SP_FORS_HEIGHT):
+        at = at + const(c * SP_WORD3_MUL_0)
+    elif const(z // (SP_FORS_HEIGHT - 8) == 0):
+        at = at + sp_be16(vals, SP_FORS_HEIGHT * c + z, 16)
+    else:
+        at = at + const(c // 2 ** (z - (SP_FORS_HEIGHT - 8))) * (GEN ** 8 * const(SP_WORD3_MUL_0) + const(SP_WORD3_MUL_1))
+        at = at + sp_be16(vals, SP_FORS_HEIGHT * c + z, 8)
+    return at
+
+
+@inline
+def sp_fors_tree(pp, a0, a1, bits0, bits1, vals, roots, c: Const):
+    # FORS tree c: its leaf, hashed from the hinted secret, then climbed up the hinted
+    # ordered pairs to its root, into roots[c].
+    secret = hint_witness("sp_fors_secrets")
+    held = StackBuf(1)
+    keccak([pp, a0], [sp_fors_at(a1, vals, c, 0), secret], held)
+    cur = held[0]
+    for z in unroll(0, SP_FORS_HEIGHT):
+        # The two children, then three cells the compiler sets to the padding, so the
+        # node's hash reads the right child in place (`pad_tail=1`).
+        kids = StackBuf(5)
+        hint_witness(kids[0:2], "sp_fors_nodes")
+        is_child(cur, kids, 0, sp_md_bit(bits0, bits1, SP_FORS_HEIGHT * c + SP_FORS_HEIGHT - 1 - z))
+        node_at = sp_fors_at(a1, vals, c, z + 1)
+        if const(z + 1 == SP_FORS_HEIGHT):
+            keccak([pp, a0], [node_at, kids[0]], roots[c:c + 1], tail=kids[1:5], len=80, pad_tail=1)
+        else:
+            parent = StackBuf(1)
+            keccak([pp, a0], [node_at, kids[0]], parent, tail=kids[1:5], len=80, pad_tail=1)
+            cur = parent[0]
+    return
+
+
+@inline
+def sp_word(pp, a0, a1, run, first: Const, stride: Const, j: Const):
+    # Word j of a T_l input: PK.seed, the address, then the values, value i at
+    # run[first + stride i] (the FORS roots, or a one-time key's chain tips).
+    w = pp
+    if const(j == 1):
+        w = a0
+    if const(j == 2):
+        w = a1
+    if const(j // 3 != 0):
+        w = run[first + stride * (j - 3)]
+    return w
+
+
+def sp_wots(pp, a0, a1, encoding):
+    # The leaf of the one-time key whose address is (a0, a1), a1 of type WOTS_HASH and
+    # so its key pair alone, and whose encoding digest is `encoding`. The codeword:
+    # DIGIT_GROUP digits at a time, hinted in the exponent, range checked and
+    # dispatched once, the arm walking every chain's remaining steps and folding its
+    # digits in: their sums into a product that must be the target sum, and the
+    # digits, each group where the digest holds it, into the digest. One function for
+    # the three layers.
+    at = [a0, a1]
+    walks = StackBuf(SP_V * CHAIN_STEPS)
+    powers = StackBuf(DIGIT_GROUP * CHAIN_STEPS + 1)
+    for s in unroll(0, DIGIT_GROUP * CHAIN_STEPS + 1):
+        powers[s] = GEN ** s
+    digit_product = 1
+    encoded = 0
+    # A leanSPHINCS chain index rides its step's address, so the chain-index table a
+    # leanXMSS walk reads is unused here and `powers` stands in for it.
+    for p in unroll(0, SP_V // DIGIT_GROUP):
+        group = hint_witness("digits")
+        assert log(group) < DIGIT_GROUPS
+        digit_product, encoded = match(log(group), range(0, DIGIT_GROUPS), lambda k: walk_group(at, pp, walks, powers, DIGIT_GROUP * p, DIGIT_GROUP, k, 0, powers, digit_product, encoded))
+    # The chain the groups leave over.
+    group = hint_witness("digits")
+    assert log(group) < CHAIN_LENGTH
+    digit_product, encoded = match(log(group), range(0, CHAIN_LENGTH), lambda k: walk_group(at, pp, walks, powers, SP_V - 1, 1, k, 0, powers, digit_product, encoded))
+    assert encoded == encoding
+    assert digit_product == GEN ** SP_TARGET_SUM
+    leaf = StackBuf(1)
+    pk_at = a1 + const(SP_WOTS_PK)
+    keccak_cells([sp_word(pp, a0, pk_at, walks, CHAIN_STEPS - 1, CHAIN_STEPS, j) for j in unroll(0, SP_V + 3)], leaf)
+    return leaf[0]
+
+
+@inline
+def sp_path(node, pp, a0, bits1, bits2, lvals, out, off: Const, height: Const):
+    # The path from `node` up the tree whose address is a0, the leaf's bits from leaf bit
+    # `off` and its ancestors' indices in lvals, the two children of each node hinted in
+    # order, the root into out.
+    cur = node
+    for z in unroll(0, height):
+        # The two children, then three cells the compiler pads (as in sp_fors_tree).
+        kids = StackBuf(5)
+        hint_witness(kids[0:2], "siblings")
+        is_child(cur, kids, 0, sp_leaf_bit(bits1, bits2, off + z))
+        # The parent's height, then its index, none at the root.
+        node_at = const(SP_TREE + (z + 1) * SP_WORD2_MUL)
+        if const(z + 1 == height):
+            parent = out
+        else:
+            node_at = sp_be16(lvals, off + z + 1, height - z - 1) + node_at
+            parent = StackBuf(1)
+        keccak([pp, a0], [node_at, kids[0]], parent, tail=kids[1:5], len=80, pad_tail=1)
+        cur = parent[0]
+    return
+
+
+@inline
+def sp_layer(pp, a0, key, signed, byte_bits, bits1, bits2, lvals, out, off: Const, height: Const):
+    # One layer: the key at (a0, key), `key` its key pair as A1 holds it, signs `signed`,
+    # its counter rebuilt from four bytes, then the path to its tree's root into out.
+    ctr = StackBuf(SP_COUNTER_BYTES)
+    hint_witness(ctr, "sp_counter")
+    counter = sp_from_bytes(byte_bits, ctr, SP_COUNTER_BYTES)
+    enc = StackBuf(1)
+    enc_at = key + const(SP_WOTS_ENC)
+    keccak([pp, a0], [enc_at, signed], enc, tail=[counter, 0, 0, 0], len=SP_ENCODING_BYTES)
+    leaf = sp_wots(pp, a0, key, enc[0])
+    sp_path(leaf, pp, a0, bits1, bits2, lvals, out, off, height)
+    return
+
+
+def verify_sig_lean_sphincs(signer, byte_bits):
+    # `signer` is one 4-cell entry of the leanSPHINCS coverage table, an EIP-8288
+    # dependency entry: the message (data_hash) THAT signer signed, then PK.seed and
+    # PK.root, bound together by the claim-list digest.
+    pp = signer[GEN ** 2]
+    pk_root = signer[GEN ** 3]
+
+    # ---- H_msg, which picks the index and every FORS leaf ----
+    # H(R | PK.seed | PK.root | M | BE_32(i)) for i = 0, 1, M the claim's two cells.
+    m0 = signer[1]
+    m1 = signer[GEN]
+    rho = hint_witness("sp_rand")
+    d0 = StackBuf(2)
+    d1 = StackBuf(1)
+    keccak([rho, pp], [pk_root, m0], d0, tail=[m1, 0, 0, 0], len=SP_HMSG_LEN)
+    keccak([rho, pp], [pk_root, m0], d1, tail=[m1, SP_COUNTER_ONE, 0, 0], len=SP_HMSG_LEN)
+
+    # The digest's bits are advice pinned Boolean, and the digest is rebuilt from them:
+    # byte by byte from the FORS leaves' values, which their shifts give, then the tree
+    # index and the bottom leaf from the layers' leaves, the six bits the tree index
+    # leaves from their own bits, and the second call's unused bytes as hinted bytes
+    # (sp_from_bytes). Its high lane is what the rest leaves, checked to be a lane.
+    bits0 = StackBuf(SP_CELL_BITS)
+    bits1 = StackBuf(SP_CELL_BITS)
+    bits2 = StackBuf(8 * SP_TAIL_BYTES)
+    hint_decompose_bits(bits0, d0[0], SP_CELL_BITS)
+    hint_decompose_bits(bits1, d0[1], SP_CELL_BITS)
+    hint_decompose_bits(bits2, d1[0], 8 * SP_TAIL_BYTES)
+    for b in unroll(0, SP_CELL_BITS):
+        bits0[b] = bits0[b] * bits0[b]
+        bits1[b] = bits1[b] * bits1[b]
+    for b in unroll(0, 8 * SP_TAIL_BYTES):
+        bits2[b] = bits2[b] * bits2[b]
+    vals = StackBuf(SP_FORS_TREES * SP_FORS_HEIGHT)
+    for c in unroll(0, SP_FORS_TREES):
+        sp_fors_field(bits0, bits1, vals, c)
+    lvals = StackBuf(SP_H)
+    sp_leaf_shifts(bits1, bits2, lvals, 0, SP_HEIGHT_0)
+    sp_leaf_shifts(bits1, bits2, lvals, SP_MID, SP_HEIGHT_1)
+    sp_leaf_shifts(bits1, bits2, lvals, SP_TOP, SP_HEIGHT_2)
+    md0 = sp_md_byte(vals, 0)
+    for i in unroll(1, 16):
+        md0 = md0 + sp_md_byte(vals, i)
+    md1 = sp_md_byte(vals, 16)
+    for i in unroll(17, SP_MD_BYTES):
+        md1 = md1 + sp_md_byte(vals, i)
+    # vals carries each tree's place across the trees (sp_fors_field), which the digest's
+    # bytes do not: take it out again, a constant per byte.
+    corr0 = 0
+    corr1 = 0
+    for i in unroll(0, SP_MD_BYTES):
+        fc = 8 * i // SP_FORS_HEIGHT
+        pc = 0
+        if const(fc != (8 * i + 7) // SP_FORS_HEIGHT):
+            pc = const((fc + 1) * 2 ** (8 * i + 8 - SP_FORS_HEIGHT * (fc + 1))) * const(2 ** (8 * (i % 16)))
+        elif const(8 * i == SP_FORS_HEIGHT * fc):
+            pc = const(fc * 256) * const(2 ** (8 * (i % 16)))
+        if const(i // 16 == 0):
+            corr0 = corr0 + pc
+        else:
+            corr1 = corr1 + pc
+    # The tree index's middle byte, the top leaf's low byte; its high byte holds the top
+    # leaf's two high bits, then six unused ones.
+    tree_mid = lvals[SP_TOP] + lvals[SP_TOP + 8] * GEN ** 8
+    pad = bits1[SP_TREE_HI_BIT + 7]
+    for b in unroll(1, SP_PAD_BITS):
+        pad = bits1[SP_TREE_HI_BIT + 7 - b] + GEN * pad
+    d0[0] = md0 + corr0
+    d0[1] = md1 + corr1 + (lvals[SP_TOP + 8] + pad * GEN ** SP_TOP_HIGH_BITS) * const(2 ** SP_TREE_HI_BIT) + tree_mid * const(2 ** SP_TREE_MID_BIT)
+    unused_bytes = StackBuf(SP_UNUSED_BYTES)
+    hint_witness(unused_bytes, "sp_unused")
+    unused = sp_from_bytes(byte_bits, unused_bytes, SP_UNUSED_BYTES)
+    high = (d1[0] + lvals[SP_MID] + lvals[0] * GEN ** 8 + unused * GEN ** (8 * SP_TAIL_BYTES)) * Y_INV
+    assert_in_k(high, unused)
+
+    # ---- FORS: each tree's opening climbed to its root, then T_k over the roots ----
+    # The FORS addresses are the bottom key's: its layer and tree, its leaf the key pair.
+    a0_b = lvals[SP_MID] * const(SP_TREE_MUL_0) + tree_mid * const(SP_TREE_MUL_1) + lvals[SP_TOP + 8] * const(SP_TREE_MUL_2)
+    key_b = lvals[0] * const(SP_KEY_MUL_0)
+    roots = StackBuf(SP_FORS_TREES)
+    fors_at = key_b + const(SP_FORS_TREE)
+    for c in unroll(0, SP_FORS_TREES):
+        sp_fors_tree(pp, a0_b, fors_at, bits0, bits1, vals, roots, c)
+    fors_pk = StackBuf(1)
+    roots_at = key_b + const(SP_FORS_ROOTS)
+    keccak_cells([sp_word(pp, a0_b, roots_at, roots, 0, 1, j) for j in unroll(0, 3 + SP_FORS_TREES)], fors_pk)
+
+    # ---- the hypertree: each layer's one-time key signs what the layer below gives ----
+    # The bottom key is in the digest's tree at its leaf; the middle key in that tree's
+    # top bits at its low byte; the top key in tree zero at the tree's top bits.
+    root_b = StackBuf(1)
+    sp_layer(pp, a0_b, key_b, fors_pk[0], byte_bits, bits1, bits2, lvals, root_b, 0, SP_HEIGHT_0)
+    a0_m = const(SP_LAYER_MUL) + tree_mid * const(SP_TREE_MUL_0) + lvals[SP_TOP + 8] * const(SP_TREE_MUL_1)
+    key_m = lvals[SP_MID] * const(SP_KEY_MUL_0)
+    root_m = StackBuf(1)
+    sp_layer(pp, a0_m, key_m, root_b[0], byte_bits, bits1, bits2, lvals, root_m, SP_HEIGHT_0, SP_HEIGHT_1)
+    a0_t = const(2 * SP_LAYER_MUL)
+    key_t = tree_mid * const(SP_KEY_MUL_0) + lvals[SP_TOP + 8] * const(SP_KEY_MUL_1)
+    root = StackBuf(1)
+    sp_layer(pp, a0_t, key_t, root_m[0], byte_bits, bits1, bits2, lvals, root, SP_HEIGHT_0 + SP_HEIGHT_1, SP_HEIGHT_2)
+    assert root[0] == pk_root
+    return
+
+
+# ========================== statements and the claim lists ==========================
 
 
 def statement_digest(seed_0, seed_1, dd_0, dd_1, da_0, da_1, defer):
     # A node's statement, hashed to the two words the VM publishes, over the
     # proving environment's Fiat-Shamir seed (the proof system's version and this
-    # bytecode), the dependency digest of the two claim lists, its DA digest (zeros
+    # bytecode), its dependency digest (get_deps_hash), its DA digest (zeros
     # without a root), and the DEFER_STMT_CELLS deferred-claim cells. A
-    # parent rebuilds a child's statement with this same call, over list digests it
+    # parent rebuilds a child's statement with this same call, over a digest it
     # re-absorbed itself, which forces the child to be a proof of THIS bytecode over
     # claims read out of the parent's own tables.
     #
@@ -3953,11 +4396,10 @@ def statement_digest(seed_0, seed_1, dd_0, dd_1, da_0, da_1, defer):
     return st[0], st[1]
 
 
-# A declared claim list is hashed CLAIM_GROUP claims a loop frame: a claim is 64 bytes,
-# four cells, so a group is 68 cells, four block pairs, and the sponge state is carried
-# between frames through a heap chain of KECCAK_STATE cells a step, from the zero state.
-# Only the claims after the last whole group depend on the length: a `match` on their
-# count.
+# A dependency list is hashed CLAIM_GROUP dependencies a loop frame: a dependency is 96 bytes,
+# six cells, so a group is 102 cells, six block pairs, and the sponge state is carried between
+# frames through a heap chain of KECCAK_STATE cells a step, from the zero state. Only the
+# dependencies after the last whole group depend on the length: a `match` on their count.
 
 
 @inline
@@ -3968,7 +4410,7 @@ def zero_state(chain):
 
 
 def list_split(n_g):
-    # A list of n claims as (g^bigs, g^groups, g^rest), n = CLAIM_BIG * bigs +
+    # A list of n dependencies as (g^bigs, g^groups, g^rest), n = CLAIM_BIG * bigs +
     # CLAIM_GROUP * groups + rest with groups < BIG_GROUPS. The range checks and the
     # product identity leave that split the only solution.
     split = StackBuf(3)
@@ -3985,10 +4427,10 @@ def list_split(n_g):
     return bigs, groups, rest
 
 
-def claim_list_digest(entries_ptr, n_g):
-    # The hash of one scheme's declared claims: 64 bytes a claim, the claimed pubkey
-    # then the message it signed. An empty list hashes the empty string, and the
-    # padding binds the length.
+def deps_list_digest(deps, n_g):
+    # get_deps_hash of the n dependencies at deps (ethereum/EIPs#12664): the hash of their 96-byte
+    # triples, scheme word included. An empty list hashes the empty string, and the padding binds
+    # the length.
     digest = StackBuf(2)
     if n_g == 1:
         keccak([0, 0], [0, 0], digest, len=0)
@@ -3999,183 +4441,99 @@ def claim_list_digest(entries_ptr, n_g):
         for xq in mul_range(1, bigs):
             st = chain * xq ** KECCAK_STATE
             nxt = st * GEN ** KECCAK_STATE
-            blk = entries_ptr * xq ** (4 * CLAIM_BIG)
-            for j in unroll(0, CLAIM_BIG):
-                hint_witness(blk[4 * j:4 * j + 4], "claims")
-            keccak_cells(blk[0:4 * CLAIM_BIG], nxt[0:KECCAK_STATE], state=st[0:KECCAK_STATE], final=0)
+            blk = deps * xq ** (DEP_CELLS * CLAIM_BIG)
+            keccak_cells(blk[0:DEP_CELLS * CLAIM_BIG], nxt[0:KECCAK_STATE], state=st[0:KECCAK_STATE], final=0)
         mid = chain * bigs ** KECCAK_STATE
-        mid_entries = entries_ptr * bigs ** (4 * CLAIM_BIG)
+        mid_deps = deps * bigs ** (DEP_CELLS * CLAIM_BIG)
         for xq in mul_range(1, groups):
             st = mid * xq ** KECCAK_STATE
             nxt = st * GEN ** KECCAK_STATE
-            blk = mid_entries * xq ** (4 * CLAIM_GROUP)
-            for j in unroll(0, CLAIM_GROUP):
-                hint_witness(blk[4 * j:4 * j + 4], "claims")
-            keccak_cells(blk[0:4 * CLAIM_GROUP], nxt[0:KECCAK_STATE], state=st[0:KECCAK_STATE], final=0)
+            blk = mid_deps * xq ** (DEP_CELLS * CLAIM_GROUP)
+            keccak_cells(blk[0:DEP_CELLS * CLAIM_GROUP], nxt[0:KECCAK_STATE], state=st[0:KECCAK_STATE], final=0)
         last = mid * groups ** KECCAK_STATE
-        d0, d1 = match(log(rest), range(0, CLAIM_GROUP), lambda k: claim_list_last(last, mid_entries * groups ** (4 * CLAIM_GROUP), k))
+        d0, d1 = match(log(rest), range(0, CLAIM_GROUP), lambda k: deps_list_last(last, mid_deps * groups ** (DEP_CELLS * CLAIM_GROUP), k))
         digest[0] = d0
         digest[1] = d1
     return digest[0], digest[1]
 
 
-def claim_list_last(state, blk, k: Const):
+def deps_list_last(state, blk, k: Const):
     digest = StackBuf(2)
     if const(k == 0):
         keccak_cells([0], digest, state=state[0:KECCAK_STATE], len=0)
     else:
-        for j in unroll(0, k):
-            hint_witness(blk[4 * j:4 * j + 4], "claims")
-        keccak_cells(blk[0:4 * k], digest, state=state[0:KECCAK_STATE])
+        keccak_cells(blk[0:DEP_CELLS * k], digest, state=state[0:KECCAK_STATE])
     return digest[0], digest[1]
 
 
 @inline
-def child_claims(entries_ptr, region, marks, last_g, blk, n: Const):
-    # n of a child's claims, each read at a hinted index into THIS node's table and
-    # marked in the coverage table. The index is an offset into the scheme's region
-    # (`region`, the coverage table from the scheme's origin) and bounded by that
-    # region's size, last_g * GEN, so a child's claim can only ever land on a slot of
-    # its own scheme. The bound so written is its own range-check target, last_g.
-    for j in unroll(0, n):
-        off_hint = hint_witness("child_claim_index")
-        assert log(off_hint) < log(last_g * GEN)  # precondition as in the raw loops
-        region[off_hint] = marks * (GEN ** j)
-        entry = entries_ptr * (off_hint ** 4)
-        for c in unroll(0, 4):
-            blk[4 * j + c] = entry[GEN ** c]
+def as_dependency(dep, entry, scheme):
+    # A scheme's four-cell table entry as its six-cell dependency at dep.
+    dep[1] = 0
+    dep[GEN] = scheme
+    for c in unroll(0, 4):
+        dep[GEN ** (2 + c)] = entry[GEN ** c]
     return
 
 
-def child_claim_list_digest(entries_ptr, region, base, limit_g, n_g):
-    # The hash of one of a child's declared claim lists, over the same 64n bytes the
-    # child hashed (`claim_list_digest`), so the digest it rebuilds is the one the
-    # child's statement carries. The coverage marks lie in [base, base + n): the claims'
-    # running count, or `base` alone along a strictly increasing gap walk.
-    # A list whose slots strictly increase (no duplicate slot among them) takes the
-    # cheaper walk; either walk is sound on its own, so the choice is the prover's.
-    digest = StackBuf(2)
-    if n_g == 1:
-        keccak([0, 0], [0, 0], digest, len=0)
-    else:
-        bigs, groups, rest = list_split(n_g)
+def table_deps(deps, table, n_g, scheme):
+    # The first n entries of a scheme's table as dependencies at deps.
+    for j in mul_range(1, n_g):
+        as_dependency(deps * j ** DEP_CELLS, table * j ** 4, scheme)
+    return
+
+
+def child_deps(deps, entries_ptr, region, base, limit_g, n_g, scheme):
+    # A child's n claims of one scheme as dependencies at deps, each read at a hinted index into
+    # THIS node's table and marked in the coverage table. The index is an offset into the scheme's
+    # region (`region`, the coverage table from the scheme's origin) and bounded by that region's
+    # size, limit_g, so a child's claim can only ever land on a slot of its own scheme. The marks
+    # lie in [base, base + n): the claims' running count, or `base` alone along a strictly
+    # increasing gap walk. A list whose slots strictly increase takes the cheaper walk; either is
+    # sound on its own, so the choice is the prover's.
+    if n_g != 1:
         mono = hint_witness("child_mono")
         if mono == GEN:
-            d0, d1 = child_claim_list_mono(entries_ptr, region, base, limit_g, bigs, groups, rest)
-            digest[0] = d0
-            digest[1] = d1
+            child_deps_mono(deps, entries_ptr, region, base, limit_g, n_g, scheme)
         else:
-            d0, d1 = child_claim_list_any(entries_ptr, region, base, limit_g, bigs, groups, rest)
-            digest[0] = d0
-            digest[1] = d1
-    return digest[0], digest[1]
-
-
-def child_claim_list_any(entries_ptr, region, base, limit_g, bigs, groups, rest):
-    last_g = limit_g / GEN
-    chain = HeapBuf((bigs * groups * GEN) ** KECCAK_STATE)
-    zero_state(chain)
-    for xq in mul_range(1, bigs):
-        st = chain * xq ** KECCAK_STATE
-        nxt = st * GEN ** KECCAK_STATE
-        blk = StackBuf(4 * CLAIM_BIG)
-        child_claims(entries_ptr, region, base * xq ** CLAIM_BIG, last_g, blk, CLAIM_BIG)
-        keccak_cells(blk, nxt[0:KECCAK_STATE], state=st[0:KECCAK_STATE], final=0)
-    mid = chain * bigs ** KECCAK_STATE
-    mid_base = base * bigs ** CLAIM_BIG
-    for xq in mul_range(1, groups):
-        st = mid * xq ** KECCAK_STATE
-        nxt = st * GEN ** KECCAK_STATE
-        blk = StackBuf(4 * CLAIM_GROUP)
-        child_claims(entries_ptr, region, mid_base * xq ** CLAIM_GROUP, last_g, blk, CLAIM_GROUP)
-        keccak_cells(blk, nxt[0:KECCAK_STATE], state=st[0:KECCAK_STATE], final=0)
-    last = mid * groups ** KECCAK_STATE
-    d0, d1 = match(log(rest), range(0, CLAIM_GROUP), lambda k: child_claim_list_last(last, entries_ptr, region, mid_base * groups ** CLAIM_GROUP, last_g, k))
-    return d0, d1
-
-
-@inline
-def child_claims_mono(cov, ent, mark, blk, out, n: Const):
-    # n of a child's claims at strictly increasing offsets into THIS node's table: each
-    # hinted gap g^e, e >= 0 by the DEREF through it, moves the offset on by e + 1.
-    # cov and ent are the coverage slot and the table entry the next claim takes at
-    # gap zero; out receives them for the claim after the last. Every claim of the list
-    # writes the same mark, its first count: the walk cannot revisit a slot, and any
-    # other writer's value differs, so a slot written twice still conflicts.
-    for j in unroll(0, n):
-        gap = hint_witness("child_claim_gap")
-        assert_gpow(gap)
-        cov = cov * gap
-        gap2 = gap * gap
-        ent = ent * (gap2 * gap2)
-        cov[GEN ** j] = mark
-        for c in unroll(0, 4):
-            blk[4 * j + c] = ent[GEN ** (4 * j + c)]
-    out[0] = cov * GEN ** n
-    out[1] = ent * GEN ** (4 * n)
+            child_deps_any(deps, entries_ptr, region, base, limit_g, n_g, scheme)
     return
 
 
-def child_claim_list_mono(entries_ptr, region, base, limit_g, bigs, groups, rest):
-    # The walk of a list at strictly increasing offsets o_j = e_0 + ... + e_j + j, every
-    # e_j in [0, 2^h): its first offset is at least zero, and the count of claims, a
-    # memory address (`assert_gpow`, below 2^30), keeps the sum below 2^60, short
-    # of wrapping, so bounding its last offset below the region's size
-    # (child_claim_list_mono_last) bounds them all. A record carries the sponge state,
-    # then the walk's coverage slot and table entry.
-    chain = HeapBuf((bigs * groups * GEN) ** MONO_REC)
-    zero_state(chain)
-    chain[GEN ** KECCAK_STATE] = region
-    chain[GEN ** (KECCAK_STATE + 1)] = entries_ptr
-    for xq in mul_range(1, bigs):
-        rec = chain * xq ** MONO_REC
-        nxt = rec * GEN ** MONO_REC
-        blk = StackBuf(4 * CLAIM_BIG)
-        walk = StackBuf(2)
-        child_claims_mono(rec[GEN ** KECCAK_STATE], rec[GEN ** (KECCAK_STATE + 1)], base, blk, walk, CLAIM_BIG)
-        nxt[GEN ** KECCAK_STATE] = walk[0]
-        nxt[GEN ** (KECCAK_STATE + 1)] = walk[1]
-        keccak_cells(blk, nxt[0:KECCAK_STATE], state=rec[0:KECCAK_STATE], final=0)
-    mid = chain * bigs ** MONO_REC
-    for xq in mul_range(1, groups):
-        rec = mid * xq ** MONO_REC
-        nxt = rec * GEN ** MONO_REC
-        blk = StackBuf(4 * CLAIM_GROUP)
-        walk = StackBuf(2)
-        child_claims_mono(rec[GEN ** KECCAK_STATE], rec[GEN ** (KECCAK_STATE + 1)], base, blk, walk, CLAIM_GROUP)
-        nxt[GEN ** KECCAK_STATE] = walk[0]
-        nxt[GEN ** (KECCAK_STATE + 1)] = walk[1]
-        keccak_cells(blk, nxt[0:KECCAK_STATE], state=rec[0:KECCAK_STATE], final=0)
-    last = mid * groups ** MONO_REC
-    d0, d1 = match(log(rest), range(0, CLAIM_GROUP), lambda k: child_claim_list_mono_last(last, region, base, limit_g, k))
-    return d0, d1
+def child_deps_any(deps, entries_ptr, region, base, limit_g, n_g, scheme):
+    for j in mul_range(1, n_g):
+        off_hint = hint_witness("child_claim_index")
+        assert log(off_hint) < log(limit_g)
+        region[off_hint] = base * j
+        as_dependency(deps * j ** DEP_CELLS, entries_ptr * off_hint ** 4, scheme)
+    return
 
 
-def child_claim_list_mono_last(rec, region, mark, limit_g, k: Const):
-    digest = StackBuf(2)
-    if const(k == 0):
-        keccak_cells([0], digest, state=rec[0:KECCAK_STATE], len=0)
-        cov_end = rec[GEN ** KECCAK_STATE]
-    else:
-        blk = StackBuf(4 * CLAIM_GROUP)
-        walk = StackBuf(2)
-        child_claims_mono(rec[GEN ** KECCAK_STATE], rec[GEN ** (KECCAK_STATE + 1)], mark, blk, walk, k)
-        keccak_cells(blk[0:4 * k], digest, state=rec[0:KECCAK_STATE])
-        cov_end = walk[0]
-    # The offset after the last claim is at most the region's size.
-    assert log(cov_end / region) < log(limit_g * GEN)
-    return digest[0], digest[1]
-
-
-def child_claim_list_last(state, entries_ptr, region, marks, last_g, k: Const):
-    digest = StackBuf(2)
-    if const(k == 0):
-        keccak_cells([0], digest, state=state[0:KECCAK_STATE], len=0)
-    else:
-        blk = StackBuf(4 * CLAIM_GROUP)
-        child_claims(entries_ptr, region, marks, last_g, blk, k)
-        keccak_cells(blk[0:4 * k], digest, state=state[0:KECCAK_STATE])
-    return digest[0], digest[1]
+def child_deps_mono(deps, entries_ptr, region, mark, limit_g, n_g, scheme):
+    # The walk of a list at strictly increasing offsets o_j = e_0 + ... + e_j + j, each hinted gap
+    # g^e, e >= 0 by `assert_gpow`, moving the offset on by e + 1: its first offset is at least
+    # zero, and the count of claims, a memory address (below 2^30), keeps the sum below 2^60, short
+    # of wrapping, so bounding the offset after its last below the region's size bounds them all.
+    # Every claim writes the same mark, its first count: the walk cannot revisit a slot, and any
+    # other writer's value differs, so a slot written twice still conflicts.
+    walk = HeapBuf((n_g * GEN) ** WALK_REC)
+    walk[1] = region
+    walk[GEN] = entries_ptr
+    for j in mul_range(1, n_g):
+        rec = walk * j ** WALK_REC
+        nxt = rec * GEN ** WALK_REC
+        gap = hint_witness("child_claim_gap")
+        assert_gpow(gap)
+        cov = rec[1] * gap
+        gap2 = gap * gap
+        ent = rec[GEN] * (gap2 * gap2)
+        cov[1] = mark
+        as_dependency(deps * j ** DEP_CELLS, ent, scheme)
+        nxt[1] = cov * GEN
+        nxt[GEN] = ent * GEN ** 4
+    end = walk * n_g ** WALK_REC
+    assert log(end[1] / region) < log(limit_g * GEN)
+    return
 
 
 
@@ -4341,7 +4699,7 @@ def da_column_offsets(zs):
 
 
 def main():
-    # One node of an aggregation tree: n_raw_generic leanSTARK proofs, n_raw_lean_sphincs
+    # One node of an aggregation tree: n_raw_generic leanSTARK batch leaves, n_raw_lean_sphincs
     # leanSPHINCS signatures and n_children sub-proofs OF THIS SAME BYTECODE. A claim is
     # data_hash | vk (leanSTARK) or message | pubkey (leanSPHINCS), and each raw proof or
     # signature is verified against the claim in its own coverage slot. It publishes at most one DA digest: that of the blob matrix it
@@ -4354,8 +4712,8 @@ def main():
     #   [leanSTARK: declared | dup][leanSPHINCS: declared | dup]
     #
     # so one range check per write keeps each writer inside its own region: that is
-    # what makes the statement's split mean which scheme verified which claim. A
-    # slot is four cells, a pubkey and the message that pubkey signed.
+    # what makes each published triple's scheme word mean which scheme verified the
+    # claim. A slot is four cells, data_hash then the key.
     meta = StackBuf(8)
     hint_witness(meta, "meta")  # every count in the exponent
     n_lx_g = meta[0]
@@ -4366,15 +4724,16 @@ def main():
     n_raw_s_g = meta[5]
     n_children_g = meta[6]
     n_direct_da_g = meta[7]
-    # The first list is the leanSTARK (0x11) one, bounded like the leanSPHINCS one, with
-    # at most MAX_GENERIC_DEPENDENCIES proofs verified here.
+    # The first list is the leanSTARK (0x11) one; n_raw_x is its batch leaves verified here,
+    # which with the children are at most MAX_INNER_PROOFS_PER_STEP.
     assert_gpow(n_lx_g)
     assert_gpow(n_xdup_g)
-    assert log(n_raw_x_g) < MAX_GENERIC_DEPENDENCIES + 1
+    assert log(n_raw_x_g) < MAX_INNER_PROOFS_PER_STEP + 1
     assert_gpow(n_lean_sphincs_g)
     assert_gpow(n_sdup_g)
     assert_gpow(n_raw_s_g)
     assert log(n_children_g) < MAX_RECURSIONS + 1
+    assert log(n_raw_x_g * n_children_g) < MAX_INNER_PROOFS_PER_STEP + 1
     assert log(n_direct_da_g) < 2
     lx_slots_g = n_lx_g * n_xdup_g
     lean_sphincs_slots_g = n_lean_sphincs_g * n_sdup_g
@@ -4400,12 +4759,21 @@ def main():
     # verifier, which holds it) followed by its own duplicate slots. The coverage
     # indices below run over one space: leanSTARK, then leanSPHINCS.
     #
-    # Each list's digest is a plain hash of its claims, 64 bytes a claim, its padding
-    # binding its length; the statement carries the two digests side by side.
+    # The statement carries get_deps_hash of both lists as one list of 96-byte triples,
+    # leanSPHINCS (0x10) first as the triples sort, each entry under its region's scheme word.
     lx_table = HeapBuf(lx_slots_g ** 4)
     lean_sphincs_table = HeapBuf(lean_sphincs_slots_g ** 4)
-    xd_0, xd_1 = claim_list_digest(lx_table, n_lx_g)
-    sd_0, sd_1 = claim_list_digest(lean_sphincs_table, n_lean_sphincs_g)
+    for j in mul_range(1, n_lx_g):
+        entry = lx_table * j ** 4
+        hint_witness(entry[0:4], "claims")
+    for j in mul_range(1, n_lean_sphincs_g):
+        entry = lean_sphincs_table * j ** 4
+        hint_witness(entry[0:4], "claims")
+    n_decl_g = n_lx_g * n_lean_sphincs_g
+    decl = HeapBuf(n_decl_g ** DEP_CELLS)
+    table_deps(decl, lean_sphincs_table, n_lean_sphincs_g, SPHINCS_SCHEME_CELL)
+    table_deps(decl * n_lean_sphincs_g ** DEP_CELLS, lx_table, n_lx_g, STARK_SCHEME_CELL)
+    dd_0, dd_1 = deps_list_digest(decl, n_decl_g)
     # The duplicate slots ride the same tables but outside the hashed prefixes.
     for xd in mul_range(1, n_xdup_g):
         dup = lx_table * ((n_lx_g * xd) ** 4)
@@ -4423,20 +4791,23 @@ def main():
     # child. Each writer is confined to its own region.
     cover = HeapBuf(n_total_g)
     sp_cover = cover * lx_slots_g  # the leanSPHINCS region
+    # A leaf's dependencies take consecutive marks. Each one's index is bounded by the leanSTARK
+    # region (`verify_leaf`), small by `assert_gpow(n_total_g)` above (its log below the
+    # memory size). Without it this degenerates to what DEREF alone gives and an index could
+    # reach past `cover`, which is the whole bijection; with it a leaf covers no leanSPHINCS claim.
+    t8 = HeapBuf(256)
+    for b in unroll(0, 256):
+        t8[GEN ** b] = b
+    leaf_marks = HeapBuf(n_raw_x_g * GEN)
+    leaf_marks[1] = 1
     for xi in mul_range(1, n_raw_x_g):
-        idx = hint_witness("raw_index")
-        # The runtime bound is small by `assert_gpow(n_total_g)` above (its log below
-        # the memory size). Without it this degenerates to what DEREF alone gives and an
-        # index could reach past `cover`, which is the whole bijection. The bound is the
-        # leanSTARK region, so a raw leanSTARK proof covers no leanSPHINCS claim.
-        assert log(idx) < log(lx_slots_g)
-        cover[idx] = xi
-        verify_generic(lx_table * (idx ** 4), g_squares)
+        leaf_marks[xi * GEN] = verify_leaf(lx_table, cover, lx_slots_g, leaf_marks[xi], t8, g_squares)
+    n_raw_xc_g = leaf_marks[n_raw_x_g]
     for xj in mul_range(1, n_raw_s_g):
         off_hint = hint_witness("sp_raw_index")
         assert log(off_hint) < log(lean_sphincs_slots_g)
-        sp_cover[off_hint] = n_raw_x_g * xj
-        verify_sig_lean_sphincs(lean_sphincs_table * (off_hint ** 4))
+        sp_cover[off_hint] = n_raw_xc_g * xj
+        verify_sig_lean_sphincs(lean_sphincs_table * (off_hint ** 4), t8)
 
     # ---- data availability ----
     # One DA digest per child, read off its statement below, then the node's own:
@@ -4455,12 +4826,12 @@ def main():
     child_fresh = HeapBuf(n_children_g ** DEFER_SIZE)
     child_carried = HeapBuf(n_children_g ** DEFER_STMT_CELLS)
     written = HeapBuf(n_children_g * GEN)  # loop-carried write count, one per child
-    written[GEN ** 0] = n_raw_x_g * n_raw_s_g
+    written[GEN ** 0] = n_raw_xc_g * n_raw_s_g
     for xc in mul_range(1, n_children_g):
         base = written[xc]
-        # The child's two list lengths, then its two lists, rebuilt from THIS node's
+        # The child's two list lengths, then its dependencies, rebuilt from THIS node's
         # tables through hinted indices: everything hinted there is pinned by the
-        # list digests, which the child's statement carries, so a lie about any of it
+        # dependency digest, which the child's statement carries, so a lie about any of it
         # changes the public input its proof has to satisfy.
         child_meta = StackBuf(2)
         hint_witness(child_meta, "child_meta")  # n_generic, n_lean_sphincs
@@ -4469,13 +4840,14 @@ def main():
         assert_gpow(nsub_x_g)
         assert_gpow(nsub_s_g)
         nsub_g = nsub_x_g * nsub_s_g
-        cx_0, cx_1 = child_claim_list_digest(lx_table, cover, base, lx_slots_g, nsub_x_g)
-        cs_0, cs_1 = child_claim_list_digest(lean_sphincs_table, sp_cover, base * nsub_x_g, lean_sphincs_slots_g, nsub_s_g)
+        sub = HeapBuf(nsub_g ** DEP_CELLS)
+        child_deps(sub, lean_sphincs_table, sp_cover, base * nsub_x_g, lean_sphincs_slots_g, nsub_s_g, SPHINCS_SCHEME_CELL)
+        child_deps(sub * nsub_s_g ** DEP_CELLS, lx_table, cover, base, lx_slots_g, nsub_x_g, STARK_SCHEME_CELL)
         carried = child_carried * xc ** DEFER_STMT_CELLS
         hint_witness(carried[0:DEFER_STMT_CELLS], "child_defer")
         child_da = da_digests * xc ** 2
         hint_witness(child_da[0:2], "child_da")
-        cd_0, cd_1 = deps_digest(cx_0, cx_1, cs_0, cs_1, nsub_x_g)
+        cd_0, cd_1 = deps_list_digest(sub, nsub_g)
         pi_0, pi_1 = statement_digest(seed_0, seed_1, cd_0, cd_1, child_da[1], child_da[GEN], carried)
         pi = xc * xc
         child_pi[pi] = pi_0
@@ -4511,7 +4883,6 @@ def main():
     else:
         aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_stmt, g_squares * GEN ** WIN_TAB_AT)
 
-    dd_0, dd_1 = deps_digest(xd_0, xd_1, sd_0, sd_1, n_lx_g)
     own_0, own_1 = statement_digest(seed_0, seed_1, dd_0, dd_1, da[1], da[GEN], defer_stmt)
     pub_ptr = GEN ** 0
     assert pub_ptr[1] == own_0

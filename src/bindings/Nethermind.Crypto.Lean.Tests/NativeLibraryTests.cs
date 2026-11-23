@@ -13,19 +13,18 @@ namespace Nethermind.Crypto.Lean.Tests;
 public partial class NativeLibraryTests
 {
     private const string Library = "nethermind_lean";
-    private const uint ExpectedAbi = 21;
-    private const string ExpectedAggregatedVk = "e09e5acfcfe87832f337eb42acac98246d160bb915b55c55fbd8118b203cbb81";
+    private const uint ExpectedAbi = 24;
+    private const string ExpectedAggregatedVk = "645bc491d3d0728b8a0f556be143f845e2ff80aa59da060d750f32cfb05b800c";
     private const uint MaxProofBytes = 8 * 1024 * 1024;
     // EIP-8288's output capacity: EIP-7934 MAX_RLP_BLOCK_SIZE // 96.
     private const uint MaxDependencies = (10 * 1024 * 1024 - 2 * 1024 * 1024) / 96;
-    // Framing, 16 children's full lists and largest proofs, 256 raw signatures, 16 raw leanSTARK witnesses, a full
-    // discard list.
+    // Framing, 16 inner proofs (children or raw leanSTARK witnesses) at a child's full list and largest proof, 256 raw
+    // signatures, a full discard list.
     private const uint MaxInputBytes =
-        3 * 4 + 16 * (2 * 4 + MaxDependencies * 96 + MaxProofBytes) + 256 * (96 + 4 + 32 + 6176) + 16 * MaxProofBytes
-        + MaxDependencies * 96;
-    // Proof bytes, dependencies, recursive children, NiceTry v2 witness bytes, aggregation input bytes, raw leanSTARK
-    // proofs per node, leanSTARK instructions.
-    private static readonly uint[] ExpectedLimits = [MaxProofBytes, MaxDependencies, 16, 32 + 6176, MaxInputBytes, 16, 2048];
+        3 * 4 + 16 * (2 * 4 + MaxDependencies * 96 + MaxProofBytes) + 256 * (96 + 4 + 32 + 7740) + MaxDependencies * 96;
+    // Proof bytes, dependencies, recursive children, leanSPHINCS witness bytes, aggregation input bytes, inner proofs
+    // per node (MAX_INNER_PROOFS_PER_STEP), leanSTARK instructions.
+    private static readonly uint[] ExpectedLimits = [MaxProofBytes, MaxDependencies, 16, 32 + 7740, MaxInputBytes, 16, 2048];
 
     // A project reference leaves the library under runtimes/<rid>/native; a package consumer gets it beside the binary.
     static NativeLibraryTests() => NativeLibrary.SetDllImportResolver(typeof(NativeLibraryTests).Assembly, static (name, assembly, searchPath) =>
@@ -100,7 +99,7 @@ public partial class NativeLibraryTests
             await process.WaitForExitAsync();
             await Assert.That(process.ExitCode).IsEqualTo(0);
 
-            // `key ‖ witness`; a NiceTry v2 witness keeps its key prefix, a leanSTARK witness is the proof alone.
+            // `key ‖ witness`; a leanSPHINCS witness keeps its key prefix, a leanSTARK witness is the proof alone.
             byte[] keyAndWitness = File.ReadAllBytes(output);
             byte[] witness = leanStark ? keyAndWitness[32..] : keyAndWitness;
             await Assert.That(Verify(leanStark, message, keyAndWitness[..32], witness)).IsEqualTo(1);

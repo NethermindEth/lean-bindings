@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 [package]
 name = "nethermind-lean"
-version = "0.21.0"
+version = "0.24.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT"
@@ -24,6 +24,9 @@ lean_compiler.workspace = true
 leanvm_core.workspace = true
 fiat_shamir.workspace = true
 
+[dev-dependencies]
+verifier.workspace = true
+
 [workspace]
 members = ["crates/*"]
 resolver = "3"
@@ -37,7 +40,7 @@ needless_range_loop = "allow"
 too_many_arguments = "allow"
 
 # Unmodified leanEthereum/leanVM, pinned. crates/rec_aggregation is vendored from the same revision and carries the
-# EIP-8288 guest; crates/lean_sphincs is NiceTry v2 in place of upstream's leanSPHINCS.
+# EIP-8288 guest.
 [workspace.dependencies]
 primitives = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
 fiat_shamir = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
@@ -51,7 +54,7 @@ parallel = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae52
 verifier = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
 lean_xmss = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
 rec_aggregation = { path = "crates/rec_aggregation" }
-lean_sphincs = { path = "crates/lean_sphincs" }
+lean_sphincs = { git = "https://github.com/leanEthereum/leanVM", rev = "f7ba4999ae523b94c8d0969b32762c3effea4cbd" }
 rand = "0.9"
 tracing = "0.1.26"
 
@@ -64,3 +67,19 @@ codegen-units = 1
 name = "lean_startup_stub"
 crate-type = ["cdylib"]
 test = false
+
+# TODO: the committed bytecode key needs leanVM core changes that are not upstream yet. They live on
+# Marchhill/leanVM feature/eip8288-bytecode-commitment-f128, one commit on the pinned f7ba4999. Upstream them (or move
+# them into this repository) and drop this patch before merging.
+[patch."https://github.com/leanEthereum/leanVM"]
+primitives = { git = "https://github.com/Marchhill/leanVM", rev = "3ceb898c5a4223b9d2527460ca1d08b482a3a85c" }
+fiat_shamir = { git = "https://github.com/Marchhill/leanVM", rev = "3ceb898c5a4223b9d2527460ca1d08b482a3a85c" }
+pcs = { git = "https://github.com/Marchhill/leanVM", rev = "3ceb898c5a4223b9d2527460ca1d08b482a3a85c" }
+keccak_gkr = { git = "https://github.com/Marchhill/leanVM", rev = "3ceb898c5a4223b9d2527460ca1d08b482a3a85c" }
+leanvm_core = { git = "https://github.com/Marchhill/leanVM", rev = "3ceb898c5a4223b9d2527460ca1d08b482a3a85c" }
+lean_compiler = { git = "https://github.com/Marchhill/leanVM", rev = "3ceb898c5a4223b9d2527460ca1d08b482a3a85c" }
+bench = { git = "https://github.com/Marchhill/leanVM", rev = "3ceb898c5a4223b9d2527460ca1d08b482a3a85c" }
+lean_da = { git = "https://github.com/Marchhill/leanVM", rev = "3ceb898c5a4223b9d2527460ca1d08b482a3a85c" }
+parallel = { git = "https://github.com/Marchhill/leanVM", rev = "3ceb898c5a4223b9d2527460ca1d08b482a3a85c" }
+verifier = { git = "https://github.com/Marchhill/leanVM", rev = "3ceb898c5a4223b9d2527460ca1d08b482a3a85c" }
+lean_xmss = { git = "https://github.com/Marchhill/leanVM", rev = "3ceb898c5a4223b9d2527460ca1d08b482a3a85c" }

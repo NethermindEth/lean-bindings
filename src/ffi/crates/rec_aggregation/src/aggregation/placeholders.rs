@@ -1,6 +1,8 @@
 //! The constants baked into the guest.
 
-use super::MAX_RECURSIONS;
+use super::generic::{BATCH_DOMAIN, LEAN_SPHINCS_SCHEME, LEAN_STARK_SCHEME, MAX_GENERIC_BYTECODE_LOG, VK_TAG, scheme_word};
+use super::guest::Guest;
+use super::{MAX_INNER_PROOFS_PER_STEP, MAX_RECURSIONS};
 use super::cells::pack_16_bytes;
 use super::child::{
     KBC_SOURCE, MU_CAP, QUERY_WINDOW_BITS, QUERY_WINDOWS_CAP, STREAM_CAP, block_groups, block_sources, col_groups,
@@ -8,7 +10,7 @@ use super::child::{
 };
 use super::claim_pool::{ClaimSite, coord_difference, coord_kind, coord_scale, push_coord_terms, walk_claims};
 use super::deferred::RECURSION_AGG_LABEL;
-use super::generic::{LEANSTARK_DEPS_DOMAIN, MAX_GENERIC_BYTECODE_LOG, MAX_GENERIC_DEPENDENCIES};
+use super::hints::{DIGIT_GROUP, LX_DIGIT_GROUP, LX_WINDOW};
 use super::statement::{BIG_GROUPS, CLAIM_GROUP, STATEMENT_HEADER};
 use fiat_shamir::merkle::hash_to_scalars;
 use lean_compiler::f128_literal;
@@ -163,7 +165,7 @@ struct OpeningShape {
 
 /// The recursion program's placeholder map depends on table structure and bytecode
 /// size, so one compiled guest serves every proof layout.
-pub(super) fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
+pub(super) fn placeholder_map(kbc: usize, guest: Guest) -> BTreeMap<String, String> {
     // Only block and coordinate structure is used here; dummy instructions and
     // table sizes let us derive it before the guest's bytecode exists.
     let stand_in = vec![leanvm_core::cpu::Op::Xor { a: 0, b: 0, c: 0 }; 1 << kbc];
@@ -201,7 +203,7 @@ pub(super) fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     opening_placeholders(&mut ps);
     bytecode_placeholders(kbc, nbcv, &mut ps);
     da_placeholders(&mut ps);
-    signature_placeholders(&mut ps);
+    signature_placeholders(guest, &mut ps);
     rep
 }
 
@@ -975,41 +977,124 @@ fn da_placeholders(ps: &mut impl FnMut(&str, String)) {
     );
 }
 
-/// The signature scheme, the leanSTARK caps and domains, and the coverage caps.
-fn signature_placeholders(ps: &mut impl FnMut(&str, String)) {
-    ps("MAX_GENERIC_BYTECODE_LOG", MAX_GENERIC_BYTECODE_LOG.to_string());
-    ps("MAX_GENERIC_DEPENDENCIES", MAX_GENERIC_DEPENDENCIES.to_string());
-    ps("DEPS_DOMAIN_0", f128_literal(pack_16_bytes(&LEANSTARK_DEPS_DOMAIN[..16])));
-    ps("DEPS_DOMAIN_1", f128_literal(pack_16_bytes(&LEANSTARK_DEPS_DOMAIN[16..])));
-    // The leanVM tag ahead of a program's table in its digest: its first 8 bytes as a lane, its 9th byte.
-    let tag: &[u8; 9] = verifier::TAG.try_into().expect("a 9-byte tag");
-    ps("TAG_LANE0", u64::from_le_bytes(tag[..8].try_into().unwrap()).to_string());
-    ps("TAG_BYTE8", tag[8].to_string());
+/// The signature scheme, `guest`'s leanSTARK caps and domains, and the coverage caps.
+fn signature_placeholders(guest: Guest, ps: &mut impl FnMut(&str, String)) {
     ps("CLAIM_GROUP", CLAIM_GROUP.to_string());
     ps("BIG_GROUPS", BIG_GROUPS.to_string());
     ps("MAX_RECURSIONS", MAX_RECURSIONS.to_string());
+    ps("MAX_GENERIC_BYTECODE_LOG", MAX_GENERIC_BYTECODE_LOG.to_string());
+    ps("MAX_CLAIMS_PER_BATCH_LEAF", guest.max_claims_per_leaf().to_string());
+    ps("BATCH_DOMAIN", f128_literal(pack_16_bytes(&BATCH_DOMAIN)));
+    ps("LEAF_CHUNK", (2 * primitives::hash::RATE / 16).to_string());
+    ps("SPHINCS_SCHEME_CELL", f128_literal(pack_16_bytes(&scheme_word(LEAN_SPHINCS_SCHEME)[16..])));
+    ps("STARK_SCHEME_CELL", f128_literal(pack_16_bytes(&scheme_word(LEAN_STARK_SCHEME)[16..])));
+    let mut vk_tag = [0; 16];
+    vk_tag[..VK_TAG.len()].copy_from_slice(VK_TAG);
+    ps("VK_TAG", f128_literal(pack_16_bytes(&vk_tag)));
+    // A committed program's key: its first cell, `verifier::COMMITTED_TAG ‖ u8 kgen`, for every kgen; and the
+    // commitment's rate, as the g-power `open_stacked` dispatches on.
+    let tag_cells = |tag: &[u8; 15]| {
+        let cells = (0..=MAX_GENERIC_BYTECODE_LOG).map(|kgen| {
+            let mut cell = [0u8; 16];
+            cell[..15].copy_from_slice(tag);
+            cell[15] = kgen as u8;
+            f128_literal(pack_16_bytes(&cell))
+        });
+        literals(cells)
+    };
+    ps("GEN_KEY_CELLS", tag_cells(verifier::COMMITTED_TAG));
+    // The public input seeding its out-of-domain points' sponge: `verifier::COMMITTED_OOD_TAG ‖ u8 kgen`, then zero.
+    ps("GEN_OOD_CELLS", tag_cells(verifier::COMMITTED_OOD_TAG));
+    ps("GEN_RATE_SEL", (verifier::COMMITTED_BYTECODE_LOG_INV_RATE - MIN_LOG_INV_RATE).to_string());
+    // The size arm of the commitment's opening: one stack size for every kgen under the cap.
+    let stack_log = verifier::committed_bytecode_stack_log(16 << MAX_GENERIC_BYTECODE_LOG);
+    assert_eq!(stack_log, verifier::MIN_STACKED_LOG, "every committed program opens in the least stack");
+    ps("GEN_STACK_LOG", stack_log.to_string());
+    ps("MAX_INNER_PROOFS_PER_STEP", MAX_INNER_PROOFS_PER_STEP.to_string());
 
-    // NiceTry SPHINCS- v2 (prototype).
-    for (name, value) in [
-        ("SP_K", lean_sphincs::K),
-        ("SP_A", lean_sphincs::A),
-        ("SP_D", lean_sphincs::D),
-        ("SP_HP", lean_sphincs::SUBTREE_H),
-        ("SP_H", lean_sphincs::H),
-        ("SP_W", lean_sphincs::W),
-        ("SP_LEN1", lean_sphincs::LEN1),
-        ("SP_LEN2", lean_sphincs::LEN2),
-        ("SP_MAX_CSUM", lean_sphincs::MAX_CSUM),
-    ] {
-        ps(name, value.to_string());
-    }
-    // Digest bit b (big-endian 256-bit integer) as an index into the bit run of the
-    // digest's last three lanes.
-    let bit_index: Vec<String> = (0..3 * 64)
-        .map(|b| {
-            let byte = 31 - b / 8;
-            (64 * (byte / 8 - 1) + 8 * (byte % 8) + b % 8).to_string()
+    // Both schemes' WOTS+C: the chain length and the digit sums of a dispatched group.
+    ps("W", lean_xmss::internals::W.to_string());
+    ps("DIGIT_GROUP", DIGIT_GROUP.to_string());
+    let widest = LX_DIGIT_GROUP.max(DIGIT_GROUP);
+    let digit_sums: Vec<String> = (0..lean_xmss::internals::CHAIN_LEN.pow(widest as u32))
+        .map(|k| {
+            let digits = (0..widest)
+                .map(|r| k / lean_xmss::internals::CHAIN_LEN.pow(r as u32) % lean_xmss::internals::CHAIN_LEN);
+            digits.sum::<usize>().to_string()
         })
         .collect();
-    ps("SP_BIT_INDEX", format!("[{}]", bit_index.join(", ")));
+    ps("DIGIT_SUMS", format!("[{}]", digit_sums.join(", ")));
+    // leanXMSS: its hash types as its address lane holds them. Its addresses are
+    // derived per signature from the leaf index the signature carries.
+    let address = |tw| f128_literal(pack_16_bytes(&lean_xmss::internals::address(&tw)));
+    for (name, tag) in [
+        ("TW_CHAIN", lean_xmss::internals::TWEAK_CHAIN),
+        ("TW_LEAF", lean_xmss::internals::TWEAK_LEAF),
+        ("TW_NODE", lean_xmss::internals::TWEAK_NODE),
+        ("TW_MSG", lean_xmss::internals::TWEAK_MSG),
+    ] {
+        ps(name, address(lean_xmss::internals::tweak(tag, 0, 0)));
+    }
+    ps("LX_V", lean_xmss::internals::V.to_string());
+    ps("LX_TARGET_SUM", lean_xmss::internals::TARGET_SUM.to_string());
+    ps("LX_HEIGHT", lean_xmss::internals::LAYER_HEIGHT.to_string());
+    ps(
+        "LX_TOP",
+        address(lean_xmss::internals::tweak(0, lean_xmss::internals::TOP, 0)),
+    );
+    ps("LX_WINDOW", LX_WINDOW.to_string());
+    ps("LX_DIGIT_GROUP", LX_DIGIT_GROUP.to_string());
+    let sizes = (0..lean_xmss::internals::V.div_ceil(LX_DIGIT_GROUP))
+        .map(|p| LX_DIGIT_GROUP.min(lean_xmss::internals::V - LX_DIGIT_GROUP * p));
+    ps("LX_GROUP_SIZES", format!("{:?}", sizes.collect::<Vec<_>>()));
+    // A chain index: zero and the powers of two are cells the guest has, the others a
+    // slot of the tags it carries.
+    let (mut slots, mut logs, mut n_tags) = (Vec::new(), Vec::new(), 0);
+    for i in 0..lean_xmss::internals::V {
+        let carried = i != 0 && !i.is_power_of_two();
+        n_tags += usize::from(carried);
+        slots.push(if carried { n_tags } else { 0 });
+        logs.push(i.checked_ilog2().unwrap_or(0));
+    }
+    ps("LX_TAG_SLOT", format!("{slots:?}"));
+    ps("LX_TAG_LOG", format!("{logs:?}"));
+    ps("LX_N_TAGS", n_tags.to_string());
+
+
+    // The leanSPHINCS instance: its shape, each address type as A1, the address's
+    // second cell, holds it, and the cell bit each address field's low bytes start at.
+    // The guest derives the rest of every address from the digest.
+    use lean_sphincs::internals::Adrs;
+    let cell = |adrs: Adrs, half: usize| f128_literal(pack_16_bytes(&adrs.as_bytes()[16 * half..][..16]));
+    let at = Adrs::new(0, 0);
+    for (name, adrs, half) in [
+        ("SP_LAYER_MUL", Adrs::new(1, 0), 0),
+        ("SP_TREE_MUL_0", Adrs::new(0, 1), 0),
+        ("SP_TREE_MUL_1", Adrs::new(0, 1 << 8), 0),
+        ("SP_TREE_MUL_2", Adrs::new(0, 1 << 16), 0),
+        ("SP_KEY_MUL_0", at.with_key_pair(1), 1),
+        ("SP_KEY_MUL_1", at.with_key_pair(1 << 8), 1),
+        ("SP_WORD2_MUL", at.with_chain(1), 1),
+        ("SP_WORD3_MUL_0", at.with_tree_index(1), 1),
+        ("SP_WORD3_MUL_1", at.with_tree_index(1 << 8), 1),
+    ] {
+        ps(name, cell(adrs, half));
+    }
+    ps("SP_V", lean_sphincs::internals::V.to_string());
+    ps("SP_TARGET_SUM", lean_sphincs::internals::TARGET_SUM.to_string());
+    for (layer, height) in lean_sphincs::internals::LAYER_HEIGHTS.iter().enumerate() {
+        ps(&format!("SP_HEIGHT_{layer}"), height.to_string());
+    }
+    ps("SP_FORS_TREES", lean_sphincs::internals::FORS_TREES.to_string());
+    ps("SP_FORS_HEIGHT", lean_sphincs::internals::FORS_HEIGHT.to_string());
+    ps("SP_DIGEST_BYTES", lean_sphincs::internals::DIGEST_BYTES.to_string());
+    for (name, t) in [
+        ("SP_WOTS_PK", lean_sphincs::internals::WOTS_PK),
+        ("SP_TREE", lean_sphincs::internals::TREE),
+        ("SP_FORS_TREE", lean_sphincs::internals::FORS_TREE),
+        ("SP_FORS_ROOTS", lean_sphincs::internals::FORS_ROOTS),
+        ("SP_WOTS_ENC", lean_sphincs::internals::WOTS_ENC),
+    ] {
+        ps(name, cell(at.with_type(t), 1));
+    }
 }
